@@ -280,6 +280,13 @@ class SystemStore:
             (values["label"], values["pinned"], values["tracked_ref"], instance_id),
         )
         changed = {k: {"before": before[k], "after": v} for k, v in values.items() if before[k] != v}
+        if "tracked_ref" in changed:
+            # The old branch's tip says nothing about the new one.
+            self.conn.execute(
+                "UPDATE system_instances SET tip_commit = NULL, tip_checked_at = NULL WHERE id = %s",
+                (instance_id,),
+            )
+            self.conn.execute("DELETE FROM system_source_checks WHERE instance_id = %s", (instance_id,))
         if changed:
             change.audit("instance_updated", {"instanceId": instance_id, **changed})
         return self.get_instance(change.system_id, instance_id)
@@ -345,7 +352,8 @@ class SystemStore:
     def mark_project_unresolved(self, project_id: str) -> list[str]:
         """§5.1: the child project is gone; keep its instances, unresolved.
 
-        Returns the affected system IDs so the caller can bump their versions.
+        The affected systems' versions move, so an editor holding an old ETag
+        re-reads before changing anything. Returns their IDs.
         """
         rows = self.conn.execute(
             """
@@ -355,7 +363,16 @@ class SystemStore:
             """,
             (project_id,),
         ).fetchall()
-        return sorted({row["system_id"] for row in rows})
+        system_ids = sorted({row["system_id"] for row in rows})
+        if system_ids:
+            self.conn.execute(
+                """
+                UPDATE system_projects SET version = version + 1, updated_at = NOW()
+                WHERE id = ANY(%s)
+                """,
+                (system_ids,),
+            )
+        return system_ids
 
     def _require_free_label(self, system_id: str, label: str) -> None:
         if not label.strip():
