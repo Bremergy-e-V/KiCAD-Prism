@@ -11,14 +11,14 @@ import asyncio
 import re
 from typing import Any, Callable, List, Literal, Optional, TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.core.security import AuthenticatedUser, require_designer, require_viewer
 from app.services.systems import service as system_service
 from app.services.systems.service import Caller, Result
-from app.services.systems.store import Conflict, Invalid, NotFound, StaleVersion
+from app.services.systems.store import MAX_ROWS, Conflict, Invalid, NotFound, StaleVersion
 from app.services.systems.visibility import etag
 
 router = APIRouter(dependencies=[Depends(require_viewer)])
@@ -309,7 +309,8 @@ async def delete_link(
 
 @router.put("/{system_id}/links/{link_id}/rows", dependencies=[Depends(require_designer)])
 async def replace_rows(
-    system_id: str, link_id: str, body: List[RowRequest], request: Request, response: Response,
+    system_id: str, link_id: str, request: Request, response: Response,
+    body: List[RowRequest] = Body(max_length=MAX_ROWS),
     user: AuthenticatedUser = Depends(require_viewer),
 ):
     version = _expected_version(request, system_id)

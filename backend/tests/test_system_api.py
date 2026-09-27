@@ -525,6 +525,9 @@ class SystemApiTest(unittest.TestCase):
             with self.subTest(rows=bad):
                 self.assertIn(self.call("PUT", f"/{sid}/links/{lid}/rows", body=bad,
                                         headers={"If-Match": etag}).status, (409, 422))
+        too_many = [{"pinA": "1", "pinB": str(n)} for n in range(5001)]
+        self.assertEqual(self.call("PUT", f"/{sid}/links/{lid}/rows", body=too_many,
+                                   headers={"If-Match": etag}).status, 422)
         document = self.call("GET", f"/{sid}").json
         self.assertEqual(document["links"][0]["rows"][0]["signal"], "SCK")
 
@@ -638,6 +641,8 @@ class SystemApiTest(unittest.TestCase):
                                    body={"positions": {}}).status, 403)
         self.assertEqual(self.call("PUT", f"/{sid}/layout",
                                    body={"positions": {"a": {"x": "wide"}}}).status, 422)
+        self.assertEqual(self.call("PUT", f"/{sid}/layout",
+                                   body={"positions": {"k" * 201: {"x": 0, "y": 0}}}).status, 422)
         self.assertEqual(self.call("GET", f"/{sid}").headers["etag"], etag)
 
 

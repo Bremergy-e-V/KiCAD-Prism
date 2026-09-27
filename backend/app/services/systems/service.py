@@ -661,6 +661,8 @@ class SystemService:
     def put_layout(self, caller: Caller, system_id: str, positions: Mapping[str, Any]) -> dict:
         if len(positions) > MAX_LAYOUT_ENTRIES:
             raise Invalid(f"limit layout_entries ({MAX_LAYOUT_ENTRIES})")
+        if any(not key or len(key) > 200 for key in positions):
+            raise Invalid("layout keys must be 1 to 200 characters")
         with self._tx() as store:
             self._system(store, system_id, caller)
             store.put_layout(system_id, positions)

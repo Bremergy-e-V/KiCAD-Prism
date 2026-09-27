@@ -44,13 +44,17 @@ def valid_tracked_ref(ref: str) -> str:
 
 
 def _git(repo: Path, *args: str) -> Optional[str]:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired:
+        raise SourceError("the project repository did not answer in time") from None
     return result.stdout.strip() if result.returncode == 0 else None
 
 
