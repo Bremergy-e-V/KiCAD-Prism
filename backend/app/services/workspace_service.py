@@ -361,7 +361,7 @@ class WorkspaceService:
         with self._connect() as conn:
             row = conn.execute(
                 """SELECT p.*, r.clone_path AS repo_clone_path, r.url AS repo_url,
-                          r.name AS parent_repo, r.import_type
+                          r.name AS parent_repo, r.import_type, r.last_synced_at AS repo_last_synced
                    FROM ws_projects p
                    JOIN ws_repositories r ON r.id = p.repo_id
                    WHERE p.id=%s""",
@@ -381,7 +381,7 @@ class WorkspaceService:
             row = conn.execute(
                 """
                 SELECT p.*, r.clone_path AS repo_clone_path, r.url AS repo_url,
-                       r.name AS parent_repo, r.import_type
+                       r.name AS parent_repo, r.import_type, r.last_synced_at AS repo_last_synced
                 FROM ws_projects p
                 JOIN ws_repositories r ON r.id = p.repo_id
                 LEFT JOIN ws_folders f ON f.id = p.folder_id
@@ -402,7 +402,7 @@ class WorkspaceService:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT p.*, r.clone_path AS repo_clone_path, r.url AS repo_url,
-                          r.name AS parent_repo, r.import_type
+                          r.name AS parent_repo, r.import_type, r.last_synced_at AS repo_last_synced
                    FROM ws_projects p
                    JOIN ws_repositories r ON r.id = p.repo_id
                    WHERE p.repo_id=%s ORDER BY p.name""",
@@ -697,7 +697,7 @@ class WorkspaceService:
         with self._connect() as conn:
             rows = conn.execute(
                 """SELECT p.*, r.clone_path AS repo_clone_path, r.url AS repo_url,
-                          r.name AS parent_repo, r.import_type,
+                          r.name AS parent_repo, r.import_type, r.last_synced_at AS repo_last_synced,
                           f.visibility_mode, f.allowed_roles
                    FROM ws_projects p
                    JOIN ws_repositories r ON r.id = p.repo_id
@@ -989,7 +989,7 @@ class WorkspaceService:
             ).fetchall()
             projects = conn.execute(
                 """SELECT p.*, r.clone_path AS repo_clone_path, r.url AS repo_url,
-                          r.name AS parent_repo, r.import_type
+                          r.name AS parent_repo, r.import_type, r.last_synced_at AS repo_last_synced
                    FROM ws_projects p JOIN ws_repositories r ON r.id=p.repo_id
                    WHERE p.folder_id IS NOT DISTINCT FROM %s ORDER BY p.name""",
                 (folder_id,),
