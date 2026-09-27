@@ -87,7 +87,13 @@ def _natural(pad: str) -> tuple:
 
 
 def _occurrences(native: Any) -> dict[str, list[tuple[int, str, Any]]]:
-    """``reference -> [(unit, occurrence_key, symbol)]`` for placed symbols."""
+    """``reference -> [(unit, occurrence_key, symbol)]`` for placed symbols.
+
+    Grouping by reference is what makes the units of a multi-unit symbol one
+    port. Unannotated symbols that share a reference such as ``J?`` are grouped
+    too; they can never be ports (CONTRACTS.md §2.3), and the netlist cannot
+    tell their pins apart either, so only the diagnostic is affected.
+    """
     result: dict[str, list[tuple[int, str, Any]]] = defaultdict(list)
     for instance in native.schematic_instances() or ():
         sheet_path = _string(getattr(instance, "sheet_instance_path", "")) or "/"
