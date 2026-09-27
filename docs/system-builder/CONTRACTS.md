@@ -93,10 +93,13 @@ on that board is part of the same port.
 - `port_key`: the occurrence key of the **lowest unit number present**. For
   single-unit symbols this is the only key.
 
-A port matches a baseline when its `port_key` equals the baseline `port_key`,
-or when the baseline `port_key` appears in its `member_keys`. That covers
-unit A being deleted while unit B survives. Anything else goes through the
-rebind rule in §6.4.
+A link end stores both `portKey` and `memberKeys` in its port baseline. A
+candidate component resolves that end when its `memberKeys` **intersect** the
+baseline `memberKeys`. That covers unit A being deleted while unit B survives:
+the end then resolves through unit B, and its stored `portKey` moves to the
+candidate's `portKey` as a silent change (§6.1). If two candidate components
+intersect, the end does not resolve by key. Anything that does not resolve by
+key goes through the rebind rule in §6.4.
 
 The **reference designator is display metadata**. Re-annotating `J4` to `J7`
 with unchanged UUIDs is a silent label update.
@@ -238,7 +241,7 @@ column names are guidance for SYS-03.
 | `system_projects` | `id`; `name`; `description`; `folder_id` → `ws_folders` (`ON DELETE SET NULL`); `version` (bigint, the ETag counter); `created_by`; `created_at`; `updated_at` |
 | `system_instances` | `id`; `system_id`; `project_id` (**no FK cascade**, §5.1); `label` (unique per system, case-insensitive); `baseline_commit`; `tracked_ref` (branch name or null); `pinned` (bool); `resolution` (`resolved`/`unresolved`); `tip_commit`; `tip_checked_at` |
 | `system_port_overrides` | `(instance_id, port_key)`; `state` (`hidden`/`promoted`) |
-| `system_links` | `id`; `system_id`; `name`; `harness` (nullable label); `end_a` and `end_b`, each an `instance_id` plus a **port baseline** `{portKey, reference, libId, footprint, pinCount}` |
+| `system_links` | `id`; `system_id`; `name`; `harness` (nullable label); `end_a` and `end_b`, each an `instance_id` plus a **port baseline** `{portKey, memberKeys, reference, libId, footprint, pinCount}` |
 | `system_link_rows` | `id`; `link_id`; `pin_a`; `pin_b`; `signal`; `net_a` and `net_b` (accepted sorted net sets); `source` (`manual`/`generator`/`import`); unique `(link_id, pin_a, pin_b)` |
 | `system_reviews` | `id`; `system_id`; `instance_id`; `kind` (`source_update`/`baseline_unreachable`/`import`); `from_commit`; `to_commit`; `status`; `created_at`; `decided_by`; `decided_at` |
 | `system_review_items` | `id`; `review_id`; `kind` (§6.2); `link_id`; `row_ids`; `end` (`a`/`b`); `expected` (JSONB); `observed` (JSONB); `candidates` (JSONB); `decision`; `decision_payload` |
@@ -286,13 +289,14 @@ Two changes are **silent**. They produce no review item and are recorded as
 audit events when applied:
 
 - The reference changed while the port resolved by key.
+- The port resolved by key but its `portKey` changed (a unit was removed).
 - A rebind succeeded under §6.4.
 
 ### 6.2 Outcome
 
 - **No items**: the instance **auto-advances**. `baseline_commit` becomes the
-  candidate, silent changes are applied (the port baseline `reference` and
-  `portKey` are updated), and a `baseline_auto_advanced` audit event is
+  candidate, silent changes are applied (the port baseline `reference`,
+  `portKey` and `memberKeys` are updated), and a `baseline_auto_advanced` audit event is
   written.
 - **Any items**: one `source_update` review is opened for `(instance,
   from = baseline_commit, to = candidate)`, holding every item. The baseline
@@ -616,29 +620,33 @@ comes from the session, or is `system:detection` for detection jobs.
 
 ## 11. Fixture acceptance matrix
 
-These are the synthetic KiCad 10.0.6 boards `mini-obc`, `mini-payload` and
-`mini-power`, from SYS-01. `mini-power` includes a two-unit connector. Each
-step is one commit on `mini-obc` unless stated otherwise, evaluated against a
-baseline system with links to `mini-payload` and `mini-power`.
+These are the synthetic KiCad 10.0.6 boards `mini_obc`, `mini_payload` and
+`mini_power` from SYS-01 (`backend/tests/fixtures/system_builder/`). The
+fixture system has four instances: `OBC-A` (tracking), `OBC-B` (the same
+project, pinned), `PAY` and `PWR`. It has five links, among them `L-J7J4`
+(OBC-A/J7 ↔ PAY/J4, 18 rows) and `L-J2J1` (OBC-A/J2 ↔ PWR/J1). Each step is
+F0 plus one change. The machine-readable expectations are in
+`expected/steps.json`.
 
 | Step | Commit change | Expected outcome |
 |---|---|---|
-| F0 | Baseline (Rev C) | All rows `bound`; no findings above info |
-| F1 | `J7.17` wire removed | Review: `net_changed` `["/PAYLOAD_RESET#"] → []` |
-| F2 | J4 re-annotated to J7, UUID kept | Auto-advance; `connector_relabelled` |
-| F3 | J7 deleted and re-placed from the library | Auto-rebind; `connector_rebound`; auto-advance |
-| F4 | J7 `lib_id` 2×10 → 2×12 | Review: `connector_changed` |
-| F5 | Hierarchical sheet renamed | Review: `net_changed` on every connected pin carrying a sheet-local net |
-| F6 | Docs-only commit | Auto-advance; interface `digest` unchanged |
-| F7 | Net change on a pin that no row uses | Auto-advance |
-| F8 | Schematic net changed, PCB not updated | Review `net_changed`, then after accept, `SYS-V06 pcb_out_of_sync` |
-| F9 | Connector deleted, two similar connectors present | Review: `connector_missing` with two ranked candidates |
-| F10 | `mini-power` unit A of the two-unit connector deleted, unit B kept | Port resolves by `memberKeys`; auto-advance |
-| F11 | Two commits land before a decision | The first review is `superseded`; the second is evaluated from the same baseline |
-| F12 | A second instance of `mini-obc` pinned at Rev C | F1 raises a review only on the tracking instance; the pinned one records `update_available` |
+| F0 | Baseline | No errors or warnings. `SYS-V06` is not evaluated for `PAY` (no PCB). Fan-out on PWR/J3.3 is exempt (shared harness `WH-001`) |
+| F1 | `J7.17` no-connected | Review: `net_changed` `["PAYLOAD_RESET#"] → []` |
+| F2 | J2 re-annotated to J12, UUID kept | Auto-advance; `connector_relabelled` |
+| F3 | J7 replaced by a new symbol (same reference, lib and nets) | Auto-rebind; `connector_rebound`; auto-advance |
+| F4 | J7 `lib_id` and footprint 2×10 → 2×12 | Review: `connector_changed` |
+| F5 | Sheet "Payload IF" renamed | Review: 12 `net_changed` items, one per row on a sheet-local net |
+| F6 | README only | Auto-advance; interface `digest` unchanged |
+| F7 | Net change on J7.19, which no row uses | Auto-advance |
+| F8 | J7.18 schematic net changed, PCB not updated | Review `net_changed`; after accept, `SYS-V06 pcb_out_of_sync` |
+| F9 | J2 deleted; J5 and J6 remain | Review: `connector_missing` with candidates J6 (net overlap 0.75), then J5 (0.5) |
+| F10 | `mini_power` J3 unit A deleted, unit B kept | Resolves through `memberKeys`; `portKey` moves to unit B; auto-advance |
+| F11 | F1, then J7.3 renamed | The first review is `superseded`; the second is evaluated from F0 with two items |
+| F12 | Tip F1 seen by both OBC instances | `OBC-A` gets a review; pinned `OBC-B` records `update_available` only |
 
 ## 12. Revision log
 
 | Version | Date | Change |
 |---|---|---|
 | 1.0 | 2026-09-27 | Initial freeze (SYS-00). Adopts plan decisions D1–D18 and defaults O1–O4. |
+| 1.0 (pre-merge) | 2026-09-27 | Before the first merge: link ends store `memberKeys` and resolve by intersection, so a deleted unit no longer breaks a multi-unit port (§2.3, §5, §6). §11 aligned with the SYS-01 fixture boards. |
