@@ -155,8 +155,7 @@ that the semantic index uses. It is not a new KiCad parser.
           "pinNames": ["~{RESET}"],
           "pinTypes": ["passive"]
         }
-      ],
-      "connectedInterfaceDigest": null
+      ]
     }
   ],
   "diagnostics": [{"code": "…", "portKey": "…", "pad": "…", "detail": "…"}],
@@ -168,7 +167,8 @@ Field rules:
 
 - `components` lists every placed, annotated or unannotated symbol reference
   that has pins, not just connector candidates, so a user can promote any
-  symbol (§4.2).
+  symbol (§4.2). Virtual references starting with `#` (power flags) are
+  excluded.
 - `nets` holds the **full hierarchical schematic net names**, exactly as the
   netlist reports them (for example `/Power/VBUS`). Global and power nets keep
   their plain names. They are captured **before** any PCB overlay; the
@@ -185,8 +185,8 @@ Field rules:
 - `dnp` is the **default assembly** state, using the design-variant resolver's
   sheet fold. Per-instance variant selection is out of P1.
 - `digest` is `sha256` over the canonical JSON (sorted keys, no whitespace)
-  with `digest`, `extractor`, `projectId`, `commit` and every
-  `connectedInterfaceDigest` omitted, so it covers interface facts only.
+  with `digest`, `extractor`, `projectId` and `commit` omitted, so it covers
+  interface facts only.
   Two commits with identical schematic interface facts produce the same
   digest.
 
@@ -214,6 +214,9 @@ order says so:
 3. **Library.** The `lib_id` library nickname, or the footprint library
    nickname, starts with `Connector` (case-insensitive).
 
+Field names are matched ignoring case and punctuation (`Prism_Port`,
+`prism port` and `PRISMPORT` are the same field); values are matched ignoring
+case. A value outside both lists is ignored and the next rule applies.
 `candidateReason` records which rule matched.
 
 ### 4.2 Exposure
@@ -245,7 +248,7 @@ column names are guidance for SYS-03.
 | `system_links` | `id`; `system_id`; `name`; `harness` (nullable label); `end_a` and `end_b`, each an `instance_id` plus a **port baseline** `{portKey, memberKeys, reference, libId, footprint, pinCount}` |
 | `system_link_rows` | `id`; `link_id`; `pin_a`; `pin_b`; `signal`; `net_a` and `net_b` (accepted sorted net sets); `source` (`manual`/`generator`/`import`); unique `(link_id, pin_a, pin_b)` |
 | `system_reviews` | `id`; `system_id`; `instance_id`; `kind` (`source_update`/`baseline_unreachable`/`import`); `from_commit`; `to_commit`; `status`; `created_at`; `decided_by`; `decided_at` |
-| `system_review_items` | `id`; `review_id`; `kind` (§6.2); `link_id`; `row_ids`; `end` (`a`/`b`); `expected` (JSONB); `observed` (JSONB); `candidates` (JSONB); `decision`; `decision_payload` |
+| `system_review_items` | `id`; `review_id`; `kind` (§6.1, plus `signal_mismatch` from §9.3); `link_id`; `row_ids`; `end` (`a`/`b`); `expected` (JSONB); `observed` (JSONB); `candidates` (JSONB); `decision`; `decision_payload` |
 | `system_audit_events` | `id`; `system_id`; `at`; `actor` (session identity, or `system:detection`); `kind` (§10); `payload` (JSONB). Append-only |
 | `system_snapshots` | `id`; `system_id`; `name` (unique per system); `note`; `created_by`; `created_at`; `document` (JSONB, frozen §8.1 body); `digest`; `open_review_count`; `renderer_version` |
 | `system_layouts` | `system_id`; `positions` (JSONB); `updated_at`. Not versioned |
@@ -276,8 +279,9 @@ rebase from an unreachable baseline (§10.1) evaluate normally.
 
 For each link end on the instance, it resolves the port in the candidate
 (§2.3), then checks each row's pin on that end. The item kinds below are
-listed in precedence order, and a link end yields at most one
-connector-level item:
+listed in precedence order. A link end yields at most one connector-level
+item (`connector_missing` or `connector_changed`), and an end that has one
+yields no row-level items; its rows are listed on the connector-level item:
 
 | Item kind | Condition | Rows affected |
 |---|---|---|
@@ -286,7 +290,7 @@ connector-level item:
 | `pin_missing` | The pad no longer exists on the resolved port | That row |
 | `net_changed` | The sorted net set differs from the row's accepted `net_a`/`net_b` | That row |
 
-Two changes are **silent**. They produce no review item and are recorded as
+Three changes are **silent**. They produce no review item and are recorded as
 audit events when applied:
 
 - The reference changed while the port resolved by key.
@@ -297,8 +301,8 @@ audit events when applied:
 
 - **No items**: the instance **auto-advances**. `baseline_commit` becomes the
   candidate, silent changes are applied (the port baseline `reference`,
-  `portKey` and `memberKeys` are updated), and a `baseline_auto_advanced` audit event is
-  written.
+  `portKey` and `memberKeys` are updated), and a `baseline_auto_advanced`
+  audit event is written.
 - **Any items**: one `source_update` review is opened for `(instance,
   from = baseline_commit, to = candidate)`, holding every item. The baseline
   does not move.
@@ -306,10 +310,9 @@ audit events when applied:
 ### 6.3 Auto-advance equivalence
 
 For every link end on the instance, auto-advance requires the port to resolve
-by key or by rebind, with `connectedInterfaceDigest` over that end's connected pads
-in the candidate equal to the same digest computed from the stored port and
-row baselines. Refdes-only changes are
-tolerated.
+by key or by rebind, with `connectedInterfaceDigest` over that end's connected
+pads in the candidate equal to the same digest computed from the stored port
+and row baselines. Refdes-only changes are tolerated.
 
 That equivalence is exactly "no items" in §6.1. The digest is the check the
 implementation asserts, and SYS-05 tests the two against each other.
@@ -330,8 +333,8 @@ these, and it is then a silent change:
   the row's accepted set.
 
 **Otherwise** a `connector_missing` item is raised, carrying up to five
-ranked `candidates`. Only candidates matching at least one criterion are
-listed. They are sorted by these keys in order, all descending:
+ranked `candidates`. A component is listed only when at least one of its
+reference, `libId` or pin count equals the port baseline's. They are sorted by these keys in order, all descending:
 
 1. reference equal (1/0)
 2. libId equal (1/0)
@@ -357,7 +360,7 @@ A superseded review stays readable in history.
 
 | Decision | Allowed on | Effect when the review is applied |
 |---|---|---|
-| `accept` | `net_changed`, `connector_changed` | The row's accepted net set (or the port baseline) takes the observed value |
+| `accept` | `net_changed`, `connector_changed` | `net_changed`: the row's accepted net set takes the observed value. `connector_changed`: the port baseline and every affected row's net baseline take the observed values; refused with 409 if any affected row's pad no longer exists (remap or remove those rows first) |
 | `remap` | `net_changed`, `pin_missing` | The row's pin on that end becomes `payload.pad` (it must exist on the resolved port and not create a duplicate row); its net baseline takes the observation |
 | `bind_candidate` | `connector_missing` | The link end rebinds to `payload.portKey` from the item's candidates; each row's pin is kept by pad number, which must exist; net baselines take observations |
 | `remove_rows` | any row-level item | The affected rows are deleted |
@@ -652,3 +655,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.0 | 2026-09-27 | Initial freeze (SYS-00). Adopts plan decisions D1–D18 and defaults O1–O4. |
 | 1.0 (pre-merge) | 2026-09-27 | Before the first merge: link ends store `memberKeys` and resolve by intersection, so a deleted unit no longer breaks a multi-unit port (§2.3, §5, §6). §11 aligned with the SYS-01 fixture boards. |
 | 1.0 (pre-merge) | 2026-09-27 | §3: `digest` also omits `projectId` and `commit`; otherwise two commits could never share a digest as §3 requires (found in SYS-02). |
+| 1.0 (pre-merge) | 2026-09-27 | Review of #407: `connectedInterfaceDigest` removed from the §3 example (never stored); `#` references excluded; §4.1 field matching defined; a connector-level item suppresses row items on its end (§6.1); rebind listing criteria defined (§6.4); `accept` on `connector_changed` refreshes row net baselines and refuses vanished pads (§7.1). |
