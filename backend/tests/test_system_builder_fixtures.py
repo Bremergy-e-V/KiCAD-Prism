@@ -200,14 +200,30 @@ class ExpectationTest(unittest.TestCase):
     def _check_candidates(self, candidate: Netlist, link: dict, item: dict) -> None:
         end = link[item["end"]]
         pin_key, net_key = ("pinA", "netA") if item["end"] == "a" else ("pinB", "netB")
+        ranks = []
         for expected in item["candidates"]:
-            comp = candidate.components[expected["reference"]]
+            reference = expected["reference"]
+            comp = candidate.components[reference]
+            pin_count = len({pin for ref, pin in candidate.raw if ref == reference})
+            self.assertEqual(expected["referenceEqual"], reference == end["reference"])
             self.assertEqual(expected["libIdEqual"], comp["libId"] == end["libId"])
+            self.assertEqual(expected["pinCountEqual"], pin_count == end["pinCount"])
             equal = sum(
-                candidate.nets(expected["reference"], row[pin_key]) == row[net_key]
-                for row in link["rows"]
+                candidate.nets(reference, row[pin_key]) == row[net_key] for row in link["rows"]
             )
             self.assertAlmostEqual(expected["netOverlap"], equal / len(link["rows"]))
+            ranks.append(
+                (expected["referenceEqual"], expected["libIdEqual"], expected["pinCountEqual"],
+                 expected["netOverlap"])
+            )
+        # §6.4: listed in descending order of the ranking keys.
+        self.assertEqual(ranks, sorted(ranks, reverse=True))
+        # §6.4: every other component matching reference, libId or pin count is listed.
+        listed = {c["reference"] for c in item["candidates"]}
+        for reference, comp in candidate.components.items():
+            pin_count = len({pin for ref, pin in candidate.raw if ref == reference})
+            if reference == end["reference"] or comp["libId"] == end["libId"] or pin_count == end["pinCount"]:
+                self.assertIn(reference, listed)
 
     def _assert_rows_unchanged(self, snapshot_id: str, instance: str, renames: dict) -> None:
         candidate = Netlist(snapshot_id)
