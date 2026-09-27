@@ -185,7 +185,8 @@ Field rules:
 - `dnp` is the **default assembly** state, using the design-variant resolver's
   sheet fold. Per-instance variant selection is out of P1.
 - `digest` is `sha256` over the canonical JSON (sorted keys, no whitespace)
-  with `digest`, `extractor` and every `connectedInterfaceDigest` omitted.
+  with `digest`, `extractor`, `projectId`, `commit` and every
+  `connectedInterfaceDigest` omitted, so it covers interface facts only.
   Two commits with identical schematic interface facts produce the same
   digest.
 
@@ -650,3 +651,4 @@ F0 plus one change. The machine-readable expectations are in
 |---|---|---|
 | 1.0 | 2026-09-27 | Initial freeze (SYS-00). Adopts plan decisions D1–D18 and defaults O1–O4. |
 | 1.0 (pre-merge) | 2026-09-27 | Before the first merge: link ends store `memberKeys` and resolve by intersection, so a deleted unit no longer breaks a multi-unit port (§2.3, §5, §6). §11 aligned with the SYS-01 fixture boards. |
+| 1.0 (pre-merge) | 2026-09-27 | §3: `digest` also omits `projectId` and `commit`; otherwise two commits could never share a digest as §3 requires (found in SYS-02). |
