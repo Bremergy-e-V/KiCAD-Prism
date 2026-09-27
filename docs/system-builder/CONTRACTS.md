@@ -1,0 +1,644 @@
+# System Builder — frozen contracts
+
+**Version 1.0 · 2026-09-27 · ticket SYS-00.** This is the source of truth for
+System Builder P1
+([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
+Implementation tickets build against this version. Changing a rule here is a
+contract revision: bump the version, record the change in §12, and re-run the
+affected fixture steps (§11).
+
+Inspected baseline: `KiCAD-Prism` `57a7581e` (`dev` after #405).
+
+Terms:
+
+- **System**: a named set of board instances and the connections between them.
+- **Instance**: one physical occurrence of a Prism project inside a system.
+  The same project may appear several times.
+- **Interface**: the connector and pin facts extracted from one project at one
+  commit.
+- **Port**: a connector on an instance that can take part in links.
+- **Link**: a connection between exactly two ports.
+- **Row**: one pin-to-pin pair inside a link.
+- **Baseline**: the accepted commit, plus the accepted observations that each
+  row was validated against.
+- **Candidate**: a newer commit being compared against the baseline.
+- **Review**: the set of changes between a baseline and a candidate that a
+  person must decide on.
+
+---
+
+## 1. Invariants
+
+1. **The schematic is observed.** Every drift fact comes from schematic
+   connectivity at an exact commit. The PCB only contributes the
+   `pcb_out_of_sync` warning (§7.3).
+2. **Auto-accept exactly when the connected interface is provably unchanged.**
+   This one rule decides auto-advance (§6.3) and auto-rebind (§6.4). Everything
+   else becomes a review.
+3. **Only connected pins matter.** A change to a pin that no row uses never
+   opens a review and never blocks auto-advance.
+4. **The row signal label is never compared with a net after creation.** The
+   only net-to-signal comparison is at CSV import (§9.3).
+5. **Nothing is re-resolved at decision time.** Accepting a review applies
+   exactly the candidate commit and observations stored in that review, even if
+   the branch has moved since.
+6. **Canvas layout is not engineering state.** It has its own storage, no
+   ETag, and is excluded from digests, snapshots and the audit log.
+7. **Children are read-only.** System Builder never writes to a child
+   repository or a KiCad file.
+8. **PostgreSQL is authoritative.** Every engineering object has an opaque,
+   stable, portable ID (§2.1), so the model serializes losslessly to a future
+   Git manifest.
+
+## 2. Identity
+
+### 2.1 Portable IDs
+
+The ID format is a prefix plus 32 lowercase hex characters from a UUID4. IDs
+are allocated once, never reused, and never derived from labels.
+
+| Object | Prefix |
+|---|---|
+| System | `sys_` |
+| Instance | `sin_` |
+| Link | `slk_` |
+| Row | `srw_` |
+| Review | `srv_` |
+| Review item | `sri_` |
+| Snapshot | `ssn_` |
+| Audit event | `sae_` |
+| Import session | `sim_` |
+
+### 2.2 Occurrence key
+
+A placed symbol unit is identified by its occurrence key:
+
+```text
+occurrence_key = <sheetInstancePath>/<symbolUuid>
+```
+
+`sheetInstancePath` is the **UUID form** (`/<root-uuid>/<sheet-uuid>…`, the
+KiCad `(path …)` of the containing sheet). That makes the key equal to KiCad's
+`KIID_PATH` for the symbol instance, which is the same identity design
+variants use. Repeated sheets give distinct keys for a shared `symbolUuid`.
+Renaming a sheet does **not** change a key.
+
+### 2.3 Port key
+
+A connector can be a multi-unit symbol, where each unit has its own UUID but
+all share one reference designator. Every unit occurrence with that reference
+on that board is part of the same port.
+
+- `member_keys`: the sorted occurrence keys of every unit.
+- `port_key`: the occurrence key of the **lowest unit number present**. For
+  single-unit symbols this is the only key.
+
+A port matches a baseline when its `port_key` equals the baseline `port_key`,
+or when the baseline `port_key` appears in its `member_keys`. That covers
+unit A being deleted while unit B survives. Anything else goes through the
+rebind rule in §6.4.
+
+The **reference designator is display metadata**. Re-annotating `J4` to `J7`
+with unchanged UUIDs is a silent label update.
+
+Unannotated references (containing `?`) are extracted but cannot be exposed
+as ports. They produce the `unannotated_connector` diagnostic.
+
+A footprint with no schematic symbol cannot be a port in P1.
+
+### 2.4 Pin key
+
+A pin is identified by the **pad number as a string**. `"01"`, `"1"`, `"A1"`
+and `"SH"` are distinct, and a pad number is never coerced to an integer.
+
+- Several pads or pins that share one number form one logical pin.
+- A logical pin's observed net is the **sorted set** of the schematic nets on
+  its members. If the set has more than one element, the pin carries the
+  `pin_net_ambiguous` diagnostic.
+
+**Row key.** A row is `(link_id, pin_a, pin_b)`. No two rows in one link may
+share that tuple.
+
+## 3. Interface artifact: `prism.system_interface.v1`
+
+The interface artifact is extracted once per `(project_id, commit,
+extractor_version)`, cached in `system_interface_artifacts`, and shared by
+every instance and system. It is derived from the pinned kicad-monkey pipeline
+that the semantic index uses. It is not a new KiCad parser.
+
+```json
+{
+  "schema": "prism.system_interface.v1",
+  "projectId": "prj_…",
+  "commit": "<40-hex>",
+  "extractor": {"version": "1", "kicadMonkeyVersion": "…"},
+  "hasPcb": true,
+  "components": [
+    {
+      "portKey": "/r/s/uuid",
+      "memberKeys": ["/r/s/uuid"],
+      "reference": "J7",
+      "libId": "Connector_Generic:Conn_02x10_Odd_Even",
+      "footprint": "Connector_PinHeader_2.54mm:PinHeader_2x10_P2.54mm_Vertical",
+      "value": "Conn_02x10",
+      "dnp": false,
+      "candidate": true,
+      "candidateReason": "field|refdes|library|none",
+      "pins": [
+        {
+          "pad": "17",
+          "nets": ["/PAYLOAD_RESET#"],
+          "pcbNets": ["/PAYLOAD_RESET#"],
+          "pinNames": ["~{RESET}"],
+          "pinTypes": ["passive"]
+        }
+      ],
+      "connectedInterfaceDigest": null
+    }
+  ],
+  "diagnostics": [{"code": "…", "portKey": "…", "pad": "…", "detail": "…"}],
+  "digest": "sha256:…"
+}
+```
+
+Field rules:
+
+- `components` lists every placed, annotated or unannotated symbol reference
+  that has pins, not just connector candidates, so a user can promote any
+  symbol (§4.2).
+- `nets` holds the **full hierarchical schematic net names**, exactly as the
+  netlist reports them (for example `/Power/VBUS`). Global and power nets keep
+  their plain names. They are captured **before** any PCB overlay; the
+  existing semantic index overwrites terminal nets with pad nets, and the
+  extractor must not inherit that. A pin with no connection has `nets = []`.
+  KiCad's autogenerated `unconnected-(…)` names are normalized to `[]`, so
+  "pin became unconnected" appears as `["/X"] → []`.
+- `pcbNets` is `null` when the commit has no board, or when the pad is absent
+  on the board.
+- `pinNames` and `pinTypes` are best effort. They are `null` when unavailable,
+  and they never drive drift.
+- `libId` is read from the placed symbol's native `lib_id`. The semantic index
+  does not carry it today.
+- `dnp` is the **default assembly** state, using the design-variant resolver's
+  sheet fold. Per-instance variant selection is out of P1.
+- `digest` is `sha256` over the canonical JSON (sorted keys, no whitespace)
+  with `digest`, `extractor` and every `connectedInterfaceDigest` omitted.
+  Two commits with identical schematic interface facts produce the same
+  digest.
+
+`connectedInterfaceDigest` is not stored in the artifact. The drift engine
+computes it per port, for a given set of connected pads:
+
+```text
+sha256(canonical_json({libId, footprint, pins: [[pad, sorted(nets)] for pad in sorted(connected_pads)]}))
+```
+
+## 4. Ports
+
+### 4.1 Detection
+
+A component is a connector **candidate** when the first matching rule in this
+order says so:
+
+1. **Explicit field.** `Prism_Port` holding `true`, `yes`, `1` or `port` makes
+   it a candidate. `false`, `no` or `0` **excludes** it, even when a later
+   rule would match. Field `System` equal to `Connector` (case-insensitive) is
+   also treated as a candidate.
+2. **Reference prefix.** The alphabetic prefix of the reference is exactly
+   `J`, `P`, `CN` or `X`, so `J7`, `CN2` and `X1` match but `JP1` and `PS1`
+   do not.
+3. **Library.** The `lib_id` library nickname, or the footprint library
+   nickname, starts with `Connector` (case-insensitive).
+
+`candidateReason` records which rule matched.
+
+### 4.2 Exposure
+
+Exposure is resolved per instance at the instance's baseline:
+
+| Per-instance override | Result |
+|---|---|
+| none | Exposed when `candidate` is true and `dnp` is false |
+| `hidden` | Not exposed |
+| `promoted` | Exposed, including non-candidates and DNP parts |
+
+Overrides are stored per `(instance_id, port_key)`. The rules also apply:
+
+- A port that is already an endpoint of a link cannot be hidden (409).
+- Unannotated components cannot be promoted (422).
+
+## 5. Stored model
+
+All tables live in the `workspace` schema with a `system_` prefix. They are
+created by workspace migration **26**. The shapes below are normative; the
+column names are guidance for SYS-03.
+
+| Table | Key and essential columns |
+|---|---|
+| `system_projects` | `id`; `name`; `description`; `folder_id` → `ws_folders` (`ON DELETE SET NULL`); `version` (bigint, the ETag counter); `created_by`; `created_at`; `updated_at` |
+| `system_instances` | `id`; `system_id`; `project_id` (**no FK cascade**, §5.1); `label` (unique per system, case-insensitive); `baseline_commit`; `tracked_ref` (branch name or null); `pinned` (bool); `resolution` (`resolved`/`unresolved`); `tip_commit`; `tip_checked_at` |
+| `system_port_overrides` | `(instance_id, port_key)`; `state` (`hidden`/`promoted`) |
+| `system_links` | `id`; `system_id`; `name`; `harness` (nullable label); `end_a` and `end_b`, each an `instance_id` plus a **port baseline** `{portKey, reference, libId, footprint, pinCount}` |
+| `system_link_rows` | `id`; `link_id`; `pin_a`; `pin_b`; `signal`; `net_a` and `net_b` (accepted sorted net sets); `source` (`manual`/`generator`/`import`); unique `(link_id, pin_a, pin_b)` |
+| `system_reviews` | `id`; `system_id`; `instance_id`; `kind` (`source_update`/`baseline_unreachable`/`import`); `from_commit`; `to_commit`; `status`; `created_at`; `decided_by`; `decided_at` |
+| `system_review_items` | `id`; `review_id`; `kind` (§6.2); `link_id`; `row_ids`; `end` (`a`/`b`); `expected` (JSONB); `observed` (JSONB); `candidates` (JSONB); `decision`; `decision_payload` |
+| `system_audit_events` | `id`; `system_id`; `at`; `actor` (session identity, or `system:detection`); `kind` (§10); `payload` (JSONB). Append-only |
+| `system_snapshots` | `id`; `system_id`; `name` (unique per system); `note`; `created_by`; `created_at`; `document` (JSONB, frozen §8.1 body); `digest`; `open_review_count`; `renderer_version` |
+| `system_layouts` | `system_id`; `positions` (JSONB); `updated_at`. Not versioned |
+| `system_interface_artifacts` | `(project_id, commit, extractor_version)`; `digest`; `payload` (JSONB); `created_at` |
+| `system_source_checks` | `instance_id`; `last_checked_commit`; `last_outcome`; `checked_at` |
+
+### 5.1 Deletion
+
+- Deleting a child project leaves its instances in place, with `resolution =
+  unresolved`. Their baselines, links, rows and snapshots survive.
+- Deleting a system deletes its own rows only.
+- An instance cannot be deleted while it is an endpoint of a link (409),
+  unless the request passes `?cascade=links`.
+
+## 6. Drift
+
+### 6.1 Evaluation
+
+The drift engine is a pure function:
+
+```text
+evaluate(links, rows, instance_id, candidate_interface) -> Outcome
+```
+
+The engine reads only the **stored** port and row baselines and the candidate
+interface. It never needs the old commit's interface, which is what lets a
+rebase from an unreachable baseline (§10.1) evaluate normally.
+
+For each link end on the instance, it resolves the port in the candidate
+(§2.3), then checks each row's pin on that end. The item kinds below are
+listed in precedence order, and a link end yields at most one
+connector-level item:
+
+| Item kind | Condition | Rows affected |
+|---|---|---|
+| `connector_missing` | The port does not resolve and the rebind rule (§6.4) does not apply | All rows on that end |
+| `connector_changed` | The port resolves but `libId` or `footprint` differs from the port baseline | All rows on that end |
+| `pin_missing` | The pad no longer exists on the resolved port | That row |
+| `net_changed` | The sorted net set differs from the row's accepted `net_a`/`net_b` | That row |
+
+Two changes are **silent**. They produce no review item and are recorded as
+audit events when applied:
+
+- The reference changed while the port resolved by key.
+- A rebind succeeded under §6.4.
+
+### 6.2 Outcome
+
+- **No items**: the instance **auto-advances**. `baseline_commit` becomes the
+  candidate, silent changes are applied (the port baseline `reference` and
+  `portKey` are updated), and a `baseline_auto_advanced` audit event is
+  written.
+- **Any items**: one `source_update` review is opened for `(instance,
+  from = baseline_commit, to = candidate)`, holding every item. The baseline
+  does not move.
+
+### 6.3 Auto-advance equivalence
+
+For every link end on the instance, auto-advance requires the port to resolve
+by key or by rebind, with `connectedInterfaceDigest` over that end's connected pads
+in the candidate equal to the same digest computed from the stored port and
+row baselines. Refdes-only changes are
+tolerated.
+
+That equivalence is exactly "no items" in §6.1. The digest is the check the
+implementation asserts, and SYS-05 tests the two against each other.
+
+### 6.4 Rebind
+
+When a baseline port does not resolve by key, look for candidates among the
+candidate interface's components that are not already bound to a different
+link end of the same instance.
+
+**Auto-rebind** applies only when **exactly one** candidate meets all of
+these, and it is then a silent change:
+
+- its `reference` equals the port baseline `reference`;
+- its `libId` equals the port baseline `libId`;
+- its pin count (distinct pads) equals the port baseline `pinCount`;
+- for every connected pad on that end, the pad exists and its net set equals
+  the row's accepted set.
+
+**Otherwise** a `connector_missing` item is raised, carrying up to five
+ranked `candidates`. Only candidates matching at least one criterion are
+listed. They are sorted by these keys in order, all descending:
+
+1. reference equal (1/0)
+2. libId equal (1/0)
+3. pin count equal (1/0)
+4. the fraction of connected pads whose net set is equal
+5. then `portKey` ascending, as a stable tiebreak
+
+### 6.5 Superseding
+
+A review stays open until all its items are decided. If detection finds a
+newer candidate for an instance with an open `source_update` review:
+
+- the open review becomes `superseded` (decisions already taken on it are
+  discarded, since they were against the older candidate);
+- a new review is evaluated from the **same baseline** to the newer
+  candidate.
+
+A superseded review stays readable in history.
+
+## 7. Reviews, validation and warnings
+
+### 7.1 Decisions
+
+| Decision | Allowed on | Effect when the review is applied |
+|---|---|---|
+| `accept` | `net_changed`, `connector_changed` | The row's accepted net set (or the port baseline) takes the observed value |
+| `remap` | `net_changed`, `pin_missing` | The row's pin on that end becomes `payload.pad` (it must exist on the resolved port and not create a duplicate row); its net baseline takes the observation |
+| `bind_candidate` | `connector_missing` | The link end rebinds to `payload.portKey` from the item's candidates; each row's pin is kept by pad number, which must exist; net baselines take observations |
+| `remove_rows` | any row-level item | The affected rows are deleted |
+| `keep_pinned` | the **whole review** | The review closes as `kept_pinned`; the instance gets `pinned = true`; the baseline is unchanged |
+
+The review is **applied atomically** when its last item is decided: the
+baseline becomes `to_commit`, every decision is written, and each is recorded
+as an audit event. Until then, decisions are stored on the items and can be
+changed.
+
+Every decision request carries the review ID, the item ID and the system
+ETag. The server never re-evaluates the candidate commit while applying (§1
+invariant 5).
+
+### 7.2 Structural validation
+
+Findings are computed on demand over the live state at the current
+baselines. They are deterministic and sorted by `(severity, rule, link_id,
+row_id)`. A rule that cannot run reports `not_evaluated` with a reason; it
+never reports as passing.
+
+| Rule | Severity | Condition |
+|---|---|---|
+| `SYS-V01 row_duplicate` | error | Two rows with the same `(link, pin_a, pin_b)`. This is prevented on write; the rule catches imported legacy data |
+| `SYS-V02 pin_fanout` | warning | The same `(instance, port, pin)` appears in rows of two or more links, unless every such link carries the same non-null `harness` label |
+| `SYS-V03 port_not_exposed` | error | A link end references a port that is not exposed at the current baseline |
+| `SYS-V04 pin_absent` | error | A row pin does not exist on its port at the current baseline |
+| `SYS-V05 source_unavailable` | error | The baseline commit cannot be read, or the project is unresolved |
+| `SYS-V06 pcb_out_of_sync` | warning | On a connected pin, `pcbNets` differs from `nets`. It is `not_evaluated` when `hasPcb` is false |
+| `SYS-V07 pin_net_ambiguous` | warning | A connected logical pin carries more than one schematic net |
+| `SYS-V08 open_review` | info | The instance has an open review |
+
+### 7.3 PCB out of sync
+
+`pcb_out_of_sync` is a warning, never drift. It does not block
+auto-advance, does not open reviews, and is re-evaluated at each baseline.
+
+## 8. HTTP API
+
+All routes are under `/api/systems`. Router: `backend/app/api/systems.py`.
+
+**Roles.** `viewer` and `qa` can read. `designer` and `admin` can mutate.
+
+**Concurrency.** Every engineering mutation requires
+`If-Match: "sys:<system_id>:<version>"`. A missing header returns **428**. A
+stale version returns **412** with the current ETag. Successful mutations
+return the new `ETag`.
+
+| Status | Meaning |
+|---|---|
+| 404 | Not found, or hidden from the caller. Non-disclosing |
+| 409 | Semantic conflict or invalid transition |
+| 422 | Schema or limit violation |
+| 202 | Queued work, returning `{job_id, status}` for the existing jobs polling |
+
+Error bodies never carry exception detail.
+
+### 8.1 Resources
+
+| Method and path | Purpose |
+|---|---|
+| `GET /api/systems` | List systems visible to the role (§8.2), with `openReviewCount`, `instanceCount` and `folderId` |
+| `POST /api/systems` | Create `{name, description?, folderId?}` |
+| `GET /api/systems/{id}` | The **system document**: system, instances (with resolved ports at baseline), links and rows (with observed values at baseline), finding counts and open review count. Sends an `ETag` |
+| `PATCH /api/systems/{id}` | Rename, describe, or move folder |
+| `DELETE /api/systems/{id}` | Delete the system |
+| `POST …/{id}/instances` | Create `{projectId, label, baselineCommit?, trackedRef?, pinned}`. If `baselineCommit` is omitted, it is resolved from `trackedRef`'s current tip **once** |
+| `PATCH …/instances/{iid}` | Update `label`, `pinned` or `trackedRef`. The baseline changes only through reviews or `POST …/rebase` |
+| `DELETE …/instances/{iid}` | Remove, subject to §5.1 |
+| `GET …/instances/{iid}/interface?commit=` | Interface facts plus exposure. Defaults to the baseline. Returns 202 while extraction is queued |
+| `PUT …/instances/{iid}/ports/{portKey}/override` | `{state: "hidden"\|"promoted"\|null}`. `portKey` is URL-encoded |
+| `POST …/instances/{iid}/check` | Run detection now. Returns 202 with a job |
+| `POST …/instances/{iid}/rebase` | `{commit}`. Evaluates like detection, but targets an explicitly chosen commit (used to move a pinned instance); follows §6.2 |
+| `POST …/links` | Create `{a: {instanceId, portKey}, b: {…}, name?, harness?}`. Port baselines are captured from current baselines. Both ends on the same port is 422. The same port pair may have several links with different `harness` labels |
+| `PATCH …/links/{lid}` | Update `name` or `harness` |
+| `DELETE …/links/{lid}` | Delete the link |
+| `PUT …/links/{lid}/rows` | **Replace all rows atomically**. Takes `[{id?, pinA, pinB, signal, source}]`; net baselines are captured from current observations |
+| `GET …/validation` | Findings (§7.2) |
+| `GET …/reviews?status=` | Reviews with their items |
+| `POST …/reviews/{rvid}/items/{itemid}/decision` | `{decision, payload?}`, subject to §7.1 |
+| `POST …/reviews/{rvid}/keep-pinned` | Keep pinned (§7.1) |
+| `GET …/history?cursor=` | Audit events, newest first |
+| `POST …/snapshots` | Freeze `{name, note?}` |
+| `GET …/snapshots` | List snapshots |
+| `GET …/snapshots/{sid}` | Read a snapshot |
+| `GET …/icd.csv` and `…/icd.html` | The live ICD (§9.4, §9.5) |
+| `GET …/snapshots/{sid}/icd.csv` and `…/icd.html` | A snapshot's ICD |
+| `GET …/snapshots/{sid}/diff?against=live\|<sid>` | Row-level diff, grouped by link |
+| `POST …/imports` | Multipart CSV upload. Returns `{importId, columns, sampleRows, boardValues}` |
+| `POST …/imports/{imid}/preview` | `{columnMap, boardMap, delimiter?}` → buckets (§9.3) |
+| `POST …/imports/{imid}/commit` | Commits Matched rows and opens an `import` review for Needs review rows. Requires `If-Match` |
+| `GET …/layout` and `PUT …/layout` | `{positions}`. No `If-Match`; last write wins |
+
+Snapshot creation, imports, decisions, overrides and instance changes all
+write audit events in the same transaction.
+
+### 8.2 Visibility and redaction
+
+A system inherits its folder's visibility, using the same predicate as
+`workspace.get_project_for_role`. A hidden system is a 404.
+
+**Default O1.** Inside a visible system, an instance whose project is hidden
+from the caller's role is **restricted**:
+
+- The instance renders with `restricted: true` and its system-owned `label`.
+- `projectId`, commits, references, pin names and nets on its side of every
+  row are replaced with `null` plus `redacted: true`, in documents, exports,
+  snapshots and diffs alike. Snapshots are stored unredacted and redacted on
+  read.
+- Mutations that touch a restricted instance, or a link or row with a
+  restricted end, return 404.
+
+Adding an instance requires the caller to see the project, via the role-aware
+lookup (`get_project_for_role_or_404`).
+
+### 8.3 Limits (default O4)
+
+| Limit | Value |
+|---|---|
+| Instances per system | 50 |
+| Rows per system | 5,000 |
+| Links per system | 500 |
+| CSV upload | 5 MB and 10,000 data rows |
+
+Exceeding a limit returns 422 with the limit name.
+
+## 9. Snapshots, CSV and ICD
+
+### 9.1 Snapshot
+
+A snapshot freezes the full, unredacted system document (§8.1 body) plus
+every instance's baseline and project identity. Its digest is `sha256` over
+the canonical document.
+
+- `open_review_count` is recorded at creation.
+- Snapshots are immutable; there is no update or delete in P1.
+- The ICD is rendered from the frozen document on read, and
+  `renderer_version` is stamped on it.
+
+### 9.2 CSV columns (export and import)
+
+Export columns, in this order:
+
+```text
+row_id,link_id,link_name,harness,signal,
+a_board,a_connector,a_pin,a_pin_name,a_net,
+b_board,b_connector,b_pin,b_pin_name,b_net,
+status,a_commit,b_commit
+```
+
+Encoding and values:
+
+- UTF-8, RFC 4180 quoting, header row, `,` delimiter.
+- `*_board` is the instance label, and `*_connector` is the current reference.
+- `*_net` is the observed net set joined with `|`.
+- `status` is `ok`, `review` or `error`, from findings and open items.
+- Rows are ordered by `link_name`, then `link_id`, then `pin_a` in natural
+  order.
+
+### 9.3 Import
+
+The column map assigns uploaded columns to the targets `from_board`,
+`from_connector`, `from_pin`, `signal`, `to_board`, `to_connector`, `to_pin`,
+`harness`, `link_name` and `row_id`. The six endpoint targets are required.
+The board map assigns every distinct board value to an instance ID, or to
+`skip`.
+
+Rows are resolved against each instance's **baseline** interface. A
+connector is resolved by `reference` among exposed or promotable components;
+unannotated references do not resolve. A pin is resolved by exact pad string.
+
+| Bucket | Condition |
+|---|---|
+| **Unresolved** | The board is `skip` or unmapped, or the connector or pin is not found |
+| **Conflict** | The row duplicates another uploaded row or an existing row, or `row_id` names a row in another link |
+| **Matched** | Resolved, and `signal` is empty or equals, case-insensitively, the **leaf** (the text after the last `/`) of any net on either endpoint |
+| **Needs review** | Resolved but not Matched |
+
+Buckets are evaluated in the order above, and the first match wins.
+
+On commit:
+
+- Rows are grouped into links by the **unordered** port pair plus `harness`.
+  An existing link with the same pair and harness is reused; otherwise a new
+  one is created, named `link_name` or `<a_board>/<a_ref> ↔ <b_board>/<b_ref>`.
+- Matched rows are created with `source = import`. An empty signal defaults
+  to the leaf of the A-side net.
+- Needs review rows are placed in one `import` review, with item kind
+  `signal_mismatch`, whose decisions are `accept` (create the row) or
+  `remove_rows` (drop it).
+- Unresolved and Conflict rows are returned in the commit report and are not
+  persisted.
+- A `row_id` that matches an existing row in the same link **updates** that
+  row. Re-importing an export into its own system is therefore idempotent.
+
+### 9.4 ICD CSV
+
+The ICD CSV is the export format in §9.2.
+
+### 9.5 ICD HTML
+
+The printable HTML ICD contains, in order:
+
+1. A title block: system name, snapshot name or "live", generation time,
+   renderer version.
+2. An instance table: label, project, baseline commit (short and full),
+   tracked branch, pinned.
+3. A connector-level block diagram as inline SVG.
+4. One table per link: pins, signal, pin names, nets, harness.
+5. Findings.
+
+When `open_review_count > 0`, every page carries a banner saying the document
+contains that many unreviewed changes. Printing to PDF from the browser is the
+P1 PDF path.
+
+## 10. Detection and audit
+
+### 10.1 Detection
+
+`project_import_service.sync_project` already fetches for every due
+repository. After a successful fetch, it enqueues **one** `system_source_check`
+job for that repository, and **only if** some instance with a `tracked_ref`
+references a project in it.
+
+The job, for each such instance:
+
+1. Resolve `origin/<tracked_ref>` in the server clone to `tip`. If the ref is
+   missing, record `tip_commit = null` and `last_outcome = ref_missing`, and
+   raise no review.
+2. Store `tip_commit`. If `tip == last_checked_commit` or `tip ==
+   baseline_commit`, stop.
+3. If `pinned`, record `update_available` and stop: no extraction, no review.
+4. Otherwise obtain the candidate interface (extract or use the cache), then
+   evaluate (§6) and apply the outcome (§6.2, §6.5).
+5. Record `last_checked_commit = tip`.
+
+**Idempotency.** Re-running a check for the same tip changes nothing.
+
+**Baseline unreachable (default O3).** If the baseline commit cannot be read,
+the instance becomes `unresolved` and a `baseline_unreachable` review is
+opened. It has no items and no auto-advance. It closes only when the instance
+is rebased onto a readable commit (`POST …/rebase`, which then evaluates
+normally from the last accepted row baselines) or removed.
+
+**Extraction cost (default O2).** The extractor reads the schematic in full
+and the board only for pad nets of components with pins. Its cost is measured
+on the JTYU boards in SYS-19 and recorded; the cache makes repeat reads free.
+
+### 10.2 Audit event kinds
+
+`system_created`, `system_updated`, `instance_added`, `instance_updated`,
+`instance_removed`, `port_override_set`, `link_created`, `link_updated`,
+`link_deleted`, `rows_replaced`, `baseline_auto_advanced`,
+`connector_relabelled`, `connector_rebound`, `review_opened`,
+`review_superseded`, `review_item_decided`, `review_applied`,
+`review_kept_pinned`, `baseline_rebased`, `import_committed`,
+`snapshot_created`.
+
+The payload carries the before and after of the fields that changed. `actor`
+comes from the session, or is `system:detection` for detection jobs.
+
+## 11. Fixture acceptance matrix
+
+These are the synthetic KiCad 10.0.6 boards `mini-obc`, `mini-payload` and
+`mini-power`, from SYS-01. `mini-power` includes a two-unit connector. Each
+step is one commit on `mini-obc` unless stated otherwise, evaluated against a
+baseline system with links to `mini-payload` and `mini-power`.
+
+| Step | Commit change | Expected outcome |
+|---|---|---|
+| F0 | Baseline (Rev C) | All rows `bound`; no findings above info |
+| F1 | `J7.17` wire removed | Review: `net_changed` `["/PAYLOAD_RESET#"] → []` |
+| F2 | J4 re-annotated to J7, UUID kept | Auto-advance; `connector_relabelled` |
+| F3 | J7 deleted and re-placed from the library | Auto-rebind; `connector_rebound`; auto-advance |
+| F4 | J7 `lib_id` 2×10 → 2×12 | Review: `connector_changed` |
+| F5 | Hierarchical sheet renamed | Review: `net_changed` on every connected pin carrying a sheet-local net |
+| F6 | Docs-only commit | Auto-advance; interface `digest` unchanged |
+| F7 | Net change on a pin that no row uses | Auto-advance |
+| F8 | Schematic net changed, PCB not updated | Review `net_changed`, then after accept, `SYS-V06 pcb_out_of_sync` |
+| F9 | Connector deleted, two similar connectors present | Review: `connector_missing` with two ranked candidates |
+| F10 | `mini-power` unit A of the two-unit connector deleted, unit B kept | Port resolves by `memberKeys`; auto-advance |
+| F11 | Two commits land before a decision | The first review is `superseded`; the second is evaluated from the same baseline |
+| F12 | A second instance of `mini-obc` pinned at Rev C | F1 raises a review only on the tracking instance; the pinned one records `update_available` |
+
+## 12. Revision log
+
+| Version | Date | Change |
+|---|---|---|
+| 1.0 | 2026-09-27 | Initial freeze (SYS-00). Adopts plan decisions D1–D18 and defaults O1–O4. |
