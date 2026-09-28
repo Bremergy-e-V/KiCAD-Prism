@@ -96,7 +96,6 @@ function initialState() {
   return {
     workspace: "pcb",
     mode: "3d",
-    cameraTool: "orbit",
     compareLayers: new Set(),
     desiredCompareLayers: new Set(),
     visible3dLayers: new Set(),
@@ -1583,9 +1582,6 @@ function renderControls() {
       <button id="clear-selection">Clear</button>
     </div>`;
   viewControlsEl.innerHTML = `
-    <div class="camera-toolbar mode-toolbar">
-      <button data-tool="orbit">Orbit</button><button data-tool="pan">Pan</button>
-    </div>
     <div class="toggle-list">
       <label class="toggle-row"><input id="show-board" type="checkbox"><span>Board substrate</span></label>
       <label class="toggle-row"><input id="show-components" type="checkbox"><span>Components</span></label>
@@ -1998,9 +1994,6 @@ function refreshControls() {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  viewControlsEl.querySelectorAll("[data-tool]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.tool === state.cameraTool);
-  });
   viewControlsEl.querySelector("#show-board").checked = state.showBoard;
   viewControlsEl.querySelector("#show-components").checked = state.showComponents;
   viewControlsEl.querySelector("#separation").value = state.separation;
@@ -2051,10 +2044,6 @@ function bindControlEvents() {
     }
     if (state.mode === "3d") scheduleTileResidency(performance.now(), { force: true });
     else beginCompareLayerTransition(target);
-    refreshControls();
-  }));
-  viewControlsEl.querySelectorAll("[data-tool]").forEach((button) => button.addEventListener("click", () => {
-    state.cameraTool = button.dataset.tool;
     refreshControls();
   }));
   viewControlsEl.querySelector("#show-board").addEventListener("change", (event) => {
@@ -2681,7 +2670,6 @@ function bindInteractions() {
     state.pointerStartY = event.clientY;
     state.dragMode =
       state.mode === "layer"
-      || state.cameraTool === "pan"
       || event.shiftKey
       || event.button !== 0
         ? "pan"
