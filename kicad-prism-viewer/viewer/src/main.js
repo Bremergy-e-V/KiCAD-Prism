@@ -240,6 +240,7 @@ let activeViewerToken = 0;
 let animationFrameId = 0;
 let selectionChangeCallback = null;
 let viewStateChangeCallback = null;
+let contextMenuCallback = null;
 let viewStateChangeQueued = false;
 let suppressSelectionChange = false;
 let viewerIsActive = () => true;
@@ -364,6 +365,7 @@ export async function mountStandaloneViewer(options = {}) {
   selectionChangeCallback = typeof options.onSelectionChange === "function"
     ? options.onSelectionChange
     : null;
+  contextMenuCallback = typeof options.onContextMenu === "function" ? options.onContextMenu : null;
   viewStateChangeCallback = typeof options.onViewStateChange === "function"
     ? options.onViewStateChange
     : null;
@@ -2784,9 +2786,9 @@ function bindInteractions() {
   canvas.addEventListener("pointerup", async (event) => {
     state.dragging = false;
     canvas.releasePointerCapture(event.pointerId);
-    if (Math.hypot(event.clientX - state.pointerStartX, event.clientY - state.pointerStartY) < 3) {
-      await pickAt(event);
-    }
+    if (Math.hypot(event.clientX - state.pointerStartX, event.clientY - state.pointerStartY) >= 3) return;
+    if (event.button === 0) await pickAt(event);
+    else if (event.button === 2) await contextPickAt(event);
   });
   canvas.addEventListener("dblclick", async (event) => {
     await pickAt(event);
@@ -3000,18 +3002,38 @@ function bindSchematicInteractions() {
 async function pickAt(event) {
   if (!panel) return;
   const rect = canvas.getBoundingClientRect();
-  const x = (event.clientX - rect.left) * canvas.width / rect.width;
-  const y = (event.clientY - rect.top) * canvas.height / rect.height;
   state.selectionAnchor = {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
   };
-  const hit = await pickHit(x, y);
+  const hit = await pickHitAtEvent(event);
   if (hit.kind === "feature" || hit.kind === "board") state.selectedOccurrence = hit.occurrenceIndex;
   if (hit.featureId) selectFeature(hit.featureId, true);
   // Board context exists only in system scenes; the one-board view clears as it always has.
   else if (hit.kind === "board" && !renderer.identityOnly) selectBoardContext();
   else clearSelection();
+}
+
+/**
+ * Right-click without a drag: report what is under the cursor to the host,
+ * which owns the menu. The selection is left alone.
+ */
+async function contextPickAt(event) {
+  if (!panel || !contextMenuCallback) return;
+  const feature = scene.features.get((await pickHitAtEvent(event)).featureId);
+  const reference = componentReferenceFromFeature(feature);
+  const component = reference ? findTopologyComponent(reference) : null;
+  contextMenuCallback({
+    clientX: event.clientX,
+    clientY: event.clientY,
+    reference: reference || undefined,
+    value: String(component?.value || feature?.value || "") || undefined,
+  });
+}
+
+function pickHitAtEvent(event) {
+  const rect = canvas.getBoundingClientRect();
+  return pickHit((event.clientX - rect.left) * canvas.width / rect.width, (event.clientY - rect.top) * canvas.height / rect.height);
 }
 
 // Pick at canvas pixel (x, y): { kind, occurrenceIndex, occurrenceKey, featureId }.

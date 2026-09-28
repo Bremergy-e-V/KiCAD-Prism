@@ -224,6 +224,14 @@ export class PrismSemanticViewerElement extends HTMLElement {
           detail: { selection },
         }));
       },
+      onContextMenu: (detail) => {
+        if (signal.aborted) return;
+        this.dispatchEvent(new CustomEvent("prism-semantic-viewer:contextmenu", {
+          bubbles: true,
+          composed: true,
+          detail,
+        }));
+      },
       onViewStateChange: (detail) => {
         if (signal.aborted) return;
         this.emitViewState(detail);
