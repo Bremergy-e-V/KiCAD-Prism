@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.6 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-09.** This is the source of truth for
+**Version 1.7 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-10.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -767,6 +767,66 @@ On commit:
 - A `row_id` that matches an existing row in the same link **updates** that
   row. Re-importing an export into its own system is therefore idempotent.
 
+**Implementation rules (v1.7).**
+
+- **Upload** (`POST …/imports`, multipart `file`, optional `delimiter`):
+  - The file must be UTF-8 (a BOM is allowed), at most 5 MB and 5000 data
+    rows. Blank lines are skipped.
+  - The delimiter is sniffed from the header (`,` `;` tab `|`) unless given.
+  - The response is `{importId, filename, delimiter, rowCount, columns,
+    sampleRows, suggestedColumnMap, boardValues}`. `boardValues` maps every
+    column with at most 100 distinct values to those values, so the wizard can
+    offer board values for whichever columns get mapped. `suggestedColumnMap`
+    recognises the §9.2 export columns.
+- **Sessions** (`sim_`, migration 29) keep the decoded upload. A session can
+  be committed once (a second commit is 409). Uncommitted sessions older than
+  seven days are pruned on the next upload to that system.
+- **Maps.** Preview and commit take the same body, `{columnMap, boardMap,
+  delimiter?}`. An unknown target, a missing endpoint target, a column not in
+  the upload, or a board map naming an instance outside the system is 422. A
+  board map naming a **restricted** instance is 404.
+- **Resolution details.**
+  - A connector reference naming more than one component is Unresolved
+    (`connector_ambiguous`).
+  - An endpoint with an empty board, connector or pin is Unresolved
+    (`missing_value`).
+  - An instance whose baseline interface is still extracting is Unresolved
+    (`interface_not_ready`).
+  - "Promotable" means any annotated component. Committing a row onto a port
+    that is not exposed sets its override to `promoted` (audited as
+    `port_override_set`).
+- **Conflict reasons,** in evaluation order:
+  - `same_port`: both ends are the same port;
+  - `row_in_other_link`;
+  - `pin_pair_taken`: an update would move onto another row's pins;
+  - `duplicate_existing`: a new row repeats an existing row;
+  - `duplicate_upload`: a later uploaded row repeats an earlier one, in
+    either orientation.
+
+  A `row_id` that names no row in the system is ignored, and the row is
+  created.
+- **Preview** returns `{importId, committed, counts, matched, needsReview,
+  unresolved, conflict}`. Each entry is `{line, values, reason, from, to,
+  signal, harness, linkName, linkId, rowId, action}`, where `action` is
+  `create` or `update` and `from`/`to` carry the resolved instance, reference,
+  portKey, port baseline, `exposed`, pin, `pinNames` and nets.
+- **Commit** requires `If-Match`, re-classifies under the lock, writes Matched
+  rows, opens the `import` review, and audits `import_committed`. It returns
+  `{importId, created, updated, unchanged, linksCreated, reviewId, counts,
+  unresolved, conflict}`.
+  - An update that changes neither pins nor signal is `unchanged`: the row
+    keeps its `source` and no `rows_replaced` is written. This is what makes a
+    re-import idempotent.
+  - A created link is oriented from the first row that creates it (A =
+    `from`).
+- **Import review items.** Each item stores the proposal in `observed` and
+  `{leaves}` in `expected`. `rowIds` names the updated row, if any.
+  - `accept` may carry `{signal}` to rename the signal.
+  - When the last item is decided, the accepted proposals are written, as at
+    commit, against the **current** baselines: a pad that has since
+    disappeared is 409. The review becomes `applied`.
+  - Items touching a restricted board are redacted, and deciding them is 404.
+
 ### 9.4 ICD CSV
 
 The ICD CSV is the export format in §9.2.
@@ -893,3 +953,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.4 | 2026-09-29 | SYS-07: decision validation and application order (§7.1), rebase behaviour, and the review response shape (§8.4). No drift rule changed. |
 | 1.5 | 2026-09-29 | SYS-08: the validation report shape, not-evaluated and SYS-V05 sources, and finding redaction (§7.2). The F0 and F8 findings goldens pass. |
 | 1.6 | 2026-09-29 | SYS-09: snapshot, ICD and diff implementation rules (§9.1). Creating a snapshot does not bump the version. No drift rule changed. |
+| 1.7 | 2026-09-29 | SYS-10: CSV import implementation rules (§9.3): upload limits, sessions (migration 29), map validation, conflict reasons, promotion on commit, unchanged updates, and import review items. No drift rule changed. |

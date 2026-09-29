@@ -21,10 +21,12 @@ import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, ContextManager, Iterator, Mapping, Optional, Sequence
+from typing import Any, Callable, Collection, ContextManager, Iterator, Mapping, Optional, Sequence
 
 from app.core.roles import Role
-from app.services.systems import drift, exposure, icd, reconcile, redaction, sources, validation, visibility
+from app.services.systems import (
+    csv_import, drift, exposure, icd, reconcile, redaction, sources, validation, visibility,
+)
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION, canonical_digest
 from app.services.systems.jobs import (
     EXTRACT_JOB_KIND,
@@ -665,7 +667,8 @@ class SystemService:
     # ------------------------------------------------------------------
     # Reviews and rebase (§7.1, §8.1)
 
-    def _review_doc(self, store: SystemStore, review: Mapping[str, Any], restricted: bool) -> dict:
+    def _review_doc(self, store: SystemStore, review: Mapping[str, Any], restricted: bool,
+                    hidden: Collection[str] = ()) -> dict:
         base = {"id": review["id"], "kind": review["kind"], "status": review["status"],
                 "instanceId": review["instance_id"], "createdAt": _iso(review["created_at"]),
                 "decidedBy": review["decided_by"], "decidedAt": _iso(review["decided_at"])}
@@ -678,6 +681,14 @@ class SystemService:
             end = item["link_end"]
             pins = sorted({rows[rid][f"pin_{end}"] for rid in item["row_ids"] if rid in rows},
                           key=drift.pad_sort_key) if end else []
+            if review["kind"] == "import" and hidden and {
+                (item["observed"] or {}).get(side, {}).get("instanceId") for side in ("from", "to")
+            } & set(hidden):
+                items.append({"id": item["id"], "ordinal": item["ordinal"], "kind": item["kind"],
+                              "linkId": None, "end": None, "rowIds": [], "pins": [], "expected": None,
+                              "observed": None, "candidates": None, "decision": item["decision"],
+                              "decisionPayload": None, "redacted": True})
+                continue
             items.append({
                 "id": item["id"], "ordinal": item["ordinal"], "kind": item["kind"],
                 "linkId": item["link_id"], "end": end, "rowIds": list(item["row_ids"]), "pins": pins,
@@ -699,7 +710,7 @@ class SystemService:
         with self._tx() as store:
             self._system(store, system_id, caller)
             restricted = self._restricted_instances(store, system_id, caller)
-            return [self._review_doc(store, review, review["instance_id"] in restricted)
+            return [self._review_doc(store, review, review["instance_id"] in restricted, restricted)
                     for review in store.list_reviews(system_id, status=status)]
 
     def _open_review_instance(self, store: SystemStore, system_id: str, review_id: str, caller: Caller) -> None:
@@ -713,6 +724,19 @@ class SystemService:
             except NotFound:
                 raise NotFound("Review not found") from None
 
+    def _require_visible_import_item(
+        self, store: SystemStore, system_id: str, review_id: str, item_id: str, caller: Caller
+    ) -> None:
+        """An import item proposing a row on a restricted board is 404 to its caller (§8.2)."""
+
+        review = store.get_review(system_id, review_id)
+        if review["kind"] != "import":
+            return
+        item = next((i for i in review["items"] if i["id"] == item_id), None)
+        touched = {(item["observed"] or {}).get(side, {}).get("instanceId") for side in ("from", "to")} if item else set()
+        if touched & self._restricted_instances(store, system_id, caller):
+            raise NotFound("Review item not found")
+
     def decide(
         self, caller: Caller, system_id: str, version: int, review_id: str, item_id: str,
         decision: str, payload: Optional[Mapping[str, Any]],
@@ -721,6 +745,7 @@ class SystemService:
             self._system(store, system_id, caller)
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
                 self._open_review_instance(store, system_id, review_id, caller)
+                self._require_visible_import_item(store, system_id, review_id, item_id, caller)
                 review = reconcile.decide(store, change, review_id, item_id, decision, payload)
                 body = self._review_doc(store, review, False)
         return Result(body, system_id, change.version)
@@ -878,6 +903,90 @@ class SystemService:
         return {"snapshotId": snapshot_id, "against": against,
                 **icd.diff(redaction.redact_document(before, restricted),
                            redaction.redact_document(after, restricted))}
+
+    # ------------------------------------------------------------------
+    # CSV import (§9.3)
+
+    def upload_import(
+        self, caller: Caller, system_id: str, *, filename: str, raw: bytes, delimiter: Optional[str],
+    ) -> dict:
+        """``POST …/imports``: store the upload and describe it for mapping."""
+
+        text = csv_import.decode(raw)
+        parsed = csv_import.parse(text, delimiter)
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            row = store.create_import_session(
+                system_id, actor=caller.actor, filename=filename[:255], delimiter=parsed.delimiter,
+                content=text, row_count=len(parsed.rows),
+            )
+        return {"importId": row["id"], "filename": row["filename"], **csv_import.summary(parsed)}
+
+    def _import_state(
+        self, store: SystemStore, system_id: str, caller: Caller, session: Mapping[str, Any],
+        column_map: Mapping[str, str], board_map: Mapping[str, str], delimiter: Optional[str],
+    ) -> dict:
+        """Parse the session and classify it against the system's current state."""
+
+        parsed = csv_import.parse(session["content"], delimiter or session["delimiter"])
+        instances = {i["id"]: i for i in store.list_instances(system_id)}
+        csv_import.check_maps(parsed, column_map, board_map, instances)
+        restricted = self._restricted_instances(store, system_id, caller)
+        if {v for v in board_map.values() if v != csv_import.SKIP} & restricted:
+            raise NotFound("Instance not found")
+        interfaces = csv_import.baseline_interfaces(store, system_id)
+        overrides = {iid: store.list_overrides(iid) for iid in instances}
+        return csv_import.classify(parsed, column_map, board_map, instances=instances, interfaces=interfaces,
+                                   overrides=overrides, links=store.list_links(system_id))
+
+    def preview_import(
+        self, caller: Caller, system_id: str, import_id: str, column_map: Mapping[str, str],
+        board_map: Mapping[str, str], delimiter: Optional[str],
+    ) -> Result:
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            session = store.get_import_session(system_id, import_id)
+            buckets = self._import_state(store, system_id, caller, session, column_map, board_map, delimiter)
+        return Result({"importId": import_id, "committed": session["committed_at"] is not None, **buckets},
+                      system_id, system["version"])
+
+    def commit_import(
+        self, caller: Caller, system_id: str, version: int, import_id: str, column_map: Mapping[str, str],
+        board_map: Mapping[str, str], delimiter: Optional[str],
+    ) -> Result:
+        """``POST …/imports/{imid}/commit``: write Matched rows, review Needs review rows.
+
+        The rows are classified again under the lock, so the commit acts on the
+        state it writes to, not on whatever an earlier preview saw.
+        """
+
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                session = store.get_import_session(system_id, import_id, lock=True)
+                if session["committed_at"] is not None:
+                    raise Conflict("this import has already been committed")
+                buckets = self._import_state(store, system_id, caller, session, column_map, board_map, delimiter)
+                interfaces = csv_import.baseline_interfaces(store, system_id)
+                written = csv_import.apply_rows(store, change, buckets["matched"], interfaces)
+                review_id = None
+                if buckets["needsReview"]:
+                    review = store.open_review(
+                        change, instance_id=None, kind="import", from_commit=None, to_commit=None,
+                        items=[{
+                            "kind": "signal_mismatch", "linkId": entry["linkId"],
+                            "rowIds": [entry["rowId"]] if entry["rowId"] else [],
+                            "expected": {"leaves": sorted({csv_import.leaf(n) for side in ("from", "to")
+                                                           for n in entry[side]["nets"]})},
+                            "observed": csv_import.proposal(entry),
+                        } for entry in buckets["needsReview"]],
+                    )
+                    review_id = review["id"]
+                report = {**written, "reviewId": review_id, "counts": buckets["counts"]}
+                store.mark_import_committed(change, import_id, report)
+        body = {"importId": import_id, **report, "unresolved": buckets["unresolved"],
+                "conflict": buckets["conflict"]}
+        return Result(body, system_id, change.version)
 
     # ------------------------------------------------------------------
     # History and layout

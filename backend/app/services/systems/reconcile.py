@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from app.services.systems import drift, exposure
+from app.services.systems import csv_import, drift, exposure
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
 from app.services.systems.store import Conflict, Invalid, Mutation, NotFound, SystemStore
 
@@ -29,6 +29,10 @@ ALLOWED = {
 
 def _pins(component: Mapping[str, Any]) -> dict[str, list[str]]:
     return {str(p["pad"]): sorted(set(p["nets"])) for p in component.get("pins") or []}
+
+
+# §9.3: an import review's items answer whether to create each proposed row.
+IMPORT_ALLOWED = frozenset({"accept", "remove_rows"})
 
 
 def _open_source_review(store: SystemStore, system_id: str, review_id: str) -> dict:
@@ -107,6 +111,9 @@ def decide(store: SystemStore, change: Mutation, review_id: str, item_id: str, d
            payload: Optional[Mapping[str, Any]]) -> dict:
     """Record a decision; apply the review if it was the last undecided item."""
 
+    review = store.get_review(change.system_id, review_id)
+    if review["kind"] == "import" and review["status"] == "open":
+        return _decide_import(store, change, review, item_id, decision, payload)
     review = _open_source_review(store, change.system_id, review_id)
     item = next((i for i in review["items"] if i["id"] == item_id), None)
     if item is None:
@@ -177,3 +184,40 @@ def keep_pinned(store: SystemStore, change: Mutation, review_id: str) -> dict:
                             payload={"instanceId": review["instance_id"], "to": review["to_commit"]})
     store.update_instance(change, review["instance_id"], pinned=True)
     return store.get_review(change.system_id, review_id)
+
+
+def _import_proposal(item: Mapping[str, Any]) -> dict:
+    proposal = dict(item["observed"])
+    signal = (item["decision_payload"] or {}).get("signal")
+    if isinstance(signal, str):
+        proposal["signal"] = signal
+    return proposal
+
+
+def _decide_import(store: SystemStore, change: Mutation, review: Mapping[str, Any], item_id: str,
+                   decision: str, payload: Optional[Mapping[str, Any]]) -> dict:
+    """§9.3: ``accept`` creates the proposed row, ``remove_rows`` drops it.
+
+    ``accept`` may carry ``{"signal": ...}`` to rename the signal. The rows are
+    written, all at once, when the last item is decided.
+    """
+
+    item = next((i for i in review["items"] if i["id"] == item_id), None)
+    if item is None:
+        raise NotFound("Review item not found")
+    if decision not in IMPORT_ALLOWED:
+        raise Invalid(f"{decision} does not apply to an import item")
+    payload = dict(payload or {})
+    if "signal" in payload and (not isinstance(payload["signal"], str) or len(payload["signal"]) > 200):
+        raise Invalid("payload.signal must be a string of at most 200 characters")
+    interfaces = csv_import.baseline_interfaces(store, change.system_id)
+    if decision == "accept":
+        csv_import.resolve_proposal(item["observed"], interfaces)
+    store.set_item_decision(change, review["id"], item_id, decision, payload or None)
+    review = store.get_review(change.system_id, review["id"])
+    if all(i["decision"] for i in review["items"]):
+        accepted = [_import_proposal(i) for i in review["items"] if i["decision"] == "accept"]
+        report = csv_import.apply_rows(store, change, accepted, interfaces)
+        store.set_review_status(change, review["id"], "applied", audit_kind="review_applied",
+                                payload={"kind": "import", **report})
+    return store.get_review(change.system_id, review["id"])

@@ -90,6 +90,11 @@ on the child clone. `systems/jobs.py` runs `systems/interface_extractor.py`
 into the `system_interface_artifacts` cache. `systems/drift.py` is the pure
 drift engine; `systems/detection.py` resolves tips after a fetch and applies
 its outcome. Project sync queues detection after every successful fetch.
+`systems/reconcile.py` validates and applies review decisions, and
+`systems/validation.py` computes the §7.2 findings. Documents are built
+unredacted and redacted for the reader last by `systems/redaction.py`, which is
+what lets `systems/icd.py` render frozen snapshots and diffs for any reader.
+`systems/csv_import.py` parses, classifies and writes connection CSV imports.
 
 ## Comments and issue publication
 

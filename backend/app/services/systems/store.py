@@ -790,6 +790,50 @@ class SystemStore:
         return dict(row)
 
     # ------------------------------------------------------------------
+    # Import sessions (§9.3)
+
+    IMPORT_RETENTION_DAYS = 7
+
+    def create_import_session(
+        self, system_id: str, *, actor: str, filename: str, delimiter: str, content: str, row_count: int,
+    ) -> dict:
+        self.get_system(system_id)
+        self.conn.execute(
+            """
+            DELETE FROM system_import_sessions
+            WHERE system_id = %s AND committed_at IS NULL
+              AND created_at < NOW() - make_interval(days => %s)
+            """,
+            (system_id, self.IMPORT_RETENTION_DAYS),
+        )
+        row = self.conn.execute(
+            """
+            INSERT INTO system_import_sessions (id, system_id, created_by, filename, delimiter, content, row_count)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (new_id("sim_"), system_id, actor, filename, delimiter, content, int(row_count)),
+        ).fetchone()
+        return dict(row)
+
+    def get_import_session(self, system_id: str, import_id: str, *, lock: bool = False) -> dict:
+        row = self.conn.execute(
+            "SELECT * FROM system_import_sessions WHERE system_id = %s AND id = %s"
+            + (" FOR UPDATE" if lock else ""),
+            (system_id, import_id),
+        ).fetchone()
+        if row is None:
+            raise NotFound("Import not found")
+        return dict(row)
+
+    def mark_import_committed(self, change: Mutation, import_id: str, report: Mapping[str, Any]) -> None:
+        self.conn.execute(
+            "UPDATE system_import_sessions SET committed_at = NOW(), committed_by = %s WHERE id = %s",
+            (change.actor, import_id),
+        )
+        change.audit("import_committed", {"importId": import_id, **dict(report)})
+
+    # ------------------------------------------------------------------
     # Audit history
 
     def history(self, system_id: str, *, before_seq: Optional[int] = None, limit: int = 100) -> list[dict]:
