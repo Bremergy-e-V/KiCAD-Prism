@@ -58,7 +58,7 @@ A part becomes a port when, in this order:
 
 1. its `Prism_Port` field is `yes`, `true`, `1` or `port` (`no`, `false` or `0`
    excludes it), or its `System` field is `Connector`;
-2. its reference prefix is exactly `J`, `P`, `CN` or `X` (so `JP1` is not a
+2. its reference prefix is exactly `J` (so `J7` is a port, but `JP1` is not a
    port); or
 3. its symbol or footprint library name starts with `Connector`, except
    KiCad's `TestPoint` symbols, which are not ports unless you mark or promote

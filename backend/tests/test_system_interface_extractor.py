@@ -208,8 +208,11 @@ class DetectionTest(unittest.TestCase):
         self.assertEqual(classify("U1", "MCU:X", "", {"System": "Connector"}), (True, "field"))
         self.assertEqual(classify("J1", "Connector:Y", "", {"Prism_Port": "No"}), (False, "field"))
         self.assertEqual(classify("U2", "Mine:Z", "", {"prism port": "PORT"}), (True, "field"))
-        self.assertEqual(classify("CN3", "Mine:Z", "", {}), (True, "refdes"))
-        self.assertEqual(classify("X1", "Device:Crystal", "", {}), (True, "refdes"))
+        self.assertEqual(classify("J3", "Mine:Z", "", {}), (True, "refdes"))
+        # v1.10: only J. X is usually an oscillator; P and CN need a Connector library.
+        self.assertEqual(classify("X1", "Oscillator:ASE", "", {}), (False, "none"))
+        self.assertEqual(classify("CN3", "Mine:Z", "", {}), (False, "none"))
+        self.assertEqual(classify("P2", "Connector_Generic:Conn_01x04", "", {}), (True, "library"))
         self.assertEqual(classify("JP1", "Jumper:J", "", {}), (False, "none"))
         self.assertEqual(classify("PS1", "Power:P", "", {}), (False, "none"))
         self.assertEqual(classify("U4", "Connector_Audio:J", "", {}), (True, "library"))

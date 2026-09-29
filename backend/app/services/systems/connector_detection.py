@@ -11,7 +11,9 @@ from __future__ import annotations
 import re
 from typing import Mapping
 
-REFERENCE_PREFIXES = frozenset({"J", "P", "CN", "X"})
+# v1.10: J only. X is an oscillator in many libraries, and P/CN connectors are
+# still found by the library rule when they come from a Connector library.
+REFERENCE_PREFIXES = frozenset({"J"})
 _PORT_FIELD = "prismport"
 _SYSTEM_FIELD = "system"
 _TRUE = frozenset({"true", "yes", "1", "port"})
