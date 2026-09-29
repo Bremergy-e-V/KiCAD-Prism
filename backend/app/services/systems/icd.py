@@ -13,9 +13,10 @@ import html
 import io
 from typing import Any, Mapping, Optional
 
+from app.services.systems import layout as system_layout
 from app.services.systems.drift import pad_sort_key
 
-RENDERER_VERSION = "1"
+RENDERER_VERSION = "2"
 
 CSV_COLUMNS = (
     "row_id", "link_id", "link_name", "harness", "signal",
@@ -91,51 +92,104 @@ def _e(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
 
-def _diagram(document: Mapping[str, Any]) -> str:
-    """§9.5 item 3: instances as boxes on a grid, one line per link."""
+_PALETTE = ("#2563eb", "#0d9488", "#7c3aed", "#c2410c", "#be185d", "#15803d", "#b45309", "#0369a1")
 
-    instances = document["instances"]
-    if not instances:
+
+def _diagram(document: Mapping[str, Any]) -> str:
+    """§9.5 item 3: boards with their linked connectors, orthogonal wires (``layout.py``)."""
+
+    if not document["instances"]:
         return ""
-    width, height, gap_x, gap_y, per_row = 180, 56, 120, 70, 3
-    boxes = {}
-    for index, instance in enumerate(instances):
-        col, row = index % per_row, index // per_row
-        boxes[instance["id"]] = (20 + col * (width + gap_x), 20 + row * (height + gap_y))
-    rows = (len(instances) + per_row - 1) // per_row
-    total_w = 40 + min(len(instances), per_row) * (width + gap_x) - gap_x
-    total_h = 40 + rows * (height + gap_y) - gap_y
-    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {total_w} {total_h}" '
-             f'width="{total_w}" height="{total_h}" role="img" aria-label="Connector diagram">']
-    for link in document["links"]:
-        (ax, ay), (bx, by) = boxes[link["a"]["instanceId"]], boxes[link["b"]["instanceId"]]
-        x1, y1, x2, y2 = ax + width / 2, ay + height / 2, bx + width / 2, by + height / 2
-        refs = " ↔ ".join((link[end]["port"] or {}).get("reference") or "restricted" for end in ("a", "b"))
-        label = f"{link['name'] or link['id']} ({refs})"
-        parts.append(f'<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}" class="wire"/>')
-        parts.append(f'<text x="{(x1 + x2) / 2}" y="{(y1 + y2) / 2 - 4}" class="wire-label">{_e(label)}</text>')
-    for instance in instances:
-        x, y = boxes[instance["id"]]
-        parts.append(f'<rect x="{x}" y="{y}" width="{width}" height="{height}" rx="6" class="board"/>')
-        parts.append(f'<text x="{x + width / 2}" y="{y + 24}" class="board-label">{_e(instance["label"])}</text>')
+    boards, wires = system_layout.layout(document)
+    colours = {link["id"]: _PALETTE[index % len(_PALETTE)]
+               for index, link in enumerate(sorted(document["links"], key=lambda l: (l["name"], l["id"])))}
+    pad = 16
+    width = max(b.x + system_layout.BOARD_WIDTH for b in boards.values()) + 2 * pad
+    xs = [x for wire in wires for x, _ in wire.points]
+    if xs:
+        width = max(width, max(xs) + 2 * pad)
+    height = max(b.y + b.height for b in boards.values()) + 2 * pad
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="{-pad} {-pad} {width} {height}" '
+             f'width="100%" style="max-width:{width}px" role="img" aria-label="Connector diagram">']
+    for wire in wires:
+        points = " ".join(f"{x:.1f},{y:.1f}" for x, y in wire.points)
+        parts.append(f'<polyline points="{points}" class="wire" stroke="{colours.get(wire.link_id, _PALETTE[0])}"/>')
+    bw = system_layout.BOARD_WIDTH
+    for board in boards.values():
+        instance = next(i for i in document["instances"] if i["id"] == board.id)
         sub = instance["projectName"] or ("restricted" if instance.get("restricted") else "")
-        parts.append(f'<text x="{x + width / 2}" y="{y + 42}" class="board-sub">{_e(sub)}</text>')
+        parts.append(f'<g transform="translate({board.x:.1f},{board.y:.1f})">')
+        parts.append(f'<rect width="{bw}" height="{board.height:.1f}" rx="6" class="board"/>')
+        parts.append(f'<path d="M0,6 a6,6 0 0 1 6,-6 h{bw - 12} a6,6 0 0 1 6,6 v{system_layout.HEADER_HEIGHT - 6} h-{bw} z" class="board-head"/>')
+        parts.append(f'<text x="12" y="21" class="board-label">{_e(instance["label"])}</text>')
+        parts.append(f'<text x="12" y="38" class="board-sub">{_e(sub)}</text>')
+        if not board.rows:
+            parts.append(f'<text x="12" y="{system_layout.HEADER_HEIGHT + 17}" class="row-partner">No links</text>')
+        for index, row in enumerate(board.rows):
+            y = system_layout.HEADER_HEIGHT + index * system_layout.ROW_HEIGHT
+            if index:
+                parts.append(f'<line x1="0" x2="{bw}" y1="{y}" y2="{y}" class="row-rule"/>')
+            partners = ", ".join(f"{p.board_label} {p.reference or 'restricted'}" for p in row.partners)
+            parts.append(f'<text x="12" y="{y + 17}" class="row-ref">{_e(row.reference)}</text>')
+            parts.append(f'<text x="{bw - 12}" y="{y + 17}" class="row-partner" text-anchor="end">↔ {_e(partners)}</text>')
+            colour = colours.get(row.partners[0].link_id, _PALETTE[0]) if row.partners else _PALETTE[0]
+            centre = y + system_layout.ROW_HEIGHT / 2
+            parts.append(f'<circle cx="0" cy="{centre}" r="3" fill="{colour}"/><circle cx="{bw}" cy="{centre}" r="3" fill="{colour}"/>')
+        parts.append("</g>")
     parts.append("</svg>")
     return "".join(parts)
 
 
 _STYLE = """
-body{font:12px/1.4 system-ui,sans-serif;color:#111;margin:24px}
-h1{font-size:20px;margin:0 0 4px}h2{font-size:15px;margin:24px 0 8px}h3{font-size:13px;margin:16px 0 6px}
-table{border-collapse:collapse;width:100%;margin-bottom:8px}
-th,td{border:1px solid #bbb;padding:3px 6px;text-align:left;vertical-align:top}
-th{background:#eee}.mono{font-family:ui-monospace,monospace}.meta{color:#555}
-.banner{border:2px solid #b45309;background:#fef3c7;padding:6px 10px;margin:8px 0;font-weight:600}
-.board{fill:#f5f5f5;stroke:#333}.wire{stroke:#2563eb;stroke-width:1.5}
-.board-label{font:600 13px system-ui;text-anchor:middle}.board-sub{font:11px system-ui;text-anchor:middle;fill:#555}
-.wire-label{font:10px system-ui;text-anchor:middle;fill:#1e3a8a}
-@media print{.banner{position:running(banner)}@page{margin:14mm}thead{display:table-header-group}}
+:root{--fg:#0f172a;--muted:#64748b;--line:#e2e8f0;--soft:#f8fafc;--accent:#2563eb;--ok:#15803d;--warn:#b45309;--err:#b91c1c}
+*{box-sizing:border-box}
+body{font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;color:var(--fg);margin:0;background:#fff}
+main{max-width:1180px;margin:0 auto;padding:32px 40px 48px}
+header.doc{border-bottom:2px solid var(--fg);padding-bottom:16px;margin-bottom:8px}
+.eyebrow{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 4px}
+h1{font-size:24px;line-height:1.25;margin:0 0 8px}
+h2{font-size:16px;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+h3{font-size:14px;margin:0}
+.meta{color:var(--muted);margin:0}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.description{margin:10px 0 0;max-width:72ch}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin:20px 0 0}
+.stat{background:#fff;padding:10px 14px}.stat b{display:block;font-size:20px;line-height:1.2}.stat span{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.stat.err b{color:var(--err)}.stat.warn b{color:var(--warn)}
+.banner{border:1px solid #f59e0b;border-left:4px solid #f59e0b;background:#fffbeb;color:#78350f;padding:8px 12px;margin:16px 0;font-weight:600}
+.print-banner{display:none}
+table{border-collapse:collapse;width:100%;font-size:12px}
+th,td{padding:5px 8px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
+thead th{background:var(--soft);font-weight:600;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #cbd5e1}
+tbody tr:nth-child(even) td{background:#fcfdfe}
+td.num{white-space:nowrap}td.side-b{text-align:right}th.side-b{text-align:right}
+td.sig{font-weight:600}
+.chip{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid}
+.chip.ok{color:var(--ok);border-color:#bbf7d0;background:#f0fdf4}.chip.review{color:var(--warn);border-color:#fde68a;background:#fffbeb}
+.chip.error{color:var(--err);border-color:#fecaca;background:#fef2f2}.chip.info{color:var(--muted);border-color:var(--line);background:var(--soft)}
+.link{margin:0 0 28px;break-inside:auto}
+.link-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;padding:8px 0;border-bottom:2px solid var(--fg);break-after:avoid}
+.link-head .swatch{width:10px;height:10px;border-radius:2px;display:inline-block}
+.link-head .ends{color:var(--muted)}
+.diagram{border:1px solid var(--line);background:var(--soft);padding:12px;overflow:auto}
+.board{fill:#fff;stroke:#94a3b8}.board-head{fill:#f1f5f9}.wire{fill:none;stroke-width:2}
+.board-label{font:600 13px ui-sans-serif,system-ui,sans-serif;fill:var(--fg)}.board-sub{font:11px ui-sans-serif,system-ui,sans-serif;fill:var(--muted)}
+.row-ref{font:600 11px ui-monospace,Menlo,monospace;fill:var(--fg)}.row-partner{font:11px ui-sans-serif,system-ui,sans-serif;fill:var(--muted)}
+.row-rule{stroke:var(--line)}
+footer{margin-top:40px;padding-top:12px;border-top:1px solid var(--line);color:var(--muted);font-size:11px}
+@media print{
+  @page{size:A4 landscape;margin:12mm}
+  main{max-width:none;padding:0}
+  body{font-size:11px}table{font-size:10px}
+  .banner{display:none}
+  .print-banner{display:block;position:fixed;top:0;left:0;right:0;border:1px solid #f59e0b;background:#fffbeb;color:#78350f;padding:4px 8px;font-weight:600;font-size:10px}
+  thead{display:table-header-group}tr{break-inside:avoid}
+  h2{break-after:avoid}.diagram{break-inside:avoid;background:#fff}
+}
 """
+
+
+def _chip(status: str) -> str:
+    return f'<span class="chip {_e(status)}">{_e(status)}</span>'
 
 
 def render_html(document: Mapping[str, Any], *, source: str, generated_at: str) -> str:
@@ -143,63 +197,110 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str) 
 
     system = document["system"]
     open_reviews = int(document.get("openReviewCount") or 0)
-    banner = (f'<div class="banner">This document contains {open_reviews} unreviewed '
-              f'change{"s" if open_reviews != 1 else ""}.</div>') if open_reviews else ""
-    out = ["<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">",
-           f"<title>ICD — {_e(system['name'])}</title><style>{_STYLE}</style></head><body>", banner,
-           f"<h1>Interface control document — {_e(system['name'])}</h1>",
-           f'<p class="meta">Source: {_e(source)} · Generated {_e(generated_at)} · '
-           f"Renderer {RENDERER_VERSION}</p>"]
-    if system.get("description"):
-        out.append(f"<p>{_e(system['description'])}</p>")
+    banner_text = (f'This document contains {open_reviews} unreviewed change{"s" if open_reviews != 1 else ""}.'
+                   if open_reviews else "")
+    validation = document.get("validation") or {}
+    findings = validation.get("findings") or []
+    labels = {i["id"]: i["label"] for i in document["instances"]}
+    records = csv_records(document)
+    errors = sum(1 for f in findings if f["severity"] == "error")
+    warnings = sum(1 for f in findings if f["severity"] == "warning")
 
-    out.append("<h2>Boards</h2><table><thead><tr><th>Label</th><th>Project</th><th>Baseline</th>"
+    out = ["<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">",
+           "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">",
+           f"<title>ICD — {_e(system['name'])}</title><style>{_STYLE}</style></head><body>"]
+    if banner_text:
+        # One copy on screen; the print copy is fixed, so it repeats on every printed page (§9.5).
+        out.append(f'<div class="print-banner" role="note">{banner_text}</div>')
+    out.append("<main>")
+    out.append('<header class="doc"><p class="eyebrow">System Builder · Interface control document</p>')
+    out.append(f"<h1>Interface control document — {_e(system['name'])}</h1>")
+    out.append(f'<p class="meta">Source: {_e(source)} · Generated {_e(generated_at)} · Renderer {RENDERER_VERSION}</p>')
+    if system.get("description"):
+        out.append(f'<p class="description">{_e(system["description"])}</p>')
+    out.append('<div class="stats">'
+               f'<div class="stat"><b>{len(document["instances"])}</b><span>Boards</span></div>'
+               f'<div class="stat"><b>{len(document["links"])}</b><span>Links</span></div>'
+               f'<div class="stat"><b>{len(records)}</b><span>Connections</span></div>'
+               f'<div class="stat{" err" if errors else ""}"><b>{errors}</b><span>Errors</span></div>'
+               f'<div class="stat{" warn" if warnings else ""}"><b>{warnings}</b><span>Warnings</span></div>'
+               f'<div class="stat{" warn" if open_reviews else ""}"><b>{open_reviews}</b><span>Open reviews</span></div>'
+               "</div></header>")
+    if banner_text:
+        out.append(f'<div class="banner" role="note">{banner_text}</div>')
+
+    out.append("<h2>Boards</h2><table><thead><tr><th>Label</th><th>Project</th><th>Baseline commit</th>"
                "<th>Tracked branch</th><th>Pinned</th></tr></thead><tbody>")
     for instance in document["instances"]:
         commit = instance["baselineCommit"]
-        baseline = (f'<span class="mono">{_e(commit[:12])}</span><br><span class="mono meta">{_e(commit)}</span>'
-                    if commit else "restricted")
-        out.append(f"<tr><td>{_e(instance['label'])}</td><td>{_e(instance['projectName'] or '')}</td>"
-                   f"<td>{baseline}</td><td>{_e(instance['trackedRef'] or '')}</td>"
+        baseline = (f'<span class="mono"><b>{_e(commit[:12])}</b></span><br><span class="mono meta">{_e(commit)}</span>'
+                    if commit else '<span class="meta">restricted</span>')
+        out.append(f"<tr><td><b>{_e(instance['label'])}</b></td><td>{_e(instance['projectName'] or '')}</td>"
+                   f"<td>{baseline}</td><td class=\"mono\">{_e(instance['trackedRef'] or '—')}</td>"
                    f"<td>{'yes' if instance['pinned'] else 'no'}</td></tr>")
     out.append("</tbody></table>")
 
-    out.append(f"<h2>Diagram</h2>{_diagram(document)}")
+    out.append(f'<h2>Block diagram</h2><div class="diagram">{_diagram(document)}</div>')
 
-    labels = {i["id"]: i["label"] for i in document["instances"]}
-    records = csv_records(document)
     out.append("<h2>Connections</h2>")
-    for link in sorted(document["links"], key=lambda l: (l["name"], l["id"])):
-        ends = " ↔ ".join(f"{labels[link[e]['instanceId']]}/{(link[e]['port'] or {}).get('reference') or 'restricted'}"
-                          for e in ("a", "b"))
-        harness = f" · harness {_e(link['harness'])}" if link["harness"] else ""
-        out.append(f"<h3>{_e(link['name'] or link['id'])} — {_e(ends)}{harness}</h3>")
-        out.append("<table><thead><tr><th>Pin A</th><th>Name A</th><th>Net A</th><th>Signal</th>"
-                   "<th>Pin B</th><th>Name B</th><th>Net B</th><th>Status</th></tr></thead><tbody>")
-        for record in (r for r in records if r["link_id"] == link["id"]):
-            out.append("<tr>" + "".join(
-                f'<td class="{"mono" if key.endswith(("pin", "net")) else ""}">{_e(record[key])}</td>'
-                for key in ("a_pin", "a_pin_name", "a_net", "signal", "b_pin", "b_pin_name", "b_net", "status")
-            ) + "</tr>")
-        out.append("</tbody></table>")
+    ordered = sorted(document["links"], key=lambda l: (l["name"], l["id"]))
+    for index, link in enumerate(ordered, start=1):
+        ends = [f"{labels[link[e]['instanceId']]} {(link[e]['port'] or {}).get('reference') or 'restricted'}" for e in ("a", "b")]
+        rows = [r for r in records if r["link_id"] == link["id"]]
+        statuses = {status: sum(1 for r in rows if r["status"] == status) for status in ("error", "review")}
+        colour = _PALETTE[(index - 1) % len(_PALETTE)]
+        title = link["name"] or f"{ends[0]} ↔ {ends[1]}"
+        out.append('<section class="link">')
+        out.append(f'<div class="link-head"><span class="swatch" style="background:{colour}"></span>'
+                   f"<h3>{index}. {_e(title)}</h3><span class=\"ends\">{_e(ends[0])} ↔ {_e(ends[1])}</span>"
+                   f'<span class="meta">{len(rows)} pin{"s" if len(rows) != 1 else ""}'
+                   + (f" · harness {_e(link['harness'])}" if link["harness"] else "")
+                   + "".join(f" · {count} {status}" for status, count in statuses.items() if count)
+                   + "</span></div>")
+        out.append(f"<table><thead><tr><th>{_e(ends[0])}</th><th>Pin name</th><th>Net</th><th>Signal</th>"
+                   f"<th class=\"side-b\">Net</th><th class=\"side-b\">Pin name</th><th class=\"side-b\">{_e(ends[1])}</th>"
+                   "<th>Status</th></tr></thead><tbody>")
+        for record in rows:
+            # A pin name that only repeats the pad says nothing.
+            for side in ("a", "b"):
+                if record[f"{side}_pin_name"] == record[f"{side}_pin"]:
+                    record = {**record, f"{side}_pin_name": ""}
+            out.append(
+                f'<tr><td class="mono num"><b>{_e(record["a_pin"])}</b></td><td>{_e(record["a_pin_name"])}</td>'
+                f'<td class="mono">{_e(record["a_net"])}</td><td class="sig">{_e(record["signal"])}</td>'
+                f'<td class="mono side-b">{_e(record["b_net"])}</td><td class="side-b">{_e(record["b_pin_name"])}</td>'
+                f'<td class="mono num side-b"><b>{_e(record["b_pin"])}</b></td><td>{_chip(record["status"])}</td></tr>')
+        if not rows:
+            out.append('<tr><td colspan="8" class="meta">No pins mapped.</td></tr>')
+        out.append("</tbody></table></section>")
 
-    validation = document.get("validation") or {}
     out.append("<h2>Findings</h2>")
-    findings = validation.get("findings") or []
     if findings:
-        out.append("<table><thead><tr><th>Severity</th><th>Rule</th><th>Board</th><th>Link</th>"
-                   "<th>Connector</th><th>Pin</th></tr></thead><tbody>")
+        groups: dict[tuple, dict] = {}
         for finding in findings:
-            out.append(f"<tr><td>{_e(finding['severity'])}</td><td>{_e(finding['rule'])} {_e(finding['name'])}</td>"
-                       f"<td>{_e(labels.get(finding['instanceId'], ''))}</td><td>{_e(finding['linkId'] or '')}</td>"
-                       f"<td>{_e(finding['reference'] or '')}</td><td>{_e(finding['pin'] or '')}</td></tr>")
+            key = (finding["severity"], finding["rule"], finding["instanceId"], finding["reference"], finding["linkId"])
+            entry = groups.setdefault(key, {"finding": finding, "pins": []})
+            if finding["pin"]:
+                entry["pins"].append(finding["pin"])
+        link_names = {l["id"]: l["name"] or l["id"] for l in document["links"]}
+        order = {"error": 0, "warning": 1, "info": 2}
+        out.append("<table><thead><tr><th>Severity</th><th>Rule</th><th>Board</th><th>Connector</th><th>Pins</th>"
+                   "<th>Link</th></tr></thead><tbody>")
+        for key in sorted(groups, key=lambda k: (order.get(k[0], 3), k[1], labels.get(k[2] or "", ""), k[3] or "")):
+            finding, pins = groups[key]["finding"], sorted(groups[key]["pins"], key=pad_sort_key)
+            severity = {"warning": "review", "error": "error"}.get(finding["severity"], "info")
+            out.append(f'<tr><td><span class="chip {severity}">{_e(finding["severity"])}</span></td>'
+                       f'<td><b>{_e(finding["rule"])}</b> {_e(finding["name"].replace("_", " "))}</td>'
+                       f"<td>{_e(labels.get(finding['instanceId'], ''))}</td><td class=\"mono\">{_e(finding['reference'] or '')}</td>"
+                       f'<td class="mono">{_e(", ".join(pins))}</td><td>{_e(link_names.get(finding["linkId"], ""))}</td></tr>')
         out.append("</tbody></table>")
     else:
-        out.append("<p>No findings.</p>")
+        out.append('<p class="meta">No findings.</p>')
     for entry in validation.get("notEvaluated") or []:
         out.append(f"<p class=\"meta\">Not evaluated: {_e(entry['rule'])} for "
                    f"{_e(labels.get(entry['instanceId'], ''))} ({_e(entry['reason'])}).</p>")
-    out.append(banner + "</body></html>")
+    out.append(f"<footer>KiCAD-Prism System Builder · {_e(system['name'])} · {_e(source)} · {_e(generated_at)}</footer>")
+    out.append("</main></body></html>")
     return "".join(out)
 
 
