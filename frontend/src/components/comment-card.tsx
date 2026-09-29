@@ -262,6 +262,8 @@ export function CommentCard({
                 title="Delete comment"
                 description="This removes the comment and its replies from the review thread. It cannot be undone."
                 confirmLabel="Delete comment"
+                // Above the card itself, which floats at z-110.
+                layerClassName="z-[130]"
                 onConfirm={() => {
                     setConfirmDelete(false);
                     void onDelete(comment.id);
