@@ -1,37 +1,61 @@
 /**
  * Pure mapping between the system document and the diagram canvas (D10):
- * one node per board instance, one handle per exposed port, one edge per
- * link. Kept free of React Flow so it can be tested without a canvas.
+ * one node per board instance, one row per linked port, one edge per link.
+ * Placement, row order and wire lanes come from `system-layout.ts`. Kept free
+ * of React Flow so it can be tested without a canvas.
  */
 
 import type { LayoutPositions } from "@/lib/systems-api";
 import type { SystemDocument, SystemInstance, SystemLink } from "@/types/system";
 
-export const NODE_WIDTH = 220;
-const COLUMN_GAP = 140;
-const ROW_GAP = 80;
-const HEADER_HEIGHT = 52;
-const PORT_HEIGHT = 24;
-const COLUMNS = 3;
+import {
+  BOARD_WIDTH,
+  HEADER_HEIGHT,
+  ROW_HEIGHT,
+  boardHeight,
+  layoutSystem,
+  routeWires,
+  rowKey,
+  type LayoutBoardInput,
+  type LayoutLinkInput,
+  type LayoutRow,
+  type Side,
+  type Wire,
+} from "./system-layout";
 
-export interface DiagramPort {
-  portKey: string;
+export { BOARD_WIDTH as NODE_WIDTH, HEADER_HEIGHT, ROW_HEIGHT };
+export type { Side };
+
+export interface DiagramRow {
+  /** `null` for link ends whose port cannot be shown (restricted, or gone). */
+  portKey: string | null;
   reference: string;
-  /** Some link end uses it. */
+  /** Other ends, as "OBC-1 J14". Empty for an unlinked port. */
+  partners: string[];
   linked: boolean;
-  /** Present only because a link needs it; the port is no longer exposed at the baseline. */
+  /** A linked port that is no longer exposed at the baseline. */
   orphan: boolean;
 }
 
 export interface DiagramNodeData extends Record<string, unknown> {
   instance: SystemInstance;
-  ports: DiagramPort[];
+  rows: DiagramRow[];
+  /** Unlinked exposed ports not drawn as rows until the board is expanded. */
+  hiddenCount: number;
+  expanded: boolean;
 }
 
 export interface DiagramNode {
   id: string;
   position: { x: number; y: number };
+  height: number;
   data: DiagramNodeData;
+}
+
+export interface DiagramEdgeData extends Record<string, unknown> {
+  wire: Pick<Wire, "kind" | "lane" | "loopOffset">;
+  label: string;
+  harness: string | null;
 }
 
 export interface DiagramEdge {
@@ -40,19 +64,14 @@ export interface DiagramEdge {
   sourceHandle: string;
   target: string;
   targetHandle: string;
-  label: string;
-  harness: string | null;
-  rowCount: number;
+  data: DiagramEdgeData;
 }
 
-/** A handle for a link end whose port the board no longer shows; the edge still renders. */
+/** A handle for a link end whose port the board cannot show; its row reads "restricted". */
 export const FALLBACK_HANDLE = "__board__";
 
-export type Side = "l" | "r";
-
-/** Every port has a handle on each side; edges use the sides facing each other. */
-export function handleId(side: Side, portKey: string): string {
-  return `${side}:${portKey}`;
+export function handleId(side: Side, portKey: string | null): string {
+  return `${side}:${portKey ?? FALLBACK_HANDLE}`;
 }
 
 export function portKeyOf(handle: string | null | undefined): string | null {
@@ -63,64 +82,55 @@ export function portKeyOf(handle: string | null | undefined): string | null {
   return key === FALLBACK_HANDLE ? null : key;
 }
 
-export function nodeHeight(portCount: number): number {
-  return HEADER_HEIGHT + Math.max(1, portCount) * PORT_HEIGHT + 12;
+export function nodeHeight(rowCount: number, hiddenCount: number, expanded = false): number {
+  return boardHeight(rowCount + (expanded ? hiddenCount : 0), hiddenCount);
 }
 
-/** Ports to draw on a board: exposed ones, plus any a link uses. */
-export function diagramPorts(document: SystemDocument, instance: SystemInstance): DiagramPort[] {
-  const used = new Map<string, string>();
+/** Ports a board may show: exposed ones, plus any a link still uses. */
+function drawablePorts(document: SystemDocument, instance: SystemInstance) {
+  if (instance.ports === null) {
+    return { ports: [], orphans: new Set<string>() };
+  }
+  const exposed: { portKey: string; reference: string }[] = [];
+  for (const port of instance.ports) {
+    if (port.exposed) exposed.push({ portKey: port.portKey, reference: port.reference });
+  }
+  const known = new Set(exposed.map((port) => port.portKey));
+  const orphans = new Set<string>();
   for (const link of document.links) {
     for (const end of [link.a, link.b]) {
-      if (end.instanceId === instance.id && end.port) {
-        used.set(end.port.portKey, end.port.reference);
+      const key = end.port?.portKey;
+      if (end.instanceId === instance.id && end.port && key && !known.has(key)) {
+        known.add(key);
+        orphans.add(key);
+        exposed.push({ portKey: key, reference: end.port.reference });
       }
     }
   }
-  const ports: DiagramPort[] = [];
-  for (const port of instance.ports ?? []) {
-    if (port.exposed) {
-      ports.push({ portKey: port.portKey, reference: port.reference, linked: used.has(port.portKey), orphan: false });
-    }
-  }
-  const drawn = new Set(ports.map((port) => port.portKey));
-  for (const [portKey, reference] of used) {
-    if (!drawn.has(portKey) && instance.ports !== null) {
-      ports.push({ portKey, reference, linked: true, orphan: true });
-    }
-  }
-  return ports.sort((a, b) => a.reference.localeCompare(b.reference, undefined, { numeric: true }));
+  return { ports: exposed, orphans };
 }
 
-/** Default grid position for the n-th board, used until the user drags it. */
-export function gridPosition(index: number, heights: number[]): { x: number; y: number } {
-  const column = index % COLUMNS;
-  const row = Math.floor(index / COLUMNS);
-  let y = 0;
-  for (let r = 0; r < row; r += 1) {
-    const rowHeights = heights.slice(r * COLUMNS, r * COLUMNS + COLUMNS);
-    y += Math.max(...rowHeights) + ROW_GAP;
-  }
-  return { x: column * (NODE_WIDTH + COLUMN_GAP), y };
-}
-
-export function buildNodes(document: SystemDocument, positions: LayoutPositions): DiagramNode[] {
-  const ports = document.instances.map((instance) => diagramPorts(document, instance));
-  const heights = ports.map((list) => nodeHeight(list.length));
-  return document.instances.map((instance, index) => ({
-    id: instance.id,
-    position: positions[instance.id] ?? gridPosition(index, heights),
-    data: { instance, ports: ports[index] },
-  }));
-}
-
-function endHandle(document: SystemDocument, link: SystemLink, end: "a" | "b", side: Side): string {
-  const port = link[end].port;
+function linkEnd(document: SystemDocument, link: SystemLink, end: "a" | "b") {
   const instance = document.instances.find((candidate) => candidate.id === link[end].instanceId);
-  if (!port || !instance || instance.ports === null) {
-    return handleId(side, FALLBACK_HANDLE);
-  }
-  return handleId(side, port.portKey);
+  const port = instance?.ports === null ? null : link[end].port;
+  return { board: link[end].instanceId, portKey: port?.portKey ?? null, reference: port?.reference ?? null };
+}
+
+export function layoutInputs(document: SystemDocument): { boards: LayoutBoardInput[]; links: LayoutLinkInput[] } {
+  return {
+    boards: document.instances.map((instance) => ({
+      id: instance.id,
+      label: instance.label,
+      ports: drawablePorts(document, instance).ports,
+    })),
+    links: document.links.map((link) => ({
+      id: link.id,
+      name: link.name,
+      a: linkEnd(document, link, "a"),
+      b: linkEnd(document, link, "b"),
+      rowCount: link.rows.length,
+    })),
+  };
 }
 
 export function edgeLabel(link: SystemLink): string {
@@ -129,24 +139,62 @@ export function edgeLabel(link: SystemLink): string {
   return `${name} · ${link.rows.length} ${link.rows.length === 1 ? "pin" : "pins"}`;
 }
 
-/** Edges between the facing sides of their boards (a board linked to itself loops on the right). */
-export function buildEdges(document: SystemDocument, nodes: Pick<DiagramNode, "id" | "position">[]): DiagramEdge[] {
-  const x = new Map(nodes.map((node) => [node.id, node.position.x]));
-  return document.links.map((link) => {
-    const ax = x.get(link.a.instanceId) ?? 0;
-    const bx = x.get(link.b.instanceId) ?? 0;
-    const [aSide, bSide]: [Side, Side] = link.a.instanceId === link.b.instanceId ? ["r", "r"] : ax <= bx ? ["r", "l"] : ["l", "r"];
+function partnerText(row: LayoutRow): string[] {
+  return row.partners.map((partner) => `${partner.boardLabel} ${partner.reference ?? "restricted"}`);
+}
+
+/**
+ * Nodes and edges for the canvas. Saved `positions` win; boards without one
+ * take the default layout. `expanded` boards also list their unlinked ports.
+ */
+export function buildDiagram(
+  document: SystemDocument,
+  positions: LayoutPositions,
+  expanded: ReadonlySet<string> = new Set(),
+): { nodes: DiagramNode[]; edges: DiagramEdge[] } {
+  const inputs = layoutInputs(document);
+  const layout = layoutSystem(inputs.boards, inputs.links, positions);
+  const nodes = document.instances.map((instance) => {
+    const placed = layout.get(instance.id)!;
+    const { orphans } = drawablePorts(document, instance);
+    const open = expanded.has(instance.id);
+    const rows: DiagramRow[] = placed.rows.map((row) => ({
+      portKey: row.portKey,
+      reference: row.reference,
+      partners: partnerText(row),
+      linked: true,
+      orphan: row.portKey !== null && orphans.has(row.portKey),
+    }));
+    if (open) {
+      for (const port of placed.hiddenPorts) {
+        rows.push({ portKey: port.portKey, reference: port.reference, partners: [], linked: false, orphan: false });
+      }
+    }
     return {
-      id: link.id,
-      source: link.a.instanceId,
-      sourceHandle: endHandle(document, link, "a", aSide),
-      target: link.b.instanceId,
-      targetHandle: endHandle(document, link, "b", bSide),
-      label: edgeLabel(link),
-      harness: link.harness,
-      rowCount: link.rows.length,
+      id: instance.id,
+      position: { x: placed.x, y: placed.y },
+      height: nodeHeight(placed.rows.length, placed.hiddenPorts.length, open),
+      data: { instance, rows, hiddenCount: placed.hiddenPorts.length, expanded: open },
     };
   });
+  const labels = new Map(document.links.map((link) => [link.id, link]));
+  const edges = routeWires(layout, inputs.links).map((wire) => {
+    const link = labels.get(wire.linkId)!;
+    const handle = (end: Wire["source"]) => handleId(end.side, end.rowKey === rowKey(null) ? null : end.rowKey);
+    return {
+      id: wire.linkId,
+      source: wire.source.board,
+      sourceHandle: handle(wire.source),
+      target: wire.target.board,
+      targetHandle: handle(wire.target),
+      data: {
+        wire: { kind: wire.kind, lane: wire.lane, loopOffset: wire.loopOffset },
+        label: edgeLabel(link),
+        harness: link.harness,
+      },
+    };
+  });
+  return { nodes, edges };
 }
 
 export interface ConnectionLike {

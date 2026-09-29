@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import { Eye, EyeOff, Lock, Pin, PinOff, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Lock, MoreHorizontal, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -14,7 +14,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { useWorkspaceData, workspaceSessionKey } from "@/hooks/use-workspace-data";
 import {
   addInstance,
@@ -152,14 +160,54 @@ interface BoardDetailProps {
   run: Mutate;
 }
 
+interface EditBoardDialogProps {
+  instance: SystemInstance;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (fields: { label?: string; trackedRef?: string | null }) => Promise<boolean>;
+}
+
+function EditBoardDialog({ instance, busy, onClose, onSave }: EditBoardDialogProps) {
+  const [label, setLabel] = useState(instance.label);
+  const [branch, setBranch] = useState(instance.trackedRef ?? "");
+  const fields: { label?: string; trackedRef?: string | null } = {};
+  if (label.trim() && label.trim() !== instance.label) fields.label = label.trim();
+  if (branch.trim() !== (instance.trackedRef ?? "")) fields.trackedRef = branch.trim() || null;
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit {instance.label}</DialogTitle>
+          <DialogDescription>
+            The baseline never moves here: changing the branch only changes which commits are checked from now on.
+          </DialogDescription>
+        </DialogHeader>
+        <form className="grid gap-4" onSubmit={async (event) => {
+          event.preventDefault();
+          if (await onSave(fields)) onClose();
+        }}>
+          <div className="grid gap-2">
+            <Label htmlFor="board-label">Label</Label>
+            <Input id="board-label" aria-label="Board label" value={label} maxLength={100} onChange={(event) => setLabel(event.target.value)} />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="board-branch">Tracked branch</Label>
+            <Input id="board-branch" aria-label="Tracked branch" className="font-mono" value={branch} maxLength={200}
+              placeholder="Not tracking" onChange={(event) => setBranch(event.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={busy || !label.trim() || Object.keys(fields).length === 0}>{busy ? "Saving…" : "Save"}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function BoardDetail({ systemId, document, instance, etag, canEdit, busy, run }: BoardDetailProps) {
   const status = boardStatus(instance);
-  // Drafts exist only while the user is editing; otherwise the live value shows.
-  const [labelDraft, setLabelDraft] = useState<string | null>(null);
-  const [branchDraft, setBranchDraft] = useState<string | null>(null);
-  const label = labelDraft ?? instance.label;
-  const branch = branchDraft ?? instance.trackedRef ?? "";
-  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [dialog, setDialog] = useState<"edit" | "remove" | null>(null);
   const linkCount = document.links.filter((link) => link.a.instanceId === instance.id || link.b.instanceId === instance.id).length;
   const editable = canEdit && !instance.restricted;
 
@@ -179,81 +227,81 @@ function BoardDetail({ systemId, document, instance, etag, canEdit, busy, run }:
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold">{instance.label}</h2>
-          <p className="text-sm text-muted-foreground">{instance.projectName}</p>
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-lg font-semibold">{instance.label}</h2>
+            <Badge variant={TONE_BADGE[status.tone]} title={status.detail}>{status.label}</Badge>
+            {instance.pinned && <Badge variant="outline"><Pin className="h-3 w-3" /> Pinned</Badge>}
+          </div>
+          <p className="text-sm text-muted-foreground">{instance.projectName} · {status.detail}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={TONE_BADGE[status.tone]}>{status.label}</Badge>
-          {editable && (
-            <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmRemove(true)}>
-              <Trash2 className="mr-1 h-4 w-4" /> Remove
-            </Button>
-          )}
-        </div>
-      </div>
-      <p className="text-sm text-muted-foreground">{status.detail}</p>
+        {editable && (
+          <div className="flex items-center gap-2">
+            {instance.trackedRef && (
+              <>
+                <Button variant="outline" size="sm" disabled={busy !== null}
+                  onClick={() => void run("check", () => checkNow(systemId, instance.id), "Checking the branch for changes")}>
+                  <RefreshCw className="mr-1 h-4 w-4" /> Check now
+                </Button>
+                <Button variant="outline" size="sm" disabled={busy !== null}
+                  title={instance.pinned ? "Apply or review new commits again" : "Keep this baseline; only report new commits"}
+                  onClick={() => void save({ pinned: !instance.pinned }, instance.pinned ? "Unpinned" : "Pinned")}>
+                  {instance.pinned ? <PinOff className="mr-1 h-4 w-4" /> : <Pin className="mr-1 h-4 w-4" />}
+                  {instance.pinned ? "Unpin" : "Pin"}
+                </Button>
+              </>
+            )}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Board actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem onSelect={() => setDialog("edit")}>
+                  <Pencil className="mr-2 h-4 w-4" /> Edit board
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => setDialog("remove")}>
+                  <Trash2 className="mr-2 h-4 w-4" /> Remove board
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+      </header>
 
-      <dl className="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-[9rem_1fr]">
-        <dt className="text-muted-foreground">Baseline</dt>
-        <dd className="break-all font-mono text-xs">{instance.baselineCommit}</dd>
-        <dt className="text-muted-foreground">Branch tip</dt>
-        <dd className="font-mono text-xs">
-          {instance.trackedRef ? shortSha(instance.tipCommit) : "—"}
-          {instance.tipCheckedAt && (
-            <span className="ml-2 font-sans text-muted-foreground">checked {new Date(instance.tipCheckedAt).toLocaleString()}</span>
-          )}
-        </dd>
-        <dt className="text-muted-foreground">Label</dt>
-        <dd className="flex max-w-md gap-2">
-          <Input aria-label="Board label" value={label} maxLength={100} disabled={!editable}
-            onChange={(event) => setLabelDraft(event.target.value)} />
-          {editable && (
-            <Button size="sm" variant="outline" disabled={!label.trim() || label.trim() === instance.label || busy !== null}
-              onClick={() => void save({ label: label.trim() }, "Board renamed").then((done) => done && setLabelDraft(null))}>
-              Rename
-            </Button>
-          )}
-        </dd>
-        <dt className="text-muted-foreground">Tracked branch</dt>
-        <dd className="flex max-w-md gap-2">
-          <Input aria-label="Tracked branch" className="font-mono" value={branch} maxLength={200} disabled={!editable}
-            placeholder="Not tracking" onChange={(event) => setBranchDraft(event.target.value)} />
-          {editable && (
-            <Button size="sm" variant="outline" disabled={branch.trim() === (instance.trackedRef ?? "") || busy !== null}
-              onClick={() => void save({ trackedRef: branch.trim() || null }, branch.trim() ? "Branch updated" : "Stopped tracking")
-                .then((done) => done && setBranchDraft(null))}>
-              Save
-            </Button>
-          )}
-        </dd>
+      <dl className="grid gap-px border bg-border text-sm sm:grid-cols-3">
+        <div className="bg-card px-4 py-3">
+          <dt className="text-xs text-muted-foreground">Baseline</dt>
+          <dd className="mt-1 font-mono" title={instance.baselineCommit ?? undefined}>{shortSha(instance.baselineCommit)}</dd>
+        </div>
+        <div className="bg-card px-4 py-3">
+          <dt className="text-xs text-muted-foreground">Tracked branch</dt>
+          <dd className="mt-1 font-mono">{instance.trackedRef ?? <span className="font-sans text-muted-foreground">Not tracking</span>}</dd>
+        </div>
+        <div className="bg-card px-4 py-3">
+          <dt className="text-xs text-muted-foreground">Branch tip</dt>
+          <dd className="mt-1">
+            <span className="font-mono">{instance.trackedRef ? shortSha(instance.tipCommit) : "—"}</span>
+            {instance.tipCheckedAt && (
+              <span className="ml-2 text-xs text-muted-foreground">checked {new Date(instance.tipCheckedAt).toLocaleString()}</span>
+            )}
+          </dd>
+        </div>
       </dl>
-
-      {editable && instance.trackedRef && (
-        <div className="flex flex-wrap gap-2">
-          <Button variant="outline" size="sm" disabled={busy !== null}
-            onClick={() => void save({ pinned: !instance.pinned }, instance.pinned ? "Unpinned" : "Pinned")}>
-            {instance.pinned ? <PinOff className="mr-1 h-4 w-4" /> : <Pin className="mr-1 h-4 w-4" />}
-            {instance.pinned ? "Unpin" : "Pin"}
-          </Button>
-          <Button variant="outline" size="sm" disabled={busy !== null}
-            onClick={() => void run("check", () => checkNow(systemId, instance.id), "Checking the branch for changes")}>
-            <RefreshCw className="mr-1 h-4 w-4" /> Check now
-          </Button>
-          <p className="self-center text-xs text-muted-foreground">
-            {instance.pinned
-              ? "Pinned: new commits are recorded as available updates, never applied."
-              : "New commits are checked after each sync and applied or queued for review."}
-          </p>
-        </div>
-      )}
 
       <PortsSection systemId={systemId} document={document} instance={instance} etag={etag} editable={editable} busy={busy} run={run} />
 
+      {dialog === "edit" && (
+        <EditBoardDialog instance={instance} busy={busy === "update"} onClose={() => setDialog(null)}
+          onSave={async (fields) => Boolean(await save(fields, "Board updated"))} />
+      )}
+
       <ConfirmDialog
-        open={confirmRemove}
-        onOpenChange={setConfirmRemove}
+        open={dialog === "remove"}
+        onOpenChange={(open) => setDialog(open ? "remove" : null)}
         title={`Remove ${instance.label}?`}
         description={linkCount > 0
           ? `This board is an end of ${linkCount} ${linkCount === 1 ? "link" : "links"}. Removing it deletes those links and their rows.`
@@ -263,7 +311,7 @@ function BoardDetail({ systemId, document, instance, etag, canEdit, busy, run }:
         busy={busy === "remove"}
         onConfirm={() => {
           void run("remove", () => removeInstance(systemId, etag, instance.id, linkCount > 0), `Removed ${instance.label}`)
-            .then(() => setConfirmRemove(false));
+            .then(() => setDialog(null));
         }}
       />
     </div>

@@ -1,11 +1,11 @@
 import { Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import type { Project } from "@/types/project";
-
-export const SELECT_CLASS =
-  "h-9 w-full rounded-md border border-input bg-background px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 export type BoardSource = "branch" | "commit";
 
@@ -78,19 +78,18 @@ interface BoardFieldsProps {
 export function BoardFields({ board, index, projects, onChange, onRemove }: BoardFieldsProps) {
   const sorted = [...projects].sort((a, b) => projectName(a).localeCompare(projectName(b)));
   return (
-    <fieldset className="space-y-2 rounded-md border p-3" aria-label={`Board ${index + 1}`}>
+    <fieldset className="space-y-2 border p-3" aria-label={`Board ${index + 1}`}>
       <div className={onRemove ? "grid gap-2 sm:grid-cols-[1fr_10rem_auto]" : "grid gap-2 sm:grid-cols-[1fr_10rem]"}>
-        <select
-          aria-label={`Board ${index + 1} project`}
-          className={SELECT_CLASS}
-          value={board.projectId}
-          onChange={(event) => onChange(withProject(board, event.target.value, projects))}
-        >
-          <option value="">Choose a project…</option>
-          {sorted.map((project) => (
-            <option key={project.id} value={project.id}>{projectName(project)}</option>
-          ))}
-        </select>
+        <Select value={board.projectId} onValueChange={(value) => onChange(withProject(board, value, projects))}>
+          <SelectTrigger aria-label={`Board ${index + 1} project`} className="h-9 w-full">
+            <SelectValue placeholder="Choose a project…" />
+          </SelectTrigger>
+          <SelectContent>
+            {sorted.map((project) => (
+              <SelectItem key={project.id} value={project.id}>{projectName(project)}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
         <Input aria-label={`Board ${index + 1} label`} value={board.label} maxLength={100}
           placeholder="Label, e.g. OBC-A" onChange={(event) => onChange({ ...board, label: event.target.value })} />
         {onRemove && (
@@ -100,30 +99,27 @@ export function BoardFields({ board, index, projects, onChange, onRemove }: Boar
         )}
       </div>
       <div className="grid items-center gap-2 sm:grid-cols-[10rem_1fr_auto]">
-        <select
-          aria-label={`Board ${index + 1} source`}
-          className={SELECT_CLASS}
-          value={board.source}
-          onChange={(event) => {
-            const source = event.target.value as BoardSource;
-            onChange({ ...board, source, ref: source === "branch" ? "main" : "" });
-          }}
-        >
-          <option value="branch">Track a branch</option>
-          <option value="commit">Fixed commit</option>
-        </select>
+        <Select value={board.source} onValueChange={(value) => {
+          const source = value as BoardSource;
+          onChange({ ...board, source, ref: source === "branch" ? "main" : "" });
+        }}>
+          <SelectTrigger aria-label={`Board ${index + 1} source`} className="h-9 w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="branch">Track a branch</SelectItem>
+            <SelectItem value="commit">Fixed commit</SelectItem>
+          </SelectContent>
+        </Select>
         <Input aria-label={`Board ${index + 1} ${board.source === "branch" ? "branch" : "commit"}`}
           className="font-mono" value={board.ref}
           maxLength={board.source === "branch" ? 200 : 40}
           placeholder={board.source === "branch" ? "main" : "Commit SHA"}
           onChange={(event) => onChange({ ...board, ref: event.target.value })} />
         {board.source === "branch" && (
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground"
-            title="Record new commits as available updates instead of reviewing them">
-            <input type="checkbox" aria-label={`Board ${index + 1} pinned`} checked={board.pinned}
-              onChange={(event) => onChange({ ...board, pinned: event.target.checked })} />
-            Pinned
-          </label>
+          <div className="flex items-center gap-1.5" title="Record new commits as available updates instead of reviewing them">
+            <Checkbox id={`board-${board.key}-pinned`} aria-label={`Board ${index + 1} pinned`} checked={board.pinned}
+              onCheckedChange={(checked) => onChange({ ...board, pinned: checked === true })} />
+            <Label htmlFor={`board-${board.key}-pinned`} className="text-xs font-normal text-muted-foreground">Pinned</Label>
+          </div>
         )}
       </div>
     </fieldset>

@@ -7,7 +7,6 @@ import { BoardsTab } from "./boards-tab";
 import { ChangesTab } from "./changes-tab";
 import { ConnectivityTab } from "./connectivity-tab";
 import { HistoryTab } from "./history-tab";
-import { ImportTab } from "./import-tab";
 import { OverviewTab } from "./overview-tab";
 import type { SystemTab } from "./system-tabs";
 
@@ -34,8 +33,6 @@ export function SystemTabContent({ tab, ...props }: SystemTabProps & { tab: Syst
       return <BoardsTab {...props} />;
     case "history":
       return <HistoryTab {...props} />;
-    case "import":
-      return <ImportTab {...props} />;
     case "changes":
       return <ChangesTab {...props} />;
     case "connectivity":

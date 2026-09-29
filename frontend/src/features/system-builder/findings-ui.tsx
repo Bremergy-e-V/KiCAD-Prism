@@ -1,0 +1,132 @@
+import { useState } from "react";
+import { ChevronDown, CircleAlert, TriangleAlert } from "lucide-react";
+
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import type { Finding } from "@/types/system";
+
+import { comparePads } from "./pads";
+
+type Level = "error" | "warning";
+
+function worst(findings: Finding[]): Level | null {
+  if (findings.some((finding) => finding.severity === "error")) return "error";
+  if (findings.some((finding) => finding.severity === "warning")) return "warning";
+  return null;
+}
+
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
+/** Icon and count for a list entry: errors win over warnings; info never shows. */
+export function FindingCountBadge({ findings }: { findings: Finding[] }) {
+  const level = worst(findings);
+  if (!level) return null;
+  const count = findings.filter((finding) => finding.severity === level).length;
+  const Icon = level === "error" ? CircleAlert : TriangleAlert;
+  return (
+    <Badge variant={level === "error" ? "destructive" : "warning"} className="shrink-0 tabular-nums"
+      aria-label={plural(count, level)} title={plural(count, level)}>
+      <Icon aria-hidden /> {count}
+    </Badge>
+  );
+}
+
+const RULE_TEXT: Record<string, string> = {
+  row_duplicate: "Duplicate row",
+  pin_fanout: "Pin used by several links",
+  port_not_exposed: "Connector is not a port",
+  pin_absent: "Pad does not exist",
+  source_unavailable: "Board source unavailable",
+  pcb_out_of_sync: "PCB net differs from the schematic",
+  pin_net_ambiguous: "Pin carries several nets",
+  open_review: "Open review",
+};
+
+export function findingText(finding: Pick<Finding, "name">): string {
+  return RULE_TEXT[finding.name] ?? finding.name.replace(/_/g, " ");
+}
+
+interface Group {
+  key: string;
+  level: Level;
+  rule: string;
+  text: string;
+  reference: string | null;
+  pins: string[];
+}
+
+/** One line per (rule, connector), listing the pins, so 43 findings read as one. */
+function group(findings: Finding[]): Group[] {
+  const groups = new Map<string, Group>();
+  for (const finding of findings) {
+    if (finding.severity === "info") continue;
+    const key = [finding.severity, finding.rule, finding.instanceId, finding.reference].join("|");
+    const entry = groups.get(key) ?? {
+      key, level: finding.severity, rule: finding.rule, text: findingText(finding), reference: finding.reference, pins: [],
+    };
+    if (finding.pin && !entry.pins.includes(finding.pin)) entry.pins.push(finding.pin);
+    groups.set(key, entry);
+  }
+  return [...groups.values()]
+    .map((entry) => ({ ...entry, pins: entry.pins.sort(comparePads) }))
+    .sort((a, b) => (a.level === b.level ? a.rule.localeCompare(b.rule) : a.level === "error" ? -1 : 1));
+}
+
+/** A compact summary of findings, expandable to one line per rule and connector. */
+export function FindingsAlert({ findings, title }: { findings: Finding[]; title?: string }) {
+  const [open, setOpen] = useState(false);
+  const level = worst(findings);
+  if (!level) return null;
+  const errors = findings.filter((finding) => finding.severity === "error").length;
+  const warnings = findings.filter((finding) => finding.severity === "warning").length;
+  const summary = [errors ? plural(errors, "error") : null, warnings ? plural(warnings, "warning") : null].filter(Boolean).join(", ");
+  const Icon = level === "error" ? CircleAlert : TriangleAlert;
+  const groups = group(findings);
+  return (
+    <Alert variant={level === "error" ? "destructive" : "warning"}>
+      <Icon />
+      <AlertTitle>{title ? `${title}: ${summary}` : summary}</AlertTitle>
+      <AlertDescription>
+        <Collapsible open={open} onOpenChange={setOpen} className="w-full">
+          <div className="flex w-full items-center gap-2">
+            <p className={open ? "min-w-0 flex-1" : "min-w-0 flex-1 truncate"}>
+              {open ? null : <>
+              {groups.slice(0, 2).map((entry) => `${entry.text}${entry.reference ? ` on ${entry.reference}` : ""}`).join(" · ")}
+              {groups.length > 2 && ` · ${groups.length - 2} more`}</>}
+            </p>
+            <CollapsibleTrigger asChild>
+              <Button variant="ghost" size="sm" className="h-6 shrink-0 px-2 text-xs">
+                {open ? "Hide" : "Details"}
+                <ChevronDown className={open ? "ml-1 h-3 w-3 rotate-180" : "ml-1 h-3 w-3"} />
+              </Button>
+            </CollapsibleTrigger>
+          </div>
+          <CollapsibleContent>
+            <ul className="mt-2 w-full space-y-1.5" aria-label="Findings">
+              {groups.map((entry) => (
+                <li key={entry.key} className="flex items-baseline gap-2">
+                  <Badge variant={entry.level === "error" ? "destructive" : "warning"} className="h-5 px-1.5 font-mono text-[10px]">
+                    {entry.rule}
+                  </Badge>
+                  <span className="min-w-0 text-foreground">
+                    {entry.text}
+                    {entry.reference && <span className="text-muted-foreground"> · {entry.reference}</span>}
+                    {entry.pins.length > 0 && (
+                      <span className="text-muted-foreground">
+                        {" "}· {entry.pins.length === 1 ? "pin" : "pins"} <span className="font-mono">{entry.pins.join(", ")}</span>
+                      </span>
+                    )}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </CollapsibleContent>
+        </Collapsible>
+      </AlertDescription>
+    </Alert>
+  );
+}

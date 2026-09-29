@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { chooseOption, openSelect } from "@/test/select";
+
 import { ImportTab } from "./import-tab";
 import { boardValues, missingTargets, suggestBoardMap, unmappedBoards } from "./import-model";
 import { instance, systemDocument } from "./test-fixtures";
@@ -62,11 +64,14 @@ describe("ImportTab", () => {
     const previewButton = screen.getByRole("button", { name: "Preview" }) as HTMLButtonElement;
     expect(previewButton.disabled).toBe(true);
     expect(screen.getByRole("alert").textContent).toContain("Map To pin");
-    expect(screen.queryByRole("option", { name: "SECRET" })).toBeNull();
 
-    fireEvent.change(screen.getByLabelText("Column for To pin"), { target: { value: "To Pin" } });
-    fireEvent.change(screen.getByLabelText("Board for HARNESS"), { target: { value: "skip" } });
-    fireEvent.change(screen.getByLabelText("Board for SECRET"), { target: { value: "skip" } });
+    await chooseOption("Column for To pin", "To Pin");
+    // A restricted board is never offered as a target.
+    await openSelect("Board for HARNESS");
+    expect(await screen.findByRole("option", { name: "OBC-A" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "SECRET" })).toBeNull();
+    fireEvent.click(screen.getByRole("option", { name: "Skip these rows" }));
+    await chooseOption("Board for SECRET", "Skip these rows");
     expect(previewButton.disabled).toBe(false);
     fireEvent.click(previewButton);
     expect(await screen.findByText("create (new link)")).toBeTruthy();

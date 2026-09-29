@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { chooseOption } from "@/test/select";
+
 import { CreateSystemDialog, submitSystem, validateDraft } from "./create-system-dialog";
 import type { BoardDraft } from "./board-fields";
 import type { Project } from "@/types/project";
@@ -77,7 +79,7 @@ describe("CreateSystemDialog", () => {
     expect(await screen.findByText("Name the system.")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Flight stack" } });
     fireEvent.click(screen.getByRole("button", { name: /Add board/ }));
-    fireEvent.change(screen.getByLabelText("Board 1 project"), { target: { value: "prj_pay" } });
+    await chooseOption("Board 1 project", "Payload");
     expect((screen.getByLabelText("Board 1 label") as HTMLInputElement).value).toBe("Payload");
     fireEvent.click(screen.getByRole("button", { name: "Create system" }));
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith({ systemId: "sys_9", failures: [] }));

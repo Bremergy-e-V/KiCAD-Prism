@@ -1,13 +1,13 @@
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { AlertTriangle, ArrowLeft, Boxes, GitPullRequestArrow } from "lucide-react";
+import { ArrowLeft, Boxes, CircleAlert, GitPullRequestArrow, TriangleAlert } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { SystemTabContent } from "@/features/system-builder/system-tab-content";
 import { SYSTEM_TABS, systemTabFromParam, type SystemTab } from "@/features/system-builder/system-tabs";
 import { useSystemDocument } from "@/features/system-builder/use-system-document";
 import { canManageProjects } from "@/lib/roles";
-import { cn } from "@/lib/utils";
 import type { User } from "@/types/auth";
 
 interface SystemDetailPageProps {
@@ -75,34 +75,27 @@ export function SystemDetailPage({ user }: SystemDetailPageProps) {
               </button>
             )}
             {counts && counts.error > 0 && (
-              <Badge variant="destructive"><AlertTriangle /> {counts.error} {counts.error === 1 ? "error" : "errors"}</Badge>
+              <Badge variant="destructive"><CircleAlert /> {counts.error} {counts.error === 1 ? "error" : "errors"}</Badge>
             )}
             {counts && counts.warning > 0 && (
-              <Badge variant="outline">{counts.warning} {counts.warning === 1 ? "warning" : "warnings"}</Badge>
+              <Badge variant="warning"><TriangleAlert /> {counts.warning} {counts.warning === 1 ? "warning" : "warnings"}</Badge>
             )}
           </div>
         )}
       </header>
 
-      <nav className="flex gap-1 overflow-x-auto border-b px-4 md:px-6" aria-label="System sections">
-        {SYSTEM_TABS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === item.id}
-            onClick={() => setTab(item.id)}
-            className={cn(
-              "-mb-px whitespace-nowrap border-b-2 px-3 py-2.5 text-sm transition-colors",
-              tab === item.id
-                ? "border-primary font-medium text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
+      <Tabs value={tab} onValueChange={(value) => setTab(value as SystemTab)} className="border-b px-4 pb-1 pt-1 md:px-6">
+        <TabsList variant="line" aria-label="System sections" className="h-9 overflow-x-auto">
+          {SYSTEM_TABS.map((item) => (
+            <TabsTrigger key={item.id} value={item.id} className="px-3 text-sm">
+              {item.label}
+              {item.id === "changes" && (system?.openReviewCount ?? 0) > 0 && (
+                <Badge variant="warning" className="h-5 px-1.5 tabular-nums">{system?.openReviewCount}</Badge>
+              )}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
 
       <main className="min-h-0 flex-1 overflow-auto">
         {state.error && !state.document ? (
