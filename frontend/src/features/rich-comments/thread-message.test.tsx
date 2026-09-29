@@ -123,8 +123,25 @@ describe("ThreadMessage", () => {
         await waitFor(() => expect(apply).toHaveBeenCalledWith(updated));
         const [path, init] = mockedFetch.mock.calls[0]!;
         expect(path).toBe("/api/projects/p1/comments/c1");
-        expect(JSON.parse(String(init?.body))).toEqual({ content: "**OVP** fixed", contentFormat: "md", expectedRevision: 3 });
+        expect(JSON.parse(String(init?.body))).toEqual({
+            content: "**OVP** fixed", contentFormat: "md", expectedRevision: 3, mentions: [],
+        });
         expect(screen.queryByRole("textbox", { name: "Edit message" })).toBeNull();
+    });
+
+    it("drops a mention the edit removed and keeps one still there", async () => {
+        mockedFetch.mockResolvedValue(ok(thread()));
+        renderMessage(thread({
+            content: "cc @ana@example.com and @bo@example.com", mentions: ["ana@example.com", "bo@example.com"],
+        }));
+        fireEvent.click(screen.getByRole("button", { name: "Edit message" }));
+        const editor = composerEditor(screen.getByRole("textbox", { name: "Edit message" }));
+        act(() => {
+            editor.commands.setContent("cc @bo@example.com only", { contentType: "markdown" });
+        });
+        fireEvent.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() => expect(mockedFetch).toHaveBeenCalled());
+        expect(JSON.parse(String(mockedFetch.mock.calls[0]![1]?.body)).mentions).toEqual(["bo@example.com"]);
     });
 
     it("saving an unchanged edit sends nothing", () => {

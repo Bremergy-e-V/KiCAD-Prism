@@ -53,7 +53,10 @@ const NO_CANDIDATES: MentionCandidate[] = [];
 export function extractMentions(markdown: string, candidates: MentionCandidate[]): string[] {
     const known = new Set(candidates.map((c) => c.email.toLowerCase()));
     // The serializer escapes Markdown punctuation such as `_`; mentions are text.
-    const text = markdown.replace(/\\([\\`*_{}[\]()#+\-.!])/g, "$1");
+    // The editor autolinks an address, so `@a@b.c` may arrive as `@[a@b.c](mailto:a@b.c)`.
+    const text = markdown
+        .replace(/\\([\\`*_{}[\]()#+\-.!])/g, "$1")
+        .replace(/\[([^\]]*)\]\(mailto:[^)]*\)/g, "$1");
     const found = new Set<string>();
     for (const token of text.match(/@([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/g) ?? []) {
         const email = token.slice(1).toLowerCase();
