@@ -29,7 +29,7 @@ from app.services import semantic_index_variants
 from app.services.systems import connector_detection
 
 SCHEMA = "prism.system_interface.v1"
-EXTRACTOR_VERSION = "2"
+EXTRACTOR_VERSION = "3"
 _UNCONNECTED_PREFIX = "unconnected-("
 
 
