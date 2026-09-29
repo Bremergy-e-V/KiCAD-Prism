@@ -122,6 +122,22 @@ class AttachmentApiTests(unittest.TestCase):
             comments_api._normalize_content("x" * (comment_attachments.MAX_CONTENT_CHARS + 1))
         self.assertEqual(caught.exception.status_code, 413)
 
+    def test_comparison_thread_accepts_markdown(self) -> None:
+        request = comments_api.CreateComparisonCommentRequest(
+            baseCommit="a" * 40, compareCommit="b" * 40, domain="PCB", content="**bold**", contentFormat="md",
+        )
+        anchor = SimpleNamespace(
+            base_commit="a" * 40, compare_commit="b" * 40, file_path=None, commit=None,
+            source_revision_key=None, source=None, selected_side=None, project_relative_path=None,
+        )
+        with patch.object(comments_api, "get_project_for_role_or_404", return_value=self.project), \
+             patch.object(comments_api, "resolve_comparison_anchor", return_value=anchor), \
+             patch.object(comments_api.comments_store, "create_comment", return_value={
+                 "id": "c1", "authorUserId": "rev-id", "authorKind": "user", "replies": [],
+             }) as create:
+            asyncio.run(comments_api.create_comparison_comment("p1", request, self.user))
+        self.assertEqual(create.call_args.kwargs["content_format"], "md")
+
     def test_download_is_sandboxed(self) -> None:
         with tempfile.TemporaryDirectory() as root, patch.object(settings, "COMMENT_ATTACHMENT_ROOT", root):
             digest = comment_attachments.write_blob(b"%PDF-1.7")

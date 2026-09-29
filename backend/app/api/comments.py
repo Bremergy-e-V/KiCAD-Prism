@@ -205,6 +205,7 @@ class CreateComparisonCommentRequest(BaseModel):
     compareCommit: str
     domain: str
     content: str
+    contentFormat: Optional[str] = None
     filePath: Optional[str] = None
     semanticItemId: Optional[str] = None
     semanticItemRef: Optional[str] = None
@@ -518,6 +519,7 @@ async def create_comparison_comment(
             detail="semanticItemId is required for item and group comments",
         )
     content = _normalize_content(request.content)
+    content_format = _content_format(request.contentFormat)
     comment_class = _normalize_comment_class(request.commentClass)
     severity = _normalize_severity(request.severity)
 
@@ -535,6 +537,7 @@ async def create_comparison_comment(
             context=domain,
             location={"x": 0.0, "y": 0.0, "layer": "", "page": request.filePath or ""},
             content=content,
+            content_format=content_format,
             author=actor.display_name,
             author_user_id=actor.actor_id,
             author_kind=actor.actor_kind,
