@@ -1,8 +1,8 @@
 """System Builder HTTP API (``docs/system-builder/CONTRACTS.md`` §8).
 
 SYS-04 covers systems, instances, port overrides, links, rows, history and
-layout. Detection, reviews, validation, snapshots and ICD follow (SYS-06 to
-SYS-09); imports are added by their ticket.
+layout. Detection, reviews, validation, snapshots, ICD and CSV import follow
+(SYS-06 to SYS-10).
 """
 
 from __future__ import annotations
@@ -11,11 +11,12 @@ import asyncio
 import re
 from typing import Any, Callable, List, Literal, Optional, TypeVar
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.core.security import AuthenticatedUser, require_designer, require_viewer
+from app.services.systems import csv_import
 from app.services.systems import service as system_service
 from app.services.systems.service import Caller, Result
 from app.services.systems.store import MAX_ROWS, Conflict, Invalid, NotFound, StaleVersion
@@ -96,6 +97,12 @@ class RebaseRequest(BaseModel):
 class SnapshotRequest(BaseModel):
     name: str = Name
     note: str = Field(default="", max_length=4000)
+
+
+class ImportMapRequest(BaseModel):
+    columnMap: dict[str, str]
+    boardMap: dict[str, str] = Field(default_factory=dict, max_length=500)
+    delimiter: Optional[Literal[",", ";", "\t", "|"]] = None
 
 
 class Position(BaseModel):
@@ -474,6 +481,46 @@ async def snapshot_icd(
         _caller(user), system_id, fmt, snapshot_id,
     ))
     return _icd_response(content, name, fmt, snapshot_id, None, system_id)
+
+
+# ---------------------------------------------------------------------------
+# CSV import (§9.3)
+
+
+@router.post("/{system_id}/imports", dependencies=[Depends(require_designer)], status_code=201)
+async def upload_import(
+    system_id: str,
+    file: UploadFile = File(...),
+    delimiter: Optional[Literal[",", ";", "\t", "|"]] = Form(default=None),
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    raw = await file.read(csv_import.MAX_UPLOAD_BYTES + 1)
+    return await _run(system_id, lambda: system_service.service.upload_import(
+        _caller(user), system_id, filename=file.filename or "", raw=raw, delimiter=delimiter,
+    ))
+
+
+@router.post("/{system_id}/imports/{import_id}/preview", dependencies=[Depends(require_designer)])
+async def preview_import(
+    system_id: str, import_id: str, body: ImportMapRequest, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    result = await _run(system_id, lambda: system_service.service.preview_import(
+        _caller(user), system_id, import_id, body.columnMap, body.boardMap, body.delimiter,
+    ))
+    return _respond(result, response)
+
+
+@router.post("/{system_id}/imports/{import_id}/commit", dependencies=[Depends(require_designer)])
+async def commit_import(
+    system_id: str, import_id: str, body: ImportMapRequest, request: Request, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.commit_import(
+        _caller(user), system_id, version, import_id, body.columnMap, body.boardMap, body.delimiter,
+    ))
+    return _respond(result, response)
 
 
 # ---------------------------------------------------------------------------
