@@ -6,6 +6,7 @@ import type { SystemDocument } from "@/types/system";
 import { BoardsTab } from "./boards-tab";
 import { ChangesTab } from "./changes-tab";
 import { ConnectivityTab } from "./connectivity-tab";
+import { HistoryTab } from "./history-tab";
 import { ImportTab } from "./import-tab";
 import { OverviewTab } from "./overview-tab";
 import type { SystemTab } from "./system-tabs";
@@ -31,6 +32,8 @@ export function SystemTabContent({ tab, ...props }: SystemTabProps & { tab: Syst
       return <OverviewTab {...props} />;
     case "boards":
       return <BoardsTab {...props} />;
+    case "history":
+      return <HistoryTab {...props} />;
     case "import":
       return <ImportTab {...props} />;
     case "changes":
@@ -43,9 +46,9 @@ export function SystemTabContent({ tab, ...props }: SystemTabProps & { tab: Syst
           <DiagramTab {...props} />
         </Suspense>
       );
-    default:
-      return (
-        <div className="p-6 text-sm text-muted-foreground">This section is not available yet.</div>
-      );
+    default: {
+      const unknown: never = tab;
+      return unknown;
+    }
   }
 }

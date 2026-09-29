@@ -21,6 +21,8 @@ import type {
   Review,
   ReviewStatus,
   RowSource,
+  SnapshotDiff,
+  SnapshotMeta,
   SystemDocument,
   SystemInstance,
   SystemLink,
@@ -247,6 +249,30 @@ export function getLayout(systemId: string) {
 export function putLayout(systemId: string, positions: LayoutPositions) {
   return send<{ positions: LayoutPositions }>(path(systemId, "layout"),
     { method: "PUT", body: json({ positions }) }).then((r) => r.body.positions);
+}
+
+// ---------------------------------------------------------------------------
+// Snapshots and ICD (§9)
+
+export function createSnapshot(systemId: string, etag: string, input: { name: string; note?: string }) {
+  return versioned<SnapshotMeta>(path(systemId, "snapshots"), { method: "POST", etag, body: json(input) },
+    "Could not create the snapshot");
+}
+
+export function listSnapshots(systemId: string) {
+  return send<SnapshotMeta[]>(path(systemId, "snapshots")).then((r) => r.body);
+}
+
+export function diffSnapshot(systemId: string, snapshotId: string, against: "live" | string = "live") {
+  return send<SnapshotDiff>(`${path(systemId, "snapshots", snapshotId, "diff")}?against=${encodeURIComponent(against)}`)
+    .then((r) => r.body);
+}
+
+/** Where the browser opens an ICD: live, or a snapshot's. */
+export function icdUrl(systemId: string, format: "csv" | "html", snapshotId?: string): string {
+  return snapshotId
+    ? `${path(systemId, "snapshots", snapshotId)}/icd.${format}`
+    : `${path(systemId)}/icd.${format}`;
 }
 
 // ---------------------------------------------------------------------------
