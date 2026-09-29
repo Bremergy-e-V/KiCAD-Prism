@@ -215,6 +215,13 @@ class DetectionTest(unittest.TestCase):
         self.assertEqual(classify("U4", "Connector_Audio:J", "", {}), (True, "library"))
         self.assertEqual(classify("U5", "Mine:Z", "connector_custom:FP", {}), (True, "library"))
         self.assertEqual(classify("U6", "Mine:Z", "", {"Prism_Port": "maybe"}), (False, "none"))
+        # v1.9: KiCad's test points live in the Connector library but are not ports,
+        # unless a field says so.
+        self.assertEqual(classify("TP1", "Connector:TestPoint", "TestPoint:TestPoint_Pad_D1.0mm", {}),
+                         (False, "none"))
+        self.assertEqual(classify("TP2", "Connector:TestPoint_2Pole", "Connector_Custom:TP", {}),
+                         (False, "none"))
+        self.assertEqual(classify("TP3", "Connector:TestPoint", "", {"Prism_Port": "yes"}), (True, "field"))
 
 
 class DigestTest(unittest.TestCase):
