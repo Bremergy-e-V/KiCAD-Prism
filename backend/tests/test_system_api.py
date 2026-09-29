@@ -84,7 +84,7 @@ def _request(app, method: str, path: str, *, body=None, headers=None, user="desi
     data = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
     response_headers = {k.decode().lower(): v.decode() for k, v in start["headers"]}
     return SimpleNamespace(
-        status=start["status"], headers=response_headers,
+        status=start["status"], headers=response_headers, text=data.decode("utf-8", "replace"),
         json=json.loads(data) if data and response_headers.get("content-type", "").startswith("application/json") else None,
     )
 

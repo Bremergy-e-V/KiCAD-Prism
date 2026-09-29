@@ -1,8 +1,8 @@
 """System Builder HTTP API (``docs/system-builder/CONTRACTS.md`` §8).
 
 SYS-04 covers systems, instances, port overrides, links, rows, history and
-layout. Detection, reviews, validation, snapshots, ICD and imports are added
-by their tickets.
+layout. Detection, reviews, validation, snapshots and ICD follow (SYS-06 to
+SYS-09); imports are added by their ticket.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import re
 from typing import Any, Callable, List, Literal, Optional, TypeVar
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from app.core.security import AuthenticatedUser, require_designer, require_viewer
@@ -91,6 +91,11 @@ class DecisionRequest(BaseModel):
 
 class RebaseRequest(BaseModel):
     commit: str = Field(min_length=7, max_length=40)
+
+
+class SnapshotRequest(BaseModel):
+    name: str = Name
+    note: str = Field(default="", max_length=4000)
 
 
 class Position(BaseModel):
@@ -397,6 +402,78 @@ async def rebase_instance(
     if state == "queued":
         return JSONResponse(status_code=202, content=outcome)
     return _respond(outcome, response)
+
+
+# ---------------------------------------------------------------------------
+# Snapshots and ICD (§9)
+
+# The ICD is self-contained: inline styles and SVG, no scripts, no fetches.
+ICD_CSP = ("default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; "
+           "form-action 'none'; frame-ancestors 'self'")
+_UNSAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _icd_response(content: str, name: str, fmt: str, suffix: str, version: Optional[int], system_id: str):
+    headers = {"X-Content-Type-Options": "nosniff", "Cache-Control": "no-store"}
+    if version is not None:
+        headers["ETag"] = etag(system_id, version)
+    stem = _UNSAFE_FILENAME.sub("-", f"{name}-{suffix}").strip("-.") or "system"
+    if fmt == "csv":
+        headers["Content-Disposition"] = f'attachment; filename="{stem}-icd.csv"'
+        return PlainTextResponse(content, media_type="text/csv; charset=utf-8", headers=headers)
+    headers["Content-Security-Policy"] = ICD_CSP
+    headers["Content-Disposition"] = f'inline; filename="{stem}-icd.html"'
+    return PlainTextResponse(content, media_type="text/html; charset=utf-8", headers=headers)
+
+
+@router.post("/{system_id}/snapshots", dependencies=[Depends(require_designer)], status_code=201)
+async def create_snapshot(
+    system_id: str, body: SnapshotRequest, request: Request, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.create_snapshot(
+        _caller(user), system_id, version, body.name, body.note,
+    ))
+    return _respond(result, response, status_code=201)
+
+
+@router.get("/{system_id}/snapshots")
+async def list_snapshots(system_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    return await _run(system_id, lambda: system_service.service.list_snapshots(_caller(user), system_id))
+
+
+@router.get("/{system_id}/snapshots/{snapshot_id}")
+async def get_snapshot(system_id: str, snapshot_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    return await _run(system_id, lambda: system_service.service.get_snapshot(_caller(user), system_id, snapshot_id))
+
+
+@router.get("/{system_id}/snapshots/{snapshot_id}/diff")
+async def diff_snapshot(
+    system_id: str, snapshot_id: str,
+    against: str = Query(default="live", min_length=1, max_length=100),
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    return await _run(system_id, lambda: system_service.service.diff_snapshot(
+        _caller(user), system_id, snapshot_id, against,
+    ))
+
+
+@router.get("/{system_id}/icd.{fmt}")
+async def live_icd(system_id: str, fmt: Literal["csv", "html"], user: AuthenticatedUser = Depends(require_viewer)):
+    content, name, version = await _run(system_id, lambda: system_service.service.icd(_caller(user), system_id, fmt))
+    return _icd_response(content, name, fmt, "live", version, system_id)
+
+
+@router.get("/{system_id}/snapshots/{snapshot_id}/icd.{fmt}")
+async def snapshot_icd(
+    system_id: str, snapshot_id: str, fmt: Literal["csv", "html"],
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    content, name, _version = await _run(system_id, lambda: system_service.service.icd(
+        _caller(user), system_id, fmt, snapshot_id,
+    ))
+    return _icd_response(content, name, fmt, snapshot_id, None, system_id)
 
 
 # ---------------------------------------------------------------------------

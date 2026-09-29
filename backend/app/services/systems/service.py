@@ -7,6 +7,10 @@ transaction; extraction jobs are enqueued after it commits.
 
 Detection, reviews, validation, snapshots and imports arrive with their own
 tickets (SYS-06 to SYS-10) and extend this service.
+
+Documents are built unredacted (``_build``) and redacted for the reader last
+(``redaction``), so a snapshot can freeze one document and serve it to any
+reader later (§9.1).
 """
 
 from __future__ import annotations
@@ -16,12 +20,12 @@ import logging
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Callable, ContextManager, Iterator, Mapping, Optional, Sequence
 
 from app.core.roles import Role
-from app.services.systems import drift, exposure, reconcile, sources, validation, visibility
-from app.services.systems.interface_extractor import EXTRACTOR_VERSION
+from app.services.systems import drift, exposure, icd, reconcile, redaction, sources, validation, visibility
+from app.services.systems.interface_extractor import EXTRACTOR_VERSION, canonical_digest
 from app.services.systems.jobs import (
     EXTRACT_JOB_KIND,
     artifact_key,
@@ -200,51 +204,60 @@ class SystemService:
     # ------------------------------------------------------------------
     # The system document (§8.1)
 
+    def _build(self, store: SystemStore, system: Mapping[str, Any]) -> tuple[dict, list[dict], dict]:
+        """The unredacted system document with its full validation report.
+
+        Snapshots freeze exactly this; readers get it through ``redact_document``.
+        Also returns the instance rows and their latest extraction jobs.
+        """
+
+        system_id = system["id"]
+        instances = store.list_instances(system_id)
+        links = store.list_links(system_id)
+        names = visibility.project_access(store.conn, [i["project_id"] for i in instances], "admin")
+        interfaces: dict[str, dict] = {}
+        for instance in instances:
+            found = store.get_interface(instance["project_id"], instance["baseline_commit"], EXTRACTOR_VERSION)
+            if found is not None:
+                interfaces[instance["id"]] = found
+        pending = [i for i in instances if i["id"] not in interfaces]
+        job_state = self._latest_jobs(store, pending)
+        overrides = {i["id"]: store.list_overrides(i["id"]) for i in instances if i["id"] in interfaces}
+        open_reviews = store.list_reviews(system_id, status="open")
+        report = self._validate(store, system_id, instances, links, interfaces, job_state, open_reviews)
+        review_rows = sorted({rid for review in open_reviews for item in review["items"] for rid in item["row_ids"]})
+        return {
+            "system": dict(system),
+            "instances": [
+                self._instance_doc(i, names.get(i["project_id"]), interfaces.get(i["id"]),
+                                   overrides.get(i["id"], {}),
+                                   job_state.get(artifact_key(i["project_id"], i["baseline_commit"])))
+                for i in instances
+            ],
+            "links": [self._link_doc(link, interfaces, overrides) for link in links],
+            "openReviewCount": system["openReviewCount"],
+            "findingCounts": report["counts"],
+            "validation": report,
+            "reviewRowIds": review_rows,
+        }, instances, job_state
+
     def document(self, caller: Caller, system_id: str) -> Result:
         with self._tx() as store:
             system = self._system(store, system_id, caller)
-            instances = store.list_instances(system_id)
-            links = store.list_links(system_id)
-            access = self._access(store, instances, caller)
-            restricted = {
-                i["id"] for i in instances
-                if access.get(i["project_id"]) is not None and not access[i["project_id"]]["visible"]
-            }
-            interfaces: dict[str, dict] = {}
-            for instance in instances:
-                if instance["id"] in restricted:
-                    continue
-                found = store.get_interface(
-                    instance["project_id"], instance["baseline_commit"], EXTRACTOR_VERSION
-                )
-                if found is not None:
-                    interfaces[instance["id"]] = found
-            pending = [i for i in instances if i["id"] not in restricted and i["id"] not in interfaces]
-            job_state = self._latest_jobs(store, pending)
-            overrides = {i["id"]: store.list_overrides(i["id"]) for i in instances if i["id"] in interfaces}
-
-            body = {
-                "system": system,
-                "instances": [
-                    self._instance_doc(i, access.get(i["project_id"]), i["id"] in restricted,
-                                       interfaces.get(i["id"]), overrides.get(i["id"], {}),
-                                       job_state.get(artifact_key(i["project_id"], i["baseline_commit"])))
-                    for i in instances
-                ],
-                "links": [self._link_doc(link, restricted, interfaces, overrides) for link in links],
-                "openReviewCount": system["openReviewCount"],
-                "findingCounts": self._validate(store, system_id, instances, links, interfaces,
-                                                job_state)["counts"],
-            }
-        for instance in pending:
+            built, instances, job_state = self._build(store, system)
+            restricted = self._restricted_instances(store, system_id, caller)
+        ready = {i["id"] for i in built["instances"] if i["interface"]["status"] == "ready"}
+        for instance in instances:
             key = artifact_key(instance["project_id"], instance["baseline_commit"])
-            if key not in job_state and instance["resolution"] == "resolved":
+            if (instance["id"] not in ready and instance["id"] not in restricted
+                    and key not in job_state and instance["resolution"] == "resolved"):
                 self._enqueue_quietly(instance["project_id"], instance["baseline_commit"], caller)
-        return Result(body, system_id, system["version"])
+        body = {k: v for k, v in built.items() if k not in ("validation", "reviewRowIds")}
+        return Result(redaction.redact_document(body, restricted), system_id, system["version"])
 
     def _validate(
         self, store: SystemStore, system_id: str, instances: Sequence[dict], links: Sequence[dict],
-        interfaces: Mapping[str, dict], job_state: Mapping[str, dict],
+        interfaces: Mapping[str, dict], job_state: Mapping[str, dict], open_reviews: Sequence[dict],
     ) -> dict:
         """§7.2 over the live state; an instance's failed extraction makes its source unavailable."""
 
@@ -256,7 +269,7 @@ class SystemService:
         return validation.validate(
             instances, links, {i["id"]: interfaces.get(i["id"]) for i in instances},
             {i["id"]: store.list_overrides(i["id"]) for i in instances},
-            store.list_reviews(system_id, status="open"), unavailable=unavailable,
+            open_reviews, unavailable=unavailable,
         )
 
     def validation_report(self, caller: Caller, system_id: str) -> Result:
@@ -264,26 +277,9 @@ class SystemService:
 
         with self._tx() as store:
             system = self._system(store, system_id, caller)
-            instances = store.list_instances(system_id)
-            links = store.list_links(system_id)
-            interfaces = {}
-            for instance in instances:
-                found = store.get_interface(instance["project_id"], instance["baseline_commit"],
-                                            EXTRACTOR_VERSION)
-                if found is not None:
-                    interfaces[instance["id"]] = found
-            job_state = self._latest_jobs(store, [i for i in instances if i["id"] not in interfaces])
-            report = self._validate(store, system_id, instances, links, interfaces, job_state)
+            built, _instances, _jobs = self._build(store, system)
             restricted = self._restricted_instances(store, system_id, caller)
-        for finding in report["findings"]:
-            if finding["instanceId"] in restricted:
-                finding.update(reference=None, pin=None, detail=None, redacted=True)
-            else:
-                finding["redacted"] = False
-        for entry in report["exempt"]:
-            if entry["instanceId"] in restricted:
-                entry.update(reference=None, pin=None, portKey=None, redacted=True)
-        return Result(report, system_id, system["version"])
+        return Result(redaction.redact_findings(built["validation"], restricted), system_id, system["version"])
 
     def _latest_jobs(self, store: SystemStore, instances: Sequence[dict]) -> dict[str, dict]:
         keys = sorted({artifact_key(i["project_id"], i["baseline_commit"]) for i in instances})
@@ -312,17 +308,9 @@ class SystemService:
                 "jobId": str(job["id"]) if job else None, "errorCode": None}
 
     def _instance_doc(
-        self, instance: dict, access: Optional[dict], restricted: bool,
-        interface: Optional[dict], overrides: Mapping[str, str], job: Optional[dict],
+        self, instance: dict, access: Optional[dict], interface: Optional[dict],
+        overrides: Mapping[str, str], job: Optional[dict],
     ) -> dict:
-        if restricted:
-            return {
-                "id": instance["id"], "label": instance["label"], "restricted": True, "redacted": True,
-                "projectId": None, "projectName": None, "baselineCommit": None, "trackedRef": None,
-                "pinned": instance["pinned"], "resolution": instance["resolution"],
-                "tipCommit": None, "tipCheckedAt": None, "updateAvailable": None,
-                "interface": None, "ports": None,
-            }
         tip = instance["tip_commit"]
         return {
             "id": instance["id"],
@@ -353,19 +341,13 @@ class SystemService:
                 "pinNames": pin.get("pinNames"), "pinTypes": pin.get("pinTypes")}
 
     def _link_doc(
-        self, link: dict, restricted: set[str], interfaces: Mapping[str, dict],
-        overrides: Mapping[str, Mapping[str, str]],
+        self, link: dict, interfaces: Mapping[str, dict], overrides: Mapping[str, Mapping[str, str]],
     ) -> dict:
         ends: dict[str, dict] = {}
         pins: dict[str, Optional[dict]] = {}
         for end in ("a", "b"):
             instance_id = link[f"{end}_instance_id"]
             port = dict(link[f"{end}_port"])
-            if instance_id in restricted:
-                ends[end] = {"instanceId": instance_id, "redacted": True, "port": None,
-                             "resolved": None, "exposed": None}
-                pins[end] = None
-                continue
             interface = interfaces.get(instance_id)
             component = exposure.component_by_key(interface, port["portKey"]) if interface else None
             ends[end] = {
@@ -382,20 +364,15 @@ class SystemService:
         rows = []
         for row in link["rows"]:
             doc: dict[str, Any] = {"id": row["id"], "signal": row["signal"], "source": row["source"]}
-            redacted_ends = []
             for end, column in (("a", "A"), ("b", "B")):
-                if ends[end]["redacted"]:
-                    redacted_ends.append(end)
-                    doc[f"pin{column}"] = doc[f"net{column}"] = doc[f"observed{column}"] = None
-                    continue
                 pad = row[f"pin_{end}"]
                 doc[f"pin{column}"] = pad
                 doc[f"net{column}"] = list(row[f"net_{end}"])
                 doc[f"observed{column}"] = (
                     None if pins[end] is None else self._observed(pins[end].get(pad))
                 )
-            doc["redacted"] = bool(redacted_ends)
-            doc["redactedEnds"] = redacted_ends
+            doc["redacted"] = False
+            doc["redactedEnds"] = []
             rows.append(doc)
         return {
             "id": link["id"],
@@ -606,7 +583,7 @@ class SystemService:
                 if found is not None:
                     interfaces[instance["id"]] = found
                     overrides[instance["id"]] = store.list_overrides(instance["id"])
-        return self._link_doc(link, set(), interfaces, overrides)
+        return self._link_doc(link, interfaces, overrides)
 
     def create_link(
         self, caller: Caller, system_id: str, version: int, *, a: Mapping[str, str],
@@ -797,6 +774,110 @@ class SystemService:
                 row = store.get_instance(system_id, instance_id)
         body = {"outcome": outcome, "reviewId": review_id, "instance": self._instance_row(row)}
         return "done", Result(body, system_id, change.version)
+
+    # ------------------------------------------------------------------
+    # Snapshots, ICD and diff (§9)
+
+    @staticmethod
+    def _snapshot_meta(row: Mapping[str, Any]) -> dict:
+        return {"id": row["id"], "name": row["name"], "note": row["note"], "createdBy": row["created_by"],
+                "createdAt": _iso(row["created_at"]), "digest": row["digest"],
+                "openReviewCount": int(row["open_review_count"]), "rendererVersion": row["renderer_version"]}
+
+    @staticmethod
+    def _restricted_in(store: SystemStore, document: Mapping[str, Any], caller: Caller) -> set[str]:
+        """Restricted instances of a frozen document, by today's access (§8.2).
+
+        A snapshot can hold instances that have since been removed, so this
+        reads the project identities the document itself recorded.
+        """
+
+        projects = {i["id"]: i["projectId"] for i in document["instances"]}
+        access = visibility.project_access(store.conn, projects.values(), caller.role)
+        return {iid for iid, pid in projects.items() if access.get(pid) is not None and not access[pid]["visible"]}
+
+    def create_snapshot(self, caller: Caller, system_id: str, version: int, name: str, note: str) -> Result:
+        """Freeze the unredacted document at ``version`` (§9.1). The version is not bumped."""
+
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor, bump=False) as change:
+                built, _instances, _jobs = self._build(store, system)
+                document = json.loads(json.dumps(built, default=_iso))
+                row = store.create_snapshot(
+                    change, name=name, note=note, document=document, digest=canonical_digest(document),
+                    open_review_count=document["openReviewCount"], renderer_version=icd.RENDERER_VERSION,
+                )
+        return Result(self._snapshot_meta(row), system_id, change.version)
+
+    def list_snapshots(self, caller: Caller, system_id: str) -> list[dict]:
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            return [self._snapshot_meta(row) for row in store.list_snapshots(system_id)]
+
+    def _snapshot(self, store: SystemStore, system_id: str, snapshot_id: str, caller: Caller) -> tuple[dict, dict]:
+        """A snapshot's metadata and its document, redacted for ``caller``."""
+
+        row = store.get_snapshot(system_id, snapshot_id)
+        restricted = self._restricted_in(store, row["document"], caller)
+        return self._snapshot_meta(row), redaction.redact_document(row["document"], restricted)
+
+    def get_snapshot(self, caller: Caller, system_id: str, snapshot_id: str) -> dict:
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            meta, document = self._snapshot(store, system_id, snapshot_id, caller)
+        return {**meta, "document": document}
+
+    def _icd_source(
+        self, caller: Caller, system_id: str, snapshot_id: Optional[str]
+    ) -> tuple[dict, str, Optional[int]]:
+        """``(redacted document, source label, live version or None)`` for an ICD."""
+
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            if snapshot_id is not None:
+                meta, document = self._snapshot(store, system_id, snapshot_id, caller)
+                return document, meta["name"], None
+            built, _instances, _jobs = self._build(store, system)
+            restricted = self._restricted_instances(store, system_id, caller)
+        return redaction.redact_document(built, restricted), "live", system["version"]
+
+    def icd(
+        self, caller: Caller, system_id: str, fmt: str, snapshot_id: Optional[str] = None
+    ) -> tuple[str, str, Optional[int]]:
+        """``(content, system name, live version or None)``; ``fmt`` is ``csv`` or ``html`` (§9.4, §9.5)."""
+
+        document, source, version = self._icd_source(caller, system_id, snapshot_id)
+        if fmt == "csv":
+            content = icd.render_csv(document)
+        else:
+            generated = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            content = icd.render_html(document, source=source, generated_at=generated)
+        return content, document["system"]["name"], version
+
+    def diff_snapshot(self, caller: Caller, system_id: str, snapshot_id: str, against: str) -> dict:
+        """``GET …/snapshots/{sid}/diff?against=live|<sid>``: what changed since the snapshot.
+
+        Both sides are redacted with the union of their restricted boards, so a
+        comparison cannot reveal a restricted side by difference.
+        """
+
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            before = store.get_snapshot(system_id, snapshot_id)["document"]
+            if against == "live":
+                after = json.loads(json.dumps(self._build(store, system)[0], default=_iso))
+                restricted = self._restricted_instances(store, system_id, caller)
+            else:
+                try:
+                    after = store.get_snapshot(system_id, against)["document"]
+                except NotFound:
+                    raise NotFound("Snapshot not found") from None
+                restricted = self._restricted_in(store, after, caller)
+            restricted |= self._restricted_in(store, before, caller)
+        return {"snapshotId": snapshot_id, "against": against,
+                **icd.diff(redaction.redact_document(before, restricted),
+                           redaction.redact_document(after, restricted))}
 
     # ------------------------------------------------------------------
     # History and layout
