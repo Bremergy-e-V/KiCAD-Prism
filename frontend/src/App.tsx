@@ -28,6 +28,9 @@ const Workspace = lazy(() =>
 const ProjectDetailPage = lazy(() =>
     import('./pages/ProjectDetailPage').then((module) => ({ default: module.ProjectDetailPage }))
 );
+const SystemDetailPage = lazy(() =>
+    import('./pages/SystemDetailPage').then((module) => ({ default: module.SystemDetailPage }))
+);
 
 function RouteFallback() {
     return (
@@ -324,6 +327,14 @@ function App() {
                     element={
                         <Suspense fallback={<RouteFallback />}>
                             <ProjectDetailPage user={user} />
+                        </Suspense>
+                    }
+                />
+                <Route
+                    path="/systems/:systemId"
+                    element={
+                        <Suspense fallback={<RouteFallback />}>
+                            <SystemDetailPage user={user} />
                         </Suspense>
                     }
                 />
