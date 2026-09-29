@@ -36,16 +36,19 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("SystemDetailPage", () => {
   it("loads the document, reads the tab from the URL and shows badges", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(document), {
-      status: 200, headers: { "Content-Type": "application/json", ETag: '"sys:sys_1:3"' },
-    })));
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const body = url.includes("/snapshots") ? [] : url.includes("/history") ? { events: [], nextCursor: null } : document;
+      return new Response(JSON.stringify(body), {
+        status: 200, headers: { "Content-Type": "application/json", ETag: '"sys:sys_1:3"' },
+      });
+    }));
     renderAt("/systems/sys_1?tab=history");
     expect(await screen.findByRole("heading", { name: "Flight stack" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "History" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getByText(/2 errors/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open source changes" }));
     expect(screen.getByTestId("location").textContent).toBe("/systems/sys_1?tab=changes");
-    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Overview" }));
     expect(screen.getByTestId("location").textContent).toBe("/systems/sys_1");
     fireEvent.click(screen.getByRole("button", { name: /Back/ }));
     expect(screen.getByTestId("location").textContent).toBe("/?folder=fld_1");

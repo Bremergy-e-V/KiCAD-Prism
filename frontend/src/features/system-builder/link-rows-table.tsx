@@ -1,4 +1,4 @@
-import { AlertTriangle, Trash2 } from "lucide-react";
+import { CircleAlert, Trash2, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,34 +30,48 @@ export interface RowView {
   problems: string[];
 }
 
-const COLUMNS = "grid-cols-[4rem_minmax(6rem,1fr)_minmax(8rem,1.5fr)_minmax(8rem,1.2fr)_4rem_minmax(6rem,1fr)_minmax(8rem,1.5fr)_5.5rem_4rem]";
+const COLUMNS = "grid-cols-[minmax(5rem,0.8fr)_minmax(8rem,1.4fr)_minmax(8rem,1.2fr)_minmax(8rem,1.4fr)_minmax(5rem,0.8fr)_4rem]";
 
-function End({ end, net }: { end: EndView; net?: boolean }) {
+/** Pad, plus the pin name when it says something the pad does not. */
+function Pin({ end }: { end: EndView }) {
+  if (end.redacted) {
+    return <span className="text-muted-foreground">—</span>;
+  }
+  const names = (end.names ?? []).filter((name) => name && name !== end.pad).join(", ");
+  return (
+    <span className="flex min-w-0 items-baseline gap-1.5" title={names || undefined}>
+      <span className="font-mono">{end.pad}</span>
+      {names && <span className="truncate text-xs text-muted-foreground">{names}</span>}
+    </span>
+  );
+}
+
+function Net({ end }: { end: EndView }) {
   if (end.redacted) {
     return <span className="text-muted-foreground">restricted</span>;
-  }
-  if (!net) {
-    return <span className="truncate">{end.names?.join(", ") ?? ""}</span>;
   }
   if (end.missing) {
     return <span className="text-destructive">pad missing</span>;
   }
   return (
-    <span className={cn("truncate font-mono text-xs", end.changed && "text-warning")}
+    <span className={cn("block truncate font-mono text-xs", end.changed && "text-warning", !end.nets?.length && "text-muted-foreground")}
       title={end.changed ? "This net changed since the row was accepted" : end.nets?.join(" | ")}>
-      {end.nets?.length ? end.nets.join(" | ") : "(no net)"}
+      {end.nets?.length ? end.nets.join(" | ") : "no net"}
     </span>
   );
 }
 
 interface LinkRowsTableProps {
   rows: RowView[];
+  /** Headings for the two ends, e.g. "OBC-1 J14". */
+  sideA: string;
+  sideB: string;
   editable: boolean;
   onSignalChange?: (key: string, signal: string) => void;
   onRemove?: (key: string) => void;
 }
 
-export function LinkRowsTable({ rows, editable, onSignalChange, onRemove }: LinkRowsTableProps) {
+export function LinkRowsTable({ rows, sideA, sideB, editable, onSignalChange, onRemove }: LinkRowsTableProps) {
   const { height, scrollTop, viewportRef, onScroll } = useVirtualViewport();
   const first = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
   const last = Math.min(rows.length, Math.ceil((scrollTop + height) / ROW_HEIGHT) + OVERSCAN);
@@ -65,18 +79,21 @@ export function LinkRowsTable({ rows, editable, onSignalChange, onRemove }: Link
 
   // A real table for screen readers; block/grid display so rows can be absolutely positioned (virtualised).
   return (
-    <div className="relative overflow-x-auto rounded-md border">
-      <table aria-label="Link pins" aria-rowcount={rows.length + 1} className="block min-w-[60rem] text-sm">
-        <thead className="block">
-          <tr className={cn("grid gap-2 border-b bg-muted/50 px-2 py-2 text-left text-xs font-medium text-muted-foreground", COLUMNS)}>
-            <th>Pin A</th>
-            <th>Name A</th>
-            <th>Net A</th>
+    <div className="relative overflow-x-auto border">
+      <table aria-label="Link pins" aria-rowcount={rows.length + 1} className="block min-w-[44rem] text-sm">
+        <thead className="block border-b bg-muted/50 text-left text-xs text-muted-foreground">
+          <tr className={cn("grid gap-3 px-3 pt-2 font-semibold text-foreground", COLUMNS)} aria-hidden>
+            <td className="col-span-2 truncate">{sideA}</td>
+            <td />
+            <td className="col-span-2 truncate text-right">{sideB}</td>
+            <td />
+          </tr>
+          <tr className={cn("grid gap-3 px-3 pb-2 pt-1 font-medium", COLUMNS)}>
+            <th>Pin</th>
+            <th>Net</th>
             <th>Signal</th>
-            <th>Pin B</th>
-            <th>Name B</th>
-            <th>Net B</th>
-            <th>Source</th>
+            <th className="text-right">Net</th>
+            <th className="text-right">Pin</th>
             <th><span className="sr-only">Status</span></th>
           </tr>
         </thead>
@@ -99,30 +116,30 @@ export function LinkRowsTable({ rows, editable, onSignalChange, onRemove }: Link
                 <tr
                   key={row.key}
                   aria-rowindex={index + 2}
-                  className={cn("absolute left-0 right-0 grid items-center gap-2 border-b px-2", COLUMNS,
+                  className={cn("absolute left-0 right-0 grid items-center gap-3 border-b px-3", COLUMNS,
                     worst === "error" && "bg-destructive/5", worst === "warning" && "bg-warning/5")}
                   style={{ top: index * ROW_HEIGHT, height: ROW_HEIGHT }}
                 >
-                  <td className="font-mono">{row.a.redacted ? "—" : row.a.pad}</td>
-                  <td className="truncate text-muted-foreground"><End end={row.a} /></td>
-                  <td className="truncate"><End end={row.a} net /></td>
+                  <td className="min-w-0"><Pin end={row.a} /></td>
+                  <td className="min-w-0"><Net end={row.a} /></td>
                   <td>
                     {editable && onSignalChange ? (
                       <Input aria-label={`Signal for ${row.a.pad ?? ""} ↔ ${row.b.pad ?? ""}`} value={row.signal} maxLength={200}
                         className="h-7 text-xs" onChange={(event) => onSignalChange(row.key, event.target.value)} />
                     ) : (
-                      <span className="truncate">{row.signal}</span>
+                      <span className="block truncate">{row.signal}</span>
                     )}
                   </td>
-                  <td className="font-mono">{row.b.redacted ? "—" : row.b.pad}</td>
-                  <td className="truncate text-muted-foreground"><End end={row.b} /></td>
-                  <td className="truncate"><End end={row.b} net /></td>
-                  <td className="text-xs text-muted-foreground">{row.source}</td>
+                  <td className="min-w-0 text-right"><Net end={row.b} /></td>
+                  <td className="flex min-w-0 justify-end"><Pin end={row.b} /></td>
                   <td className="flex items-center justify-end">
-                    {worst ? (
-                      <AlertTriangle className={cn("h-4 w-4", worst === "error" ? "text-destructive" : "text-warning")}
-                        aria-label={tooltip} />
-                    ) : null}
+                    {worst && (
+                      <span title={tooltip} className="inline-flex">
+                        {worst === "error"
+                          ? <CircleAlert className="h-4 w-4 text-destructive" aria-label={tooltip} />
+                          : <TriangleAlert className="h-4 w-4 text-warning" aria-label={tooltip} />}
+                      </span>
+                    )}
                     {editable && onRemove && (
                       <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Remove ${row.a.pad} ↔ ${row.b.pad}`}
                         onClick={() => onRemove(row.key)}>

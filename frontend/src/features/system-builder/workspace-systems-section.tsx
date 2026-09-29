@@ -2,6 +2,7 @@ import { Boxes, GitPullRequestArrow } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
+import { WorkspaceSectionHeading } from "@/components/workspace/workspace-section-heading";
 import { cn } from "@/lib/utils";
 import type { SystemSummary } from "@/types/system";
 
@@ -84,9 +85,7 @@ export function WorkspaceSystemsSection({ systems, dense = false, showHeading }:
   }
   return (
     <section className="space-y-3" aria-label="Systems">
-      {showHeading && (
-        <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Systems</h3>
-      )}
+      {showHeading && <WorkspaceSectionHeading icon={Boxes} title="Systems" count={systems.length} />}
       <div
         className={
           dense

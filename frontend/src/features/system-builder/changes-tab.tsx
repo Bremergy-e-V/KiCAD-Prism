@@ -5,6 +5,7 @@ import { ArrowRight, CheckCircle2, GitCommitHorizontal, Pin, Wand2 } from "lucid
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   decideReviewItem,
   getHistory,
@@ -15,7 +16,6 @@ import {
 import { cn } from "@/lib/utils";
 import type { AuditEvent, Decision, Review, ReviewItem, SystemDocument, SystemInstance } from "@/types/system";
 
-import { SELECT_CLASS } from "./board-fields";
 import {
   DECISION_LABELS,
   KIND_LABELS,
@@ -339,15 +339,17 @@ function ItemRow({ systemId, document, review, item, etag, editable, busy, run, 
           )}
           {allowed.includes("bind_candidate") && (item.candidates?.length ?? 0) > 0 && (
             <>
-              <select aria-label="Candidate connector" className={cn(SELECT_CLASS, "h-8 w-auto text-xs")} value={candidate}
-                onChange={(event) => setCandidate(event.target.value)}>
-                {item.candidates?.map((option) => (
-                  <option key={option.portKey} value={option.portKey}>
-                    {option.reference} · {Math.round(option.netOverlap * 100)}% nets
-                    {option.libIdEqual ? " · same part" : ""}{option.pinCountEqual ? "" : " · pin count differs"}
-                  </option>
-                ))}
-              </select>
+              <Select value={candidate} onValueChange={setCandidate}>
+                <SelectTrigger aria-label="Candidate connector" className="h-8 w-auto min-w-48 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {item.candidates?.map((option) => (
+                    <SelectItem key={option.portKey} value={option.portKey} className="text-xs">
+                      {option.reference} · {Math.round(option.netOverlap * 100)}% nets
+                      {option.libIdEqual ? " · same part" : ""}{option.pinCountEqual ? "" : " · pin count differs"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Button size="sm" variant="outline" disabled={busy !== null || !candidate}
                 onClick={() => void decide("bind_candidate", { portKey: candidate })}>
                 Bind

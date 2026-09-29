@@ -3,68 +3,70 @@ import { describe, expect, it } from "vitest";
 import { applyOverrides } from "./diagram-tab";
 import {
   FALLBACK_HANDLE,
-  buildEdges,
-  buildNodes,
+  buildDiagram,
   connectionToLink,
-  diagramPorts,
-  gridPosition,
   handleId,
-  nodeHeight,
+  layoutInputs,
   portKeyOf,
 } from "./diagram-model";
 import { instance, link, port, systemDocument } from "./test-fixtures";
 
 const obc = instance("OBC", { ports: [port("J7"), port("J10"), port("J2", { exposed: false, override: "hidden" })] });
-const pay = instance("PAY", { ports: [port("J4")] });
+const pay = instance("PAY", { ports: [port("J4"), port("J9")] });
 const secret = instance("SECRET", { restricted: true, ports: null, projectId: null });
 
-describe("diagramPorts", () => {
-  it("draws exposed ports in natural order and marks linked ones", () => {
-    const doc = systemDocument([obc, pay], [link("L1", obc.id, "J7", pay.id, "J4", 2)]);
-    expect(diagramPorts(doc, obc)).toEqual([
-      { portKey: "key-J7", reference: "J7", linked: true, orphan: false },
-      { portKey: "key-J10", reference: "J10", linked: false, orphan: false },
-    ]);
-  });
-
-  it("keeps a linked port that is no longer exposed, as an orphan", () => {
+describe("layoutInputs", () => {
+  it("offers exposed ports, plus a linked port that is no longer exposed", () => {
     const doc = systemDocument([obc, pay], [link("L1", obc.id, "J2", pay.id, "J4")]);
-    expect(diagramPorts(doc, obc).find((p) => p.reference === "J2")).toEqual(
-      { portKey: "key-J2", reference: "J2", linked: true, orphan: true },
-    );
+    const { boards } = layoutInputs(doc);
+    expect(boards[0].ports.map((p) => p.reference)).toEqual(["J7", "J10", "J2"]);
   });
 
-  it("draws nothing for a restricted board", () => {
+  it("gives a restricted board no ports and its link end no port key", () => {
     const doc = systemDocument([obc, secret], [link("L1", obc.id, "J7", secret.id, "J1")]);
-    expect(diagramPorts(doc, secret)).toEqual([]);
+    const { boards, links } = layoutInputs(doc);
+    expect(boards[1].ports).toEqual([]);
+    expect(links[0].b).toEqual({ board: secret.id, portKey: null, reference: null });
   });
 });
 
-describe("layout", () => {
-  it("uses saved positions and falls back to a grid", () => {
-    const doc = systemDocument([obc, pay, instance("PWR"), instance("X")]);
-    const nodes = buildNodes(doc, { [pay.id]: { x: 5, y: 6 } });
-    expect(nodes.map((n) => n.position)).toEqual([
-      { x: 0, y: 0 }, { x: 5, y: 6 }, { x: 720, y: 0 }, { x: 0, y: nodeHeight(2) + 80 },
-    ]);
-    expect(gridPosition(1, [100, 100])).toEqual({ x: 360, y: 0 });
+describe("buildDiagram", () => {
+  it("draws linked ports as rows with their partner, and counts the rest", () => {
+    const doc = systemDocument([obc, pay], [link("L1", obc.id, "J7", pay.id, "J4", 3)]);
+    const { nodes } = buildDiagram(doc, {});
+    const [a, b] = nodes;
+    expect(a.data.rows).toEqual([{ portKey: "key-J7", reference: "J7", partners: ["PAY J4"], linked: true, orphan: false }]);
+    expect(a.data.hiddenCount).toBe(1);
+    expect(b.data.rows.map((row) => row.reference)).toEqual(["J4"]);
+    expect(a.position.x).not.toBe(b.position.x);
   });
-});
 
-describe("edges", () => {
-  it("attach to the facing sides and fall back for restricted ends", () => {
+  it("lists unlinked ports when a board is expanded", () => {
+    const doc = systemDocument([obc, pay], [link("L1", obc.id, "J7", pay.id, "J4")]);
+    const { nodes } = buildDiagram(doc, {}, new Set([obc.id]));
+    expect(nodes[0].data.rows.map((row) => [row.reference, row.linked])).toEqual([["J7", true], ["J10", false]]);
+    expect(nodes[0].height).toBeGreaterThan(buildDiagram(doc, {}).nodes[0].height);
+  });
+
+  it("marks an orphan row and keeps saved positions", () => {
+    const doc = systemDocument([obc, pay], [link("L1", obc.id, "J2", pay.id, "J4")]);
+    const { nodes } = buildDiagram(doc, { [pay.id]: { x: 5, y: 6 } });
+    expect(nodes[0].data.rows[0].orphan).toBe(true);
+    expect(nodes[1].position).toEqual({ x: 5, y: 6 });
+  });
+
+  it("wires the facing sides, oriented left to right, with a fallback handle for restricted ends", () => {
     const doc = systemDocument([obc, pay, secret], [
       link("L1", obc.id, "J7", pay.id, "J4", 3),
       link("L2", obc.id, "J10", secret.id, "J1"),
     ]);
-    const nodes = [
-      { id: obc.id, position: { x: 400, y: 0 } },
-      { id: pay.id, position: { x: 0, y: 0 } },
-      { id: secret.id, position: { x: 800, y: 0 } },
-    ];
-    const [l1, l2] = buildEdges(doc, nodes);
-    expect([l1.sourceHandle, l1.targetHandle, l1.label]).toEqual(["l:key-J7", "r:key-J4", "L1 · 3 pins"]);
-    expect([l2.sourceHandle, l2.targetHandle]).toEqual(["r:key-J10", handleId("l", FALLBACK_HANDLE)]);
+    const positions = { [obc.id]: { x: 400, y: 0 }, [pay.id]: { x: 0, y: 0 }, [secret.id]: { x: 800, y: 0 } };
+    const { edges } = buildDiagram(doc, positions);
+    const [l1, l2] = edges;
+    expect([l1.source, l1.sourceHandle, l1.target, l1.targetHandle]).toEqual([pay.id, "r:key-J4", obc.id, "l:key-J7"]);
+    expect(l1.data.label).toBe("L1 · 3 pins");
+    expect([l2.sourceHandle, l2.targetHandle]).toEqual(["r:key-J10", handleId("l", null)]);
+    expect(handleId("l", null)).toBe(`l:${FALLBACK_HANDLE}`);
   });
 });
 

@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.10 · 2026-09-30 · tickets SYS-00, SYS-04 to SYS-11, SYS-19, polish.** This is the source of truth for
+**Version 1.11 · 2026-09-30 · tickets SYS-00, SYS-04 to SYS-11, SYS-19, polish.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -871,7 +871,11 @@ The printable HTML ICD contains, in order:
    renderer version.
 2. An instance table: label, project, baseline commit (short and full),
    tracked branch, pinned.
-3. A connector-level block diagram as inline SVG.
+3. A connector-level block diagram as inline SVG, drawn with the default
+   layout the canvas also uses (v1.11): the most-connected board in the
+   middle, each board listing only its linked connectors with what they
+   connect to, rows ordered by their partner, and one orthogonal lane per
+   wire. A saved canvas arrangement is not used; it is not engineering state.
 4. One table per link: pins, signal, pin names, nets, harness.
 5. Findings.
 
@@ -999,3 +1003,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.8 | 2026-09-29 | SYS-11: mapping generators and the read-only generate endpoint (§8.5). No drift rule changed. |
 | 1.9 | 2026-09-30 | SYS-19 JTYU acceptance: `TestPoint*` symbols no longer match the library rule (§4.1); extractor version 2, so cached artifacts are re-extracted on first read. O2 measurements recorded (§10.1). §8.3 CSV row limit corrected to the enforced 5,000. Every §11 step re-ran and still matches. |
 | 1.10 | 2026-09-30 | Polish: the reference-prefix rule (§4.1) is `J` only; extractor version 3. Every §11 step re-ran and still matches. |
+| 1.11 | 2026-09-30 | Polish: the ICD block diagram uses the shared default layout (§9.5); renderer version 2. No drift rule changed. |

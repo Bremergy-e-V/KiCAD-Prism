@@ -5,11 +5,13 @@ import { CheckCircle2, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { FileInput } from "@/components/ui/file-input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { commitImport, previewImport, uploadImport } from "@/lib/systems-api";
 import { cn } from "@/lib/utils";
 import type { ImportBucket, ImportCommitReport, ImportEntry, ImportPreview, ImportUpload } from "@/types/system";
 
-import { SELECT_CLASS } from "./board-fields";
 import {
   REASON_LABELS,
   SKIP,
@@ -24,6 +26,9 @@ import type { SystemTabProps } from "./system-tab-content";
 import { useSystemMutation } from "./use-system-mutation";
 
 type Step = "upload" | "map" | "preview" | "done";
+
+/** Radix Select items cannot hold "", so "no column" and "no board yet" use this. */
+const NONE = "__none__";
 
 const BUCKETS: { bucket: ImportBucket; label: string; tone: "success" | "warning" | "destructive" | "outline"; hint: string }[] = [
   { bucket: "matched", label: "Matched", tone: "success", hint: "Written on commit." },
@@ -125,10 +130,12 @@ export function ImportTab({ systemId, document, etag, canEdit, reload, onNavigat
   };
 
   return (
-    <div className="space-y-5 p-4 md:p-6">
-      <ol className="flex flex-wrap gap-2 text-xs" aria-label="Import steps">
+    <div className="space-y-5 pb-6 pt-4">
+      <ol className="flex flex-wrap items-center gap-1 text-xs" aria-label="Import steps">
         {(["upload", "map", "preview", "done"] as Step[]).map((name, index) => (
-          <li key={name} className={cn("rounded-full border px-3 py-1", step === name ? "border-primary text-primary" : "text-muted-foreground")}>
+          <li key={name} aria-current={step === name ? "step" : undefined}
+            className={cn("flex items-center gap-1", step === name ? "font-medium text-foreground" : "text-muted-foreground")}>
+            {index > 0 && <span aria-hidden className="px-1 text-muted-foreground">›</span>}
             {index + 1}. {name === "upload" ? "Upload" : name === "map" ? "Map columns and boards" : name === "preview" ? "Preview" : "Done"}
           </li>
         ))}
@@ -136,10 +143,7 @@ export function ImportTab({ systemId, document, etag, canEdit, reload, onNavigat
 
       {step === "upload" && (
         <section className="max-w-xl space-y-3">
-          <p className="text-sm text-muted-foreground">
-            Upload a wiring list as CSV: one row per connection, naming each end's board, connector and pin. An ICD
-            export of this system imports back unchanged. Nothing is written until you commit.
-          </p>
+          <p className="text-sm text-muted-foreground">One row per connection, naming each end's board, connector and pin.</p>
           <FileInput accept=".csv,text/csv" value={file} onValueChange={setFile} aria-label="CSV file" />
           <Button onClick={() => void doUpload()} disabled={!file || working}>
             <Upload className="mr-1 h-4 w-4" /> {working ? "Reading…" : "Upload"}
@@ -152,16 +156,18 @@ export function ImportTab({ systemId, document, etag, canEdit, reload, onNavigat
           <p className="text-sm text-muted-foreground">
             {upload.filename} · {upload.rowCount} rows · {upload.columns.length} columns
           </p>
-          <div className="grid max-w-3xl gap-2 sm:grid-cols-2">
+          <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
             {TARGETS.map(({ target, label, required }) => (
-              <label key={target} className="grid grid-cols-[9rem_1fr] items-center gap-2 text-sm">
-                <span>{label}{required && <span className="text-destructive"> *</span>}</span>
-                <select aria-label={`Column for ${label}`} className={SELECT_CLASS} value={columnMap[target] ?? ""}
-                  onChange={(event) => setColumn(target, event.target.value)}>
-                  <option value="">{required ? "Choose a column…" : "(none)"}</option>
-                  {upload.columns.map((column) => <option key={column} value={column}>{column}</option>)}
-                </select>
-              </label>
+              <div key={target} className="grid gap-1.5">
+                <Label className="text-xs">{label}{required && <span className="text-destructive"> *</span>}</Label>
+                <Select value={columnMap[target] ?? NONE} onValueChange={(value) => setColumn(target, value === NONE ? "" : value)}>
+                  <SelectTrigger aria-label={`Column for ${label}`} className="h-8 w-full"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NONE}>{required ? "Choose a column…" : "None"}</SelectItem>
+                    {upload.columns.map((column) => <SelectItem key={column} value={column}>{column}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
             ))}
           </div>
 
@@ -169,17 +175,23 @@ export function ImportTab({ systemId, document, etag, canEdit, reload, onNavigat
             <div className="space-y-2">
               <h3 className="text-sm font-semibold">Boards</h3>
               <p className="text-xs text-muted-foreground">Match each board named in the file to a board of this system, or skip it.</p>
-              <div className="grid max-w-3xl gap-2 sm:grid-cols-2">
+              <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
                 {values.map((value) => (
-                  <label key={value} className="grid grid-cols-[9rem_1fr] items-center gap-2 text-sm">
-                    <span className="truncate font-mono" title={value}>{value}</span>
-                    <select aria-label={`Board for ${value}`} className={SELECT_CLASS} value={boardMap[value] ?? ""}
-                      onChange={(event) => setBoardMap({ ...boardMap, [value]: event.target.value })}>
-                      <option value="">Choose…</option>
-                      <option value={SKIP}>Skip these rows</option>
-                      {boards.map((instance) => <option key={instance.id} value={instance.id}>{instance.label}</option>)}
-                    </select>
-                  </label>
+                  <div key={value} className="grid gap-1.5">
+                    <Label className="truncate font-mono text-xs" title={value}>{value}</Label>
+                    <Select value={boardMap[value] || NONE} onValueChange={(next) => {
+                      const updated = { ...boardMap };
+                      if (next === NONE) delete updated[value]; else updated[value] = next;
+                      setBoardMap(updated);
+                    }}>
+                      <SelectTrigger aria-label={`Board for ${value}`} className="h-8 w-full"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value={NONE}>Choose…</SelectItem>
+                        <SelectItem value={SKIP}>Skip these rows</SelectItem>
+                        {boards.map((instance) => <SelectItem key={instance.id} value={instance.id}>{instance.label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 ))}
               </div>
             </div>
@@ -222,17 +234,17 @@ export function ImportTab({ systemId, document, etag, canEdit, reload, onNavigat
 
       {step === "preview" && preview && (
         <section className="space-y-4">
-          <div className="flex flex-wrap gap-2" role="tablist" aria-label="Import buckets">
-            {BUCKETS.map(({ bucket: name, label, tone }) => (
-              <button key={name} type="button" role="tab" aria-selected={bucket === name} onClick={() => setBucket(name)}
-                className={cn("rounded-md border px-3 py-2 text-left text-sm", bucket === name && "border-primary")}>
-                <span className="block text-xs text-muted-foreground">{label}</span>
-                <Badge variant={tone}>{preview.counts[name]}</Badge>
-              </button>
-            ))}
-          </div>
+          <Tabs value={bucket} onValueChange={(value) => setBucket(value as ImportBucket)}>
+            <TabsList aria-label="Import buckets" className="h-9">
+              {BUCKETS.map(({ bucket: name, label, tone }) => (
+                <TabsTrigger key={name} value={name} className="gap-2 px-3 text-xs">
+                  {label} <Badge variant={tone} className="h-5 px-1.5 tabular-nums">{preview.counts[name]}</Badge>
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
           <p className="text-xs text-muted-foreground">{BUCKETS.find((b) => b.bucket === bucket)?.hint}</p>
-          <div className="relative max-h-[50vh] overflow-auto rounded-md border">
+          <div className="relative max-h-[50vh] overflow-auto border">
             <table className="w-full text-sm">
               <thead className="sticky top-0 bg-muted text-left text-xs text-muted-foreground">
                 <tr>
@@ -285,7 +297,7 @@ export function ImportTab({ systemId, document, etag, canEdit, reload, onNavigat
             {report.reviewId && (
               <Button onClick={() => onNavigate("changes")}>Review {plural(report.counts.needsReview, "row")}</Button>
             )}
-            <Button variant="outline" onClick={() => onNavigate("connectivity")}>Open connectivity</Button>
+            <Button variant="outline" onClick={() => onNavigate("connectivity")}>Back to connections</Button>
             <Button variant="ghost" onClick={restart}>Import another file</Button>
           </div>
         </section>

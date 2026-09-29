@@ -57,8 +57,9 @@ describe("HistoryTab", () => {
     expect(await screen.findByText("No snapshots yet.")).toBeTruthy();
     expect(screen.getByRole("link", { name: /Live ICD/ }).getAttribute("href")).toBe("/api/systems/sys_1/icd.html");
 
-    fireEvent.change(screen.getByLabelText("Snapshot name"), { target: { value: " CDR " } });
     fireEvent.click(screen.getByRole("button", { name: /Take snapshot/ }));
+    fireEvent.change(await screen.findByLabelText("Snapshot name"), { target: { value: " CDR " } });
+    fireEvent.click(screen.getByRole("button", { name: "Take snapshot" }));
     expect(await screen.findByText("1 unreviewed")).toBeTruthy();
     const post = calls.find(([url, init]) => url.endsWith("/snapshots") && init.method === "POST")!;
     expect(JSON.parse(String(post[1].body))).toEqual({ name: "CDR", note: "" });
@@ -77,6 +78,6 @@ describe("HistoryTab", () => {
     })));
     render(<HistoryTab systemId="sys_1" document={doc} etag="e" canEdit={false} user={null} reload={vi.fn()} onNavigate={vi.fn()} />);
     expect(await screen.findByText("No snapshots yet.")).toBeTruthy();
-    expect(screen.queryByLabelText("Snapshot name")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Take snapshot/ })).toBeNull();
   });
 });

@@ -2,11 +2,12 @@ import { useState } from "react";
 import { Wand2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { generateRows } from "@/lib/systems-api";
 import type { GeneratedRow, GeneratorKind, GeneratorResult } from "@/types/system";
-
-import { SELECT_CLASS } from "./board-fields";
 
 const GENERATOR_LABELS: Record<GeneratorKind, string> = {
   identity: "Same pin (1↔1, 2↔2…)",
@@ -27,11 +28,13 @@ function pairKey(row: GeneratedRow): string {
 interface GeneratorPanelProps {
   systemId: string;
   linkId: string;
+  sideA: string;
+  sideB: string;
   onApprove: (rows: GeneratedRow[]) => void;
 }
 
 /** Preview a generator's proposals, then approve some or all into the draft (never saved directly). */
-export function GeneratorPanel({ systemId, linkId, onApprove }: GeneratorPanelProps) {
+export function GeneratorPanel({ systemId, linkId, sideA, sideB, onApprove }: GeneratorPanelProps) {
   const [generator, setGenerator] = useState<GeneratorKind>("identity");
   const [offset, setOffset] = useState("0");
   const [range, setRange] = useState({ aFrom: "", aTo: "", bFrom: "", bTo: "" });
@@ -67,73 +70,91 @@ export function GeneratorPanel({ systemId, linkId, onApprove }: GeneratorPanelPr
   const skippedUnconnected = result?.skipped.filter((s) => s.reason === "unconnected").length ?? 0;
 
   return (
-    <section className="space-y-3 rounded-md border p-3" aria-label="Generate rows">
-      <div className="flex flex-wrap items-end gap-2">
-        <label className="space-y-1 text-xs">
-          <span className="text-muted-foreground">Generator</span>
-          <select aria-label="Generator" className={`${SELECT_CLASS} w-56`} value={generator}
-            onChange={(event) => { setGenerator(event.target.value as GeneratorKind); setResult(null); }}>
+    <section className="grid gap-5 pb-6 pt-4" aria-label="Generate rows">
+      <div className="grid gap-2">
+        <Label>Pairing</Label>
+        <Select value={generator} onValueChange={(value) => { setGenerator(value as GeneratorKind); setResult(null); }}>
+          <SelectTrigger aria-label="Generator" className="w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>
             {(Object.keys(GENERATOR_LABELS) as GeneratorKind[]).map((kind) => (
-              <option key={kind} value={kind}>{GENERATOR_LABELS[kind]}</option>
+              <SelectItem key={kind} value={kind}>{GENERATOR_LABELS[kind]}</SelectItem>
             ))}
-          </select>
-        </label>
-        {generator === "offset" && (
-          <label className="space-y-1 text-xs">
-            <span className="text-muted-foreground">Offset</span>
-            <Input aria-label="Offset" type="number" className="h-9 w-20" value={offset} onChange={(event) => setOffset(event.target.value)} />
-          </label>
-        )}
-        {(["a", "b"] as const).map((end) => (
-          <div key={end} className="space-y-1 text-xs">
-            <span className="text-muted-foreground">End {end.toUpperCase()} pads</span>
-            <div className="flex gap-1">
-              <Input aria-label={`End ${end.toUpperCase()} from`} placeholder="from" className="h-9 w-16 font-mono"
+          </SelectContent>
+        </Select>
+      </div>
+
+      {generator === "offset" && (
+        <div className="grid gap-2">
+          <Label htmlFor="generator-offset">Offset</Label>
+          <Input id="generator-offset" aria-label="Offset" type="number" className="w-28" value={offset}
+            onChange={(event) => setOffset(event.target.value)} />
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        {([["a", sideA], ["b", sideB]] as const).map(([end, side]) => (
+          <div key={end} className="grid gap-2">
+            <Label>{side} pads <span className="font-normal text-muted-foreground">(optional)</span></Label>
+            <div className="flex items-center gap-2">
+              <Input aria-label={`End ${end.toUpperCase()} from`} placeholder="From" className="font-mono"
                 value={range[`${end}From`]} onChange={(event) => setRange({ ...range, [`${end}From`]: event.target.value })} />
-              <Input aria-label={`End ${end.toUpperCase()} to`} placeholder="to" className="h-9 w-16 font-mono"
+              <span className="text-muted-foreground">–</span>
+              <Input aria-label={`End ${end.toUpperCase()} to`} placeholder="To" className="font-mono"
                 value={range[`${end}To`]} onChange={(event) => setRange({ ...range, [`${end}To`]: event.target.value })} />
             </div>
           </div>
         ))}
-        <label className="flex h-9 items-center gap-1.5 text-xs text-muted-foreground">
-          <input type="checkbox" aria-label="Include unconnected pins" checked={includeUnconnected}
-            onChange={(event) => setIncludeUnconnected(event.target.checked)} />
-          Unconnected pins
-        </label>
-        <Button variant="outline" size="sm" className="h-9" onClick={() => void preview()} disabled={loading}>
-          <Wand2 className="mr-1 h-4 w-4" /> {loading ? "Generating…" : "Preview"}
-        </Button>
       </div>
+
+      <div className="flex items-center gap-2">
+        <Checkbox id="include-unconnected" aria-label="Include unconnected pins" checked={includeUnconnected}
+          onCheckedChange={(checked) => setIncludeUnconnected(checked === true)} />
+        <Label htmlFor="include-unconnected" className="font-normal">Include pins with no net on either side</Label>
+      </div>
+
+      <Button variant="outline" onClick={() => void preview()} disabled={loading} className="justify-self-start">
+        <Wand2 className="mr-1 h-4 w-4" /> {loading ? "Generating…" : "Preview"}
+      </Button>
 
       {error && <p className="text-sm text-destructive" role="alert">{error}</p>}
 
       {result && (
-        <div className="space-y-2">
-          <p className="text-xs text-muted-foreground">
+        <div className="grid gap-3">
+          <p className="text-sm text-muted-foreground">
             {result.rows.length} proposed
             {skippedExisting > 0 && ` · ${skippedExisting} skipped (already used)`}
             {skippedUnconnected > 0 && ` · ${skippedUnconnected} skipped (no net)`}
           </p>
           {result.rows.length > 0 && (
-            <div className="max-h-56 overflow-y-auto rounded border">
+            <div className="max-h-[50vh] overflow-y-auto border">
               <table className="w-full text-xs">
+                <thead className="sticky top-0 bg-muted text-left text-muted-foreground">
+                  <tr>
+                    <th className="w-8 px-2 py-1.5"><span className="sr-only">Keep</span></th>
+                    <th className="px-2 py-1.5 font-medium">Pins</th>
+                    <th className="px-2 py-1.5 font-medium">Signal</th>
+                    <th className="px-2 py-1.5 font-medium">Nets</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {result.rows.map((row) => {
                     const key = pairKey(row);
                     return (
-                      <tr key={key} className="border-b last:border-0">
+                      <tr key={key} className="border-t">
                         <td className="px-2 py-1">
-                          <input type="checkbox" aria-label={`Keep ${row.pinA} ↔ ${row.pinB}`} checked={!rejected.has(key)}
-                            onChange={(event) => setRejected((current) => {
+                          <Checkbox aria-label={`Keep ${row.pinA} ↔ ${row.pinB}`} checked={!rejected.has(key)}
+                            onCheckedChange={(checked) => setRejected((current) => {
                               const next = new Set(current);
-                              if (event.target.checked) next.delete(key); else next.add(key);
+                              if (checked === true) next.delete(key); else next.add(key);
                               return next;
                             })} />
                         </td>
-                        <td className="px-2 py-1 font-mono">{row.pinA} ↔ {row.pinB}</td>
+                        <td className="whitespace-nowrap px-2 py-1 font-mono">{row.pinA} ↔ {row.pinB}</td>
                         <td className="px-2 py-1">{row.signal}</td>
-                        <td className="truncate px-2 py-1 font-mono text-muted-foreground">{row.netA.join(" | ") || "(no net)"}</td>
-                        <td className="truncate px-2 py-1 font-mono text-muted-foreground">{row.netB.join(" | ") || "(no net)"}</td>
+                        <td className="max-w-[14rem] truncate px-2 py-1 font-mono text-muted-foreground"
+                          title={`${row.netA.join(" | ") || "no net"} ↔ ${row.netB.join(" | ") || "no net"}`}>
+                          {row.netA.join(" | ") || "no net"} ↔ {row.netB.join(" | ") || "no net"}
+                        </td>
                       </tr>
                     );
                   })}
@@ -141,7 +162,7 @@ export function GeneratorPanel({ systemId, linkId, onApprove }: GeneratorPanelPr
               </table>
             </div>
           )}
-          <Button size="sm" disabled={approved.length === 0} onClick={() => { onApprove(approved); setResult(null); }}>
+          <Button disabled={approved.length === 0} onClick={() => { onApprove(approved); setResult(null); }} className="justify-self-start">
             Add {approved.length} to the draft
           </Button>
         </div>

@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { chooseOption } from "@/test/select";
+
 import { LinkEditor } from "./link-editor";
 import { instance, link, systemDocument } from "./test-fixtures";
 
@@ -51,9 +53,9 @@ describe("LinkEditor", () => {
   it("adds a row with a signal from net A and saves every row with its id", async () => {
     const calls = stubApi();
     renderEditor();
-    await waitFor(() => expect(screen.getByLabelText("New row pin A").querySelectorAll("option")).toHaveLength(4));
-    fireEvent.change(screen.getByLabelText("New row pin A"), { target: { value: "3" } });
-    fireEvent.change(screen.getByLabelText("New row pin B"), { target: { value: "3" } });
+    await waitFor(() => expect(calls.filter(([url]) => url.endsWith("/interface"))).toHaveLength(2));
+    await chooseOption("New row pin A", "3");
+    await chooseOption("New row pin B", "3");
     fireEvent.click(screen.getByRole("button", { name: /Add row/ }));
     expect(screen.getByText(/Unsaved changes: 3 rows/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save pins" }));
@@ -69,11 +71,11 @@ describe("LinkEditor", () => {
   });
 
   it("blocks saving a duplicate pair", async () => {
-    stubApi();
+    const calls = stubApi();
     renderEditor();
-    await waitFor(() => expect(screen.getByLabelText("New row pin A").querySelectorAll("option")).toHaveLength(4));
-    fireEvent.change(screen.getByLabelText("New row pin A"), { target: { value: "1" } });
-    fireEvent.change(screen.getByLabelText("New row pin B"), { target: { value: "1" } });
+    await waitFor(() => expect(calls.filter(([url]) => url.endsWith("/interface"))).toHaveLength(2));
+    await chooseOption("New row pin A", "1");
+    await chooseOption("New row pin B", "1");
     fireEvent.click(screen.getByRole("button", { name: /Add row/ }));
     expect(screen.getByText(/1 to fix before saving/)).toBeTruthy();
     expect((screen.getByRole("button", { name: "Save pins" }) as HTMLButtonElement).disabled).toBe(true);
@@ -82,7 +84,8 @@ describe("LinkEditor", () => {
   it("previews a generator and approves its rows into the draft", async () => {
     stubApi();
     renderEditor();
-    fireEvent.click(screen.getByRole("button", { name: /Preview/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Generate rows/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Preview/ }));
     expect(await screen.findByText(/1 proposed · 1 skipped \(already used\)/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Add 1 to the draft" }));
     expect(screen.getByText(/Unsaved changes: 3 rows/)).toBeTruthy();
@@ -92,7 +95,8 @@ describe("LinkEditor", () => {
     stubApi();
     renderEditor(false);
     expect(screen.queryByRole("button", { name: /Add row/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Delete link/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Link actions/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Generate rows/ })).toBeNull();
     expect(screen.queryByLabelText(/Signal for/)).toBeNull();
   });
 });

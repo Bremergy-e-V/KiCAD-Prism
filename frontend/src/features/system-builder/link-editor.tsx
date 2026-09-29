@@ -1,14 +1,25 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { MoreHorizontal, Pencil, Plus, Trash2, Wand2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { deleteLink, getInstanceInterface, replaceRows, updateLink } from "@/lib/systems-api";
 import type { Finding, SystemDocument, SystemInstance, SystemLink } from "@/types/system";
 
-import { SELECT_CLASS } from "./board-fields";
+import { FindingsAlert } from "./findings-ui";
 import { GeneratorPanel } from "./generator-panel";
 import {
   componentFor,
@@ -39,10 +50,6 @@ const leaf = (net: string) => net.slice(net.lastIndexOf("/") + 1);
 
 function sortedPads(facts: Map<string, PinFact> | null | undefined): string[] {
   return [...(facts?.keys() ?? [])].sort(comparePads);
-}
-
-function findingKey(finding: Finding): string {
-  return [finding.rule, finding.linkId, finding.rowId, finding.end, finding.instanceId, finding.reference, finding.pin].join("|");
 }
 
 /** Pins of each end at its baseline, for adding rows and showing draft rows. */
@@ -78,6 +85,106 @@ function useEndPins(systemId: string, link: SystemLink, instances: SystemInstanc
   return loaded?.key === spec ? loaded : null;
 }
 
+/** "OBC-1 J14": the board label and connector of one link end. */
+export function endLabel(document: SystemDocument, link: SystemLink, end: "a" | "b"): string {
+  const label = document.instances.find((instance) => instance.id === link[end].instanceId)?.label ?? "?";
+  return `${label} ${link[end].port?.reference ?? "restricted"}`;
+}
+
+interface DetailsDialogProps {
+  link: SystemLink;
+  busy: boolean;
+  onClose: () => void;
+  onSave: (fields: { name: string; harness: string | null }) => Promise<boolean>;
+}
+
+function DetailsDialog({ link, busy, onClose, onSave }: DetailsDialogProps) {
+  const [name, setName] = useState(link.name);
+  const [harness, setHarness] = useState(link.harness ?? "");
+  const unchanged = name.trim() === link.name && (harness.trim() || null) === link.harness;
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Link details</DialogTitle>
+          <DialogDescription>
+            A harness label groups links that share a cable. Links on the same harness may share a pin without a fan-out warning.
+          </DialogDescription>
+        </DialogHeader>
+        <form
+          className="grid gap-4"
+          onSubmit={async (event) => {
+            event.preventDefault();
+            if (await onSave({ name: name.trim(), harness: harness.trim() || null })) onClose();
+          }}
+        >
+          <div className="grid gap-2">
+            <Label htmlFor="link-name">Name</Label>
+            <Input id="link-name" value={name} maxLength={200} placeholder="e.g. Payload bus" onChange={(event) => setName(event.target.value)} />
+          </div>
+          <div className="grid gap-2">
+            <Label htmlFor="link-harness">Harness</Label>
+            <Input id="link-harness" value={harness} maxLength={200} placeholder="None" onChange={(event) => setHarness(event.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={busy || unchanged}>{busy ? "Saving…" : "Save"}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface AddRowProps {
+  padsA: string[];
+  padsB: string[];
+  sideA: string;
+  sideB: string;
+  onAdd: (row: { pinA: string; pinB: string; signal: string }) => void;
+}
+
+function AddRow({ padsA, padsB, sideA, sideB, onAdd }: AddRowProps) {
+  const [row, setRow] = useState({ pinA: "", pinB: "", signal: "" });
+  const ends = [
+    { key: "pinA", side: sideA, pads: padsA, label: "New row pin A" },
+    { key: "pinB", side: sideB, pads: padsB, label: "New row pin B" },
+  ] as const;
+  return (
+    <form
+      className="flex flex-wrap items-end gap-3"
+      aria-label="Add a row"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onAdd(row);
+        setRow({ pinA: "", pinB: "", signal: "" });
+      }}
+    >
+      {ends.map((end) => (
+        <div key={end.key} className="grid gap-1.5">
+          <Label className="text-xs text-muted-foreground">{end.side}</Label>
+          <Select value={row[end.key]} onValueChange={(value) => setRow({ ...row, [end.key]: value })}>
+            <SelectTrigger className="h-8 w-28 font-mono" aria-label={end.label}>
+              <SelectValue placeholder="Pin" />
+            </SelectTrigger>
+            <SelectContent>
+              {end.pads.map((pad) => <SelectItem key={pad} value={pad} className="font-mono">{pad}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      ))}
+      <div className="grid gap-1.5">
+        <Label htmlFor="new-row-signal" className="text-xs text-muted-foreground">Signal</Label>
+        <Input id="new-row-signal" aria-label="New row signal" className="h-8 w-48" placeholder="From net A" value={row.signal}
+          maxLength={200} onChange={(event) => setRow({ ...row, signal: event.target.value })} />
+      </div>
+      <Button type="submit" variant="outline" size="sm" className="h-8" disabled={!row.pinA || !row.pinB}>
+        <Plus className="mr-1 h-4 w-4" /> Add row
+      </Button>
+    </form>
+  );
+}
+
 interface LinkEditorProps {
   systemId: string;
   document: SystemDocument;
@@ -93,17 +200,13 @@ interface LinkEditorProps {
 export function LinkEditor({ systemId, document, link, etag, canEdit, findings, busy, run, onDeleted }: LinkEditorProps) {
   const pins = useEndPins(systemId, link, document.instances);
   const [draft, setDraft] = useState<DraftRow[] | null>(null);
-  const [nameDraft, setNameDraft] = useState<string | null>(null);
-  const [harnessDraft, setHarnessDraft] = useState<string | null>(null);
-  const [newRow, setNewRow] = useState({ pinA: "", pinB: "", signal: "" });
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [dialog, setDialog] = useState<"details" | "delete" | "generate" | null>(null);
 
-  const labels = new Map(document.instances.map((instance) => [instance.id, instance.label]));
   const redacted = link.a.redacted || link.b.redacted;
   const editable = canEdit && !redacted;
   const { all: linkIssues, byRow } = linkFindings(findings, link);
-  const name = nameDraft ?? link.name;
-  const harness = harnessDraft ?? link.harness ?? "";
+  const sideA = endLabel(document, link, "a");
+  const sideB = endLabel(document, link, "b");
 
   const padsA = pins?.a ? new Set(pins.a.keys()) : null;
   const padsB = pins?.b ? new Set(pins.b.keys()) : null;
@@ -146,13 +249,12 @@ export function LinkEditor({ systemId, document, link, etag, canEdit, findings, 
 
   const editDraft = (update: (rows: DraftRow[]) => DraftRow[]) => setDraft((current) => update(current ?? draftFromRows(link.rows)));
 
-  const addRow = () => {
-    const nets = pins?.a?.get(newRow.pinA)?.nets ?? [];
+  const addRow = (row: { pinA: string; pinB: string; signal: string }) => {
+    const nets = pins?.a?.get(row.pinA)?.nets ?? [];
     editDraft((current) => [...current, {
-      key: newDraftKey(), pinA: newRow.pinA, pinB: newRow.pinB,
-      signal: newRow.signal.trim() || (nets[0] ? leaf(nets[0]) : ""), source: "manual",
+      key: newDraftKey(), pinA: row.pinA, pinB: row.pinB,
+      signal: row.signal.trim() || (nets[0] ? leaf(nets[0]) : ""), source: "manual",
     }]);
-    setNewRow({ pinA: "", pinB: "", signal: "" });
   };
 
   const save = async () => {
@@ -163,58 +265,42 @@ export function LinkEditor({ systemId, document, link, etag, canEdit, findings, 
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold">{link.name || "Unnamed link"}</h2>
-          <p className="text-sm text-muted-foreground">
-            {labels.get(link.a.instanceId)}/{link.a.port?.reference ?? "restricted"}
-            {" ↔ "}
-            {labels.get(link.b.instanceId)}/{link.b.port?.reference ?? "restricted"}
-            {link.harness && <Badge variant="outline" className="ml-2">{link.harness}</Badge>}
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="truncate text-lg font-semibold">{link.name || `${sideA} ↔ ${sideB}`}</h2>
+          <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span>{sideA} ↔ {sideB}</span>
+            <span aria-hidden>·</span>
+            <span>{link.rows.length} {link.rows.length === 1 ? "pin" : "pins"}</span>
+            {link.harness && <Badge variant="outline">Harness {link.harness}</Badge>}
           </p>
         </div>
         {editable && (
-          <Button variant="ghost" size="sm" className="text-destructive" onClick={() => setConfirmDelete(true)}>
-            <Trash2 className="mr-1 h-4 w-4" /> Delete link
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setDialog("generate")}>
+              <Wand2 className="mr-1 h-4 w-4" /> Generate rows
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Link actions">
+                  <MoreHorizontal className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-44">
+                <DropdownMenuItem onSelect={() => setDialog("details")}>
+                  <Pencil className="mr-2 h-4 w-4" /> Edit details
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => setDialog("delete")}>
+                  <Trash2 className="mr-2 h-4 w-4" /> Delete link
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         )}
-      </div>
+      </header>
 
-      {editable && (
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="space-y-1 text-xs">
-            <span className="text-muted-foreground">Name</span>
-            <Input aria-label="Link name" className="h-9 w-56" value={name} maxLength={200}
-              onChange={(event) => setNameDraft(event.target.value)} />
-          </label>
-          <label className="space-y-1 text-xs">
-            <span className="text-muted-foreground">Harness</span>
-            <Input aria-label="Harness" className="h-9 w-40" value={harness} maxLength={200} placeholder="none"
-              onChange={(event) => setHarnessDraft(event.target.value)} />
-          </label>
-          <Button variant="outline" size="sm" className="h-9" disabled={busy !== null || (name === link.name && harness === (link.harness ?? ""))}
-            onClick={() => void run("link", () => updateLink(systemId, etag, link.id, { name, harness: harness.trim() || null }), "Link updated")
-              .then((done) => { if (done) { setNameDraft(null); setHarnessDraft(null); } })}>
-            Save
-          </Button>
-        </div>
-      )}
-
-      {linkIssues.length > 0 && (
-        <ul className="space-y-1 rounded-md border border-warning/40 bg-warning/5 p-3 text-sm" aria-label="Findings for this link">
-          {linkIssues.map((finding) => (
-            <li key={findingKey(finding)} className="flex gap-2">
-              <Badge variant={finding.severity === "error" ? "destructive" : finding.severity === "warning" ? "warning" : "outline"}>
-                {finding.severity}
-              </Badge>
-              <span>
-                <span className="font-medium">{finding.rule}</span> {finding.name.replace(/_/g, " ")}
-                {finding.reference && ` · ${finding.reference}`}{finding.pin && ` pin ${finding.pin}`}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <FindingsAlert findings={linkIssues} />
 
       {redacted && (
         <p className="text-sm text-muted-foreground">One end of this link is on a board you cannot see, so it cannot be edited here.</p>
@@ -222,63 +308,62 @@ export function LinkEditor({ systemId, document, link, etag, canEdit, findings, 
 
       <LinkRowsTable
         rows={rows}
+        sideA={sideA}
+        sideB={sideB}
         editable={editable}
         onSignalChange={(key, signal) => editDraft((current) => current.map((row) => (row.key === key ? { ...row, signal } : row)))}
         onRemove={(key) => editDraft((current) => current.filter((row) => row.key !== key))}
       />
 
       {editable && (
-        <>
-          <div className="flex flex-wrap items-end gap-2" aria-label="Add a row">
-            <label className="space-y-1 text-xs">
-              <span className="text-muted-foreground">Pin A</span>
-              <select aria-label="New row pin A" className={`${SELECT_CLASS} w-24`} value={newRow.pinA}
-                onChange={(event) => setNewRow({ ...newRow, pinA: event.target.value })}>
-                <option value="">—</option>
-                {sortedPads(pins?.a).map((pad) => <option key={pad} value={pad}>{pad}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs">
-              <span className="text-muted-foreground">Pin B</span>
-              <select aria-label="New row pin B" className={`${SELECT_CLASS} w-24`} value={newRow.pinB}
-                onChange={(event) => setNewRow({ ...newRow, pinB: event.target.value })}>
-                <option value="">—</option>
-                {sortedPads(pins?.b).map((pad) => <option key={pad} value={pad}>{pad}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs">
-              <span className="text-muted-foreground">Signal</span>
-              <Input aria-label="New row signal" className="h-9 w-48" placeholder="from net A" value={newRow.signal}
-                maxLength={200} onChange={(event) => setNewRow({ ...newRow, signal: event.target.value })} />
-            </label>
-            <Button variant="outline" size="sm" className="h-9" disabled={!newRow.pinA || !newRow.pinB} onClick={addRow}>
-              <Plus className="mr-1 h-4 w-4" /> Add row
+        <AddRow padsA={sortedPads(pins?.a)} padsB={sortedPads(pins?.b)} sideA={sideA} sideB={sideB} onAdd={addRow} />
+      )}
+
+      {editable && draft && (
+        <div className="sticky bottom-0 flex flex-wrap items-center gap-3 border bg-card p-3 shadow-sm">
+          <p className="text-sm">
+            Unsaved changes: {draft.length} {draft.length === 1 ? "row" : "rows"}
+            {problems.length > 0 && <span className="text-destructive"> · {problems.length} to fix before saving</span>}
+          </p>
+          <div className="ml-auto flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => setDraft(null)} disabled={busy !== null}>Discard</Button>
+            <Button size="sm" onClick={() => void save()} disabled={busy !== null || problems.length > 0}>
+              {busy === "rows" ? "Saving…" : "Save pins"}
             </Button>
           </div>
+        </div>
+      )}
 
-          <GeneratorPanel systemId={systemId} linkId={link.id}
-            onApprove={(generated) => editDraft((current) => mergeGenerated(current, generated))} />
+      {editable && (
+        <Sheet open={dialog === "generate"} onOpenChange={(open) => setDialog(open ? "generate" : null)}>
+          <SheetContent side="right" className="w-full overflow-y-auto sm:max-w-xl">
+            <SheetHeader>
+              <SheetTitle>Generate rows</SheetTitle>
+              <SheetDescription>
+                Propose pin pairs between {sideA} and {sideB}. Proposals go into your draft; nothing is saved until you save pins.
+              </SheetDescription>
+            </SheetHeader>
+            <GeneratorPanel systemId={systemId} linkId={link.id} sideA={sideA} sideB={sideB}
+              onApprove={(generated) => {
+                editDraft((current) => mergeGenerated(current, generated));
+                setDialog(null);
+              }} />
+          </SheetContent>
+        </Sheet>
+      )}
 
-          {draft && (
-            <div className="sticky bottom-0 flex flex-wrap items-center gap-3 rounded-md border bg-card p-3 shadow-sm">
-              <p className="text-sm">
-                Unsaved changes: {draft.length} {draft.length === 1 ? "row" : "rows"}
-                {problems.length > 0 && <span className="text-destructive"> · {problems.length} to fix before saving</span>}
-              </p>
-              <div className="ml-auto flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => setDraft(null)} disabled={busy !== null}>Discard</Button>
-                <Button size="sm" onClick={() => void save()} disabled={busy !== null || problems.length > 0}>
-                  {busy === "rows" ? "Saving…" : "Save pins"}
-                </Button>
-              </div>
-            </div>
-          )}
-        </>
+      {dialog === "details" && (
+        <DetailsDialog
+          link={link}
+          busy={busy === "link"}
+          onClose={() => setDialog(null)}
+          onSave={async (fields) => Boolean(await run("link", () => updateLink(systemId, etag, link.id, fields), "Link updated"))}
+        />
       )}
 
       <ConfirmDialog
-        open={confirmDelete}
-        onOpenChange={setConfirmDelete}
+        open={dialog === "delete"}
+        onOpenChange={(open) => setDialog(open ? "delete" : null)}
         title="Delete this link?"
         description={`The link and its ${link.rows.length} ${link.rows.length === 1 ? "row" : "rows"} are deleted. The boards are not touched.`}
         confirmLabel="Delete link"
@@ -286,7 +371,7 @@ export function LinkEditor({ systemId, document, link, etag, canEdit, findings, 
         busy={busy === "delete"}
         onConfirm={() => {
           void run("delete", () => deleteLink(systemId, etag, link.id), "Link deleted").then((done) => {
-            setConfirmDelete(false);
+            setDialog(null);
             if (done !== undefined) onDeleted();
           });
         }}

@@ -4,11 +4,14 @@ import { Camera, FileSpreadsheet, FileText, GitCompare } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { createSnapshot, diffSnapshot, getHistory, icdUrl, listSnapshots } from "@/lib/systems-api";
 import type { AuditEvent, RowFields, SnapshotDiff, SnapshotMeta, SystemDocument } from "@/types/system";
 
-import { SELECT_CLASS } from "./board-fields";
 import type { SystemTabProps } from "./system-tab-content";
 import { shortSha } from "./system-format";
 import { useSystemMutation } from "./use-system-mutation";
@@ -93,6 +96,7 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, 
   const [snapshots, setSnapshots] = useState<{ refresh: string; items: SnapshotMeta[] } | null>(null);
   const [name, setName] = useState("");
   const [note, setNote] = useState("");
+  const [taking, setTaking] = useState(false);
   const [compare, setCompare] = useState<{ snapshotId: string; against: string } | null>(null);
   const [diff, setDiff] = useState<{ key: string; body: SnapshotDiff } | null>(null);
   const { busy, run } = useSystemMutation(reload);
@@ -123,6 +127,7 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, 
     if (done) {
       setName("");
       setNote("");
+      setTaking(false);
       onTaken();
     }
   };
@@ -136,6 +141,9 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-sm font-semibold">Snapshots and ICD</h2>
         <div className="flex gap-2">
+          {canEdit && (
+            <Button size="sm" onClick={() => setTaking(true)}><Camera className="mr-1 h-4 w-4" /> Take snapshot</Button>
+          )}
           <Button asChild variant="outline" size="sm">
             <a href={icdUrl(systemId, "html")} target="_blank" rel="noreferrer"><FileText className="mr-1 h-4 w-4" /> Live ICD</a>
           </Button>
@@ -145,29 +153,41 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, 
         </div>
       </div>
 
-      {canEdit && (
-        <div className="space-y-2 rounded-md border p-3">
-          <p className="text-xs text-muted-foreground">
-            A snapshot freezes the whole system (every board's baseline, the links and pins, and the findings) under a
-            name, for a design review or a release. It never changes afterwards.
-            {openReviews > 0 && ` It will record that ${openReviews} ${openReviews === 1 ? "change is" : "changes are"} still unreviewed.`}
-          </p>
-          <div className="flex flex-wrap gap-2">
-            <Input aria-label="Snapshot name" className="h-9 w-48" placeholder="Name, e.g. CDR" value={name} maxLength={200}
-              onChange={(event) => setName(event.target.value)} />
-            <Input aria-label="Snapshot note" className="h-9 min-w-40 flex-1" placeholder="Note (optional)" value={note}
-              maxLength={4000} onChange={(event) => setNote(event.target.value)} />
-            <Button size="sm" className="h-9" disabled={!name.trim() || busy !== null} onClick={() => void take()}>
-              <Camera className="mr-1 h-4 w-4" /> Take snapshot
-            </Button>
-          </div>
-        </div>
-      )}
+      <Dialog open={taking} onOpenChange={setTaking}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Take a snapshot</DialogTitle>
+            <DialogDescription>
+              A snapshot freezes every board's baseline, the links and pins, and the findings under a name, for a design
+              review or a release. It never changes afterwards.
+              {openReviews > 0 && ` It will record that ${openReviews} ${openReviews === 1 ? "change is" : "changes are"} still unreviewed.`}
+            </DialogDescription>
+          </DialogHeader>
+          <form className="grid gap-4" onSubmit={(event) => { event.preventDefault(); void take(); }}>
+            <div className="grid gap-2">
+              <Label htmlFor="snapshot-name">Name</Label>
+              <Input id="snapshot-name" aria-label="Snapshot name" placeholder="e.g. CDR" value={name} maxLength={200}
+                onChange={(event) => setName(event.target.value)} />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="snapshot-note">Note <span className="font-normal text-muted-foreground">(optional)</span></Label>
+              <Textarea id="snapshot-note" aria-label="Snapshot note" rows={3} value={note} maxLength={4000}
+                onChange={(event) => setNote(event.target.value)} />
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setTaking(false)}>Cancel</Button>
+              <Button type="submit" disabled={!name.trim() || busy !== null}>
+                {busy === "snapshot" ? "Saving…" : "Take snapshot"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {items.length === 0 ? (
         <p className="text-sm text-muted-foreground">No snapshots yet.</p>
       ) : (
-        <ul className="divide-y rounded-md border">
+        <ul className="divide-y border">
           {items.map((snapshot) => (
             <li key={snapshot.id} className="space-y-1 px-3 py-2 text-sm">
               <div className="flex flex-wrap items-center gap-2">
@@ -203,15 +223,17 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, 
       )}
 
       {compare && (
-        <div className="space-y-3 rounded-md border p-3" aria-label="Snapshot comparison">
+        <div className="space-y-3 border p-3" aria-label="Snapshot comparison">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span className="font-medium">{items.find((s) => s.id === compare.snapshotId)?.name}</span>
             <span className="text-muted-foreground">compared with</span>
-            <select aria-label="Compare with" className={`${SELECT_CLASS} w-48`} value={compare.against}
-              onChange={(event) => setCompare({ ...compare, against: event.target.value })}>
-              <option value={LIVE}>the live system</option>
-              {items.map((s) => (s.id === compare.snapshotId ? null : <option key={s.id} value={s.id}>{s.name}</option>))}
-            </select>
+            <Select value={compare.against} onValueChange={(value) => setCompare({ ...compare, against: value })}>
+              <SelectTrigger aria-label="Compare with" className="h-8 w-48"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={LIVE}>the live system</SelectItem>
+                {items.map((s) => (s.id === compare.snapshotId ? null : <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>))}
+              </SelectContent>
+            </Select>
             <Button variant="ghost" size="sm" className="ml-auto" onClick={() => setCompare(null)}>Close</Button>
           </div>
           {!shown ? (

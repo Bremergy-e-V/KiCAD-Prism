@@ -2,6 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { chooseMenuItem } from "@/test/select";
+
 import { BoardsTab, linkedPortKeys, portState } from "./boards-tab";
 import { OverviewTab } from "./overview-tab";
 import { instance, link, port, systemDocument } from "./test-fixtures";
@@ -75,8 +77,8 @@ describe("BoardsTab", () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 204, headers: { ETag: '"sys:sys_1:2"' } }));
     vi.stubGlobal("fetch", fetchMock);
     renderTab();
-    fireEvent.click(screen.getByRole("button", { name: /Remove/ }));
-    expect(screen.getByText(/an end of 1 link/)).toBeTruthy();
+    await chooseMenuItem("Board actions", /Remove board/);
+    expect(await screen.findByText(/an end of 1 link/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Remove board" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe("/api/systems/sys_1/instances/sin_OBC?cascade=links");
@@ -85,14 +87,27 @@ describe("BoardsTab", () => {
   it("shows a restricted board without its details or actions", () => {
     renderTab({}, "/systems/sys_1?tab=boards&board=sin_SECRET");
     expect(screen.getByText(/in a folder you cannot see/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Remove/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Board actions" })).toBeNull();
+  });
+
+  it("edits the label and branch in one dialog", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { ETag: '"sys:sys_1:2"', "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderTab();
+    await chooseMenuItem("Board actions", /Edit board/);
+    fireEvent.change(await screen.findByLabelText("Board label"), { target: { value: "OBC-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect([url, init.method, JSON.parse(String(init.body))]).toEqual(["/api/systems/sys_1/instances/sin_OBC", "PATCH", { label: "OBC-1" }]);
   });
 
   it("offers no edits to viewers", () => {
     renderTab({ canEdit: false });
     expect(screen.queryByRole("button", { name: /Hide/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "Add" })).toBeNull();
-    expect((screen.getByLabelText("Board label") as HTMLInputElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Board actions" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Check now/ })).toBeNull();
   });
 });
 
