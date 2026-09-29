@@ -8,7 +8,18 @@
  */
 
 import { ApiHttpError, fetchApi, readApiError } from "@/lib/api";
-import type { InstanceInterface, SystemDocument, SystemInstance, SystemLink, SystemPort, SystemSummary } from "@/types/system";
+import type {
+  GeneratorKind,
+  GeneratorResult,
+  InstanceInterface,
+  RowSource,
+  SystemDocument,
+  SystemInstance,
+  SystemLink,
+  SystemPort,
+  SystemSummary,
+  ValidationReport,
+} from "@/types/system";
 
 const BASE = "/api/systems";
 
@@ -150,6 +161,39 @@ export function createLink(
 ) {
   return versioned<SystemLink>(path(systemId, "links"), { method: "POST", etag, body: json(input) },
     "Could not create the link");
+}
+
+export function updateLink(systemId: string, etag: string, linkId: string, fields: { name?: string; harness?: string | null }) {
+  return versioned<SystemLink>(path(systemId, "links", linkId), { method: "PATCH", etag, body: json(fields) });
+}
+
+export function deleteLink(systemId: string, etag: string, linkId: string) {
+  return versioned<void>(path(systemId, "links", linkId), { method: "DELETE", etag });
+}
+
+export interface RowInput {
+  id?: string;
+  pinA: string;
+  pinB: string;
+  signal: string;
+  source: RowSource;
+}
+
+/** `PUT …/rows` replaces **all** of a link's rows; send the ones to keep too. */
+export function replaceRows(systemId: string, etag: string, linkId: string, rows: RowInput[]) {
+  return versioned<SystemLink>(path(systemId, "links", linkId, "rows"), { method: "PUT", etag, body: json(rows) },
+    "Could not save the rows");
+}
+
+export function generateRows(
+  systemId: string, linkId: string, generator: GeneratorKind, options: Record<string, unknown> = {},
+) {
+  return versioned<GeneratorResult>(path(systemId, "links", linkId, "generate"),
+    { method: "POST", body: json({ generator, options }) });
+}
+
+export function getValidation(systemId: string) {
+  return versioned<ValidationReport>(path(systemId, "validation"));
 }
 
 export type LayoutPositions = Record<string, { x: number; y: number }>;

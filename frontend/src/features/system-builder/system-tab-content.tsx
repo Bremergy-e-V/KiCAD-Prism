@@ -4,6 +4,7 @@ import type { User } from "@/types/auth";
 import type { SystemDocument } from "@/types/system";
 
 import { BoardsTab } from "./boards-tab";
+import { ConnectivityTab } from "./connectivity-tab";
 import { OverviewTab } from "./overview-tab";
 import type { SystemTab } from "./system-tabs";
 
@@ -28,6 +29,8 @@ export function SystemTabContent({ tab, ...props }: SystemTabProps & { tab: Syst
       return <OverviewTab {...props} />;
     case "boards":
       return <BoardsTab {...props} />;
+    case "connectivity":
+      return <ConnectivityTab {...props} />;
     case "diagram":
       return (
         <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading diagram…</div>}>

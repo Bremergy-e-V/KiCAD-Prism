@@ -335,7 +335,7 @@ function PortsSection({ systemId, document, instance, etag, editable, busy, run 
         Connectors are detected automatically. Promote any other component to use it as a port, or hide a
         detected connector that is not one.
       </p>
-      <div className="overflow-x-auto rounded-md border">
+      <div className="relative overflow-x-auto rounded-md border">
         <table className="w-full text-sm">
           <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
             <tr>
