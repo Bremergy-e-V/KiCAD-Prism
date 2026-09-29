@@ -85,6 +85,11 @@ class RowRequest(BaseModel):
     source: Literal["manual", "generator", "import"] = "manual"
 
 
+class GenerateRequest(BaseModel):
+    generator: Literal["identity", "reverse", "offset", "net_name"]
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
 class DecisionRequest(BaseModel):
     decision: Literal["accept", "remap", "bind_candidate", "remove_rows"]
     payload: Optional[dict[str, Any]] = None
@@ -348,6 +353,17 @@ async def replace_rows(
     rows = [row.model_dump() for row in body]
     result = await _run(system_id, lambda: system_service.service.replace_rows(
         _caller(user), system_id, version, link_id, rows,
+    ))
+    return _respond(result, response)
+
+
+@router.post("/{system_id}/links/{link_id}/generate")
+async def generate_rows(
+    system_id: str, link_id: str, body: GenerateRequest, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    result = await _run(system_id, lambda: system_service.service.generate_rows(
+        _caller(user), system_id, link_id, body.generator, body.options,
     ))
     return _respond(result, response)
 

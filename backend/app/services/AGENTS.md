@@ -94,7 +94,8 @@ its outcome. Project sync queues detection after every successful fetch.
 `systems/validation.py` computes the §7.2 findings. Documents are built
 unredacted and redacted for the reader last by `systems/redaction.py`, which is
 what lets `systems/icd.py` render frozen snapshots and diffs for any reader.
-`systems/csv_import.py` parses, classifies and writes connection CSV imports.
+`systems/csv_import.py` parses, classifies and writes connection CSV imports;
+`systems/generators.py` proposes rows and never writes.
 
 ## Comments and issue publication
 

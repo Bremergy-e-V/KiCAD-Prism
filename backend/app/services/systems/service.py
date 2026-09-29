@@ -25,7 +25,7 @@ from typing import Any, Callable, Collection, ContextManager, Iterator, Mapping,
 
 from app.core.roles import Role
 from app.services.systems import (
-    csv_import, drift, exposure, icd, reconcile, redaction, sources, validation, visibility,
+    csv_import, drift, exposure, generators, icd, reconcile, redaction, sources, validation, visibility,
 )
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION, canonical_digest
 from app.services.systems.jobs import (
@@ -663,6 +663,24 @@ class SystemService:
                 store.replace_rows(change, link_id, captured)
                 body = self._link_body(store, system_id, link_id)
         return Result(body, system_id, change.version)
+
+    def generate_rows(
+        self, caller: Caller, system_id: str, link_id: str, generator: str, options: Mapping[str, Any],
+    ) -> Result:
+        """``POST …/links/{lid}/generate`` (§8.5): proposed rows, nothing written."""
+
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            link = self._visible_link(store, system_id, link_id, caller)
+            pins = {}
+            for end in ("a", "b"):
+                instance = store.get_instance(system_id, link[f"{end}_instance_id"])
+                component = exposure.component_by_key(self._interface(store, instance), link[f"{end}_port"]["portKey"])
+                if component is None:
+                    raise Conflict("a link end no longer resolves at its baseline; resolve its review first")
+                pins[end] = exposure.pins_by_pad(component)
+        body = generators.generate(generator, pins["a"], pins["b"], link["rows"], options)
+        return Result({"linkId": link_id, **body}, system_id, system["version"])
 
     # ------------------------------------------------------------------
     # Reviews and rebase (§7.1, §8.1)

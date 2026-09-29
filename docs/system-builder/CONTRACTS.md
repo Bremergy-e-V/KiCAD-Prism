@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.7 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-10.** This is the source of truth for
+**Version 1.8 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-11.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -486,6 +486,7 @@ Error bodies never carry exception detail.
 | `PATCH …/links/{lid}` | Update `name` or `harness` |
 | `DELETE …/links/{lid}` | Delete the link |
 | `PUT …/links/{lid}/rows` | **Replace all rows atomically**. Takes `[{id?, pinA, pinB, signal, source}]`; net baselines are captured from current observations |
+| `POST …/links/{lid}/generate` | `{generator, options?}` → proposed rows (§8.5). Writes nothing |
 | `GET …/validation` | Findings (§7.2) |
 | `GET …/reviews?status=` | Reviews with their items |
 | `POST …/reviews/{rvid}/items/{itemid}/decision` | `{decision, payload?}`, subject to §7.1 |
@@ -662,6 +663,32 @@ payload, redacted}], nextCursor}`; pass `nextCursor` back as `cursor`.
 - An override's `portKey` must be a component of the board at its baseline
   (422).
 - A malformed `If-Match`, or one naming another system, is 412.
+
+### 8.5 Mapping generators (v1.8)
+
+`POST …/links/{lid}/generate` proposes rows between the link's two ports at
+their baselines. It is read-only, and any role that can see the link may call
+it. The client applies proposals through `PUT …/links/{lid}/rows` with
+`source = generator`, where they are validated like any other row.
+
+| Generator | Pairs |
+|---|---|
+| `identity` | Each A pad with the B pad of the same name |
+| `reverse` | A pads in natural order with B pads in reverse natural order, up to the shorter side |
+| `offset` | `{offset}` (an integer within ±10000): each numeric A pad `n` with B pad `n + offset` |
+| `net_name` | Each A pad with the first unused B pad whose net leaf (text after the last `/`) equals one of its net leaves, case-insensitively |
+
+- `options.rangeA` and `options.rangeB` (`{from?, to?}`, inclusive, in
+  natural pad order) limit either side. A bound that is not a pad is 422.
+- Generators **never overwrite**. A pair touching a pad that a row of the
+  link already uses is skipped with `reason: "existing"`. A pair whose pads
+  both have no net is skipped with `reason: "unconnected"`, unless
+  `options.includeUnconnected` is true.
+- The response is `{linkId, generator, rows, skipped}`. Each row is
+  `{pinA, pinB, signal, source, netA, netB, pinNamesA, pinNamesB}`, where
+  `signal` defaults to the A net's leaf, or else the B net's.
+- A link end that no longer resolves at its baseline is 409; a restricted
+  link is 404.
 
 ## 9. Snapshots, CSV and ICD
 
@@ -954,3 +981,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.5 | 2026-09-29 | SYS-08: the validation report shape, not-evaluated and SYS-V05 sources, and finding redaction (§7.2). The F0 and F8 findings goldens pass. |
 | 1.6 | 2026-09-29 | SYS-09: snapshot, ICD and diff implementation rules (§9.1). Creating a snapshot does not bump the version. No drift rule changed. |
 | 1.7 | 2026-09-29 | SYS-10: CSV import implementation rules (§9.3): upload limits, sessions (migration 29), map validation, conflict reasons, promotion on commit, unchanged updates, and import review items. No drift rule changed. |
+| 1.8 | 2026-09-29 | SYS-11: mapping generators and the read-only generate endpoint (§8.5). No drift rule changed. |
