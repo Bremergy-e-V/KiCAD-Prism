@@ -33,6 +33,8 @@ const DRAW_UNIFORM_SIZE = 256;
 const GLOBAL_UNIFORM_SIZE = 112;
 // Two channels (SB2-24): R = occurrence index + 1, G = feature id (occurrences.js).
 const PICK_FORMAT = "rg32uint";
+const DRAW_FLOATS = DRAW_UNIFORM_SIZE / 4;
+const MIN_DRAW_SLOTS = 256;
 // Stencil marks: outer copper writes 1 where it is the nearest opaque surface,
 // anything else opaque writes 0. The mask then draws lighter where it is 1.
 const STENCIL_OPAQUE = { compare: "always", passOp: "zero" };
@@ -642,6 +644,8 @@ export class Renderer {
     this.stencil = shareFrom ? shareFrom.stencil : Boolean(stencil);
     // Reversed depth (see math.js): cleared to 0, nearer fragments are greater.
     this.depthFormat = this.stencil ? "depth32float-stencil8" : "depth32float";
+    // Bumped by every change that alters the picture outside the per-frame inputs.
+    this.version = 0;
     this.barrelColor = [0.55, 0.35, 0.16, 0.78];
     this.alwaysInstanced = Boolean(shareFrom);
     // Scene-wide number of this renderer's first occurrence (Globals.occurrenceBase).
@@ -663,6 +667,13 @@ export class Renderer {
     }
     this.entries = [];
     this.barrels = null;
+    // All draw uniforms live in one buffer, one 256-byte slot per entry, and go
+    // up in one write per pass.
+    this.drawSlotCapacity = MIN_DRAW_SLOTS;
+    this.drawSlotBuffer = this.createDrawSlotBuffer(this.drawSlotCapacity);
+    this.drawStaging = new Float32Array(this.drawSlotCapacity * DRAW_FLOATS);
+    this.freeDrawSlots = [];
+    this.nextDrawSlot = 0;
     this.globalBuffer = device.createBuffer({ size: GLOBAL_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.layerOffsetBuffer = device.createBuffer({ size: 1024, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
     // Occurrences (SB2-23): the one-board viewer is a single identity
@@ -718,7 +729,6 @@ export class Renderer {
     this.globalScratch = new ArrayBuffer(GLOBAL_UNIFORM_SIZE);
     this.globalScratchF32 = new Float32Array(this.globalScratch);
     this.globalScratchView = new DataView(this.globalScratch);
-    this.drawScratch = new Float32Array(DRAW_UNIFORM_SIZE / 4);
     this.barrelDrawScratch = new Float32Array(DRAW_UNIFORM_SIZE / 4);
     this.nextEntryId = 1;
     // Feature-visibility mask: default-visible, indexed by component feature
@@ -891,6 +901,7 @@ export class Renderer {
     if (this.cull) this.device.queue.writeBuffer(this.cull.lods, 0, new Uint32Array(this.occurrenceCapacity).fill(3));
     if (this.selectedOccurrence >= next.length) this.selectedOccurrence = -1;
     this.bundleCache.clear();
+    this.invalidate();
   }
 
   /** Draw inner copper only for full-detail occurrences (opaque boards) or for board detail too. */
@@ -901,17 +912,19 @@ export class Renderer {
       if (!entry.innerCopper) continue;
       entry.drawClass = atFull ? 1 : 0;
       this.setSlot(entry.slot, entry.indexCount, entry.drawClass);
-    }
+    }    this.invalidate();
   }
 
   /** The board's box in its own frame (runtime units), for culling and the box stand-in. */
   setBoardBounds(bounds) {
     this.boardBounds = bounds ? [...bounds] : null;
+    this.invalidate();
   }
 
   /** Force a level of detail for every occurrence (LOD_FULL…LOD_BOX), or null for automatic. */
   setLodOverride(lod) {
     this.lodOverride = lod == null ? null : Number(lod);
+    this.invalidate();
   }
 
   createLodBuffer(capacity) {
@@ -1178,11 +1191,12 @@ export class Renderer {
       this.rebindAll();
     }
     this.uploadNetMask();
+    this.invalidate();
   }
 
   rebindAll() {
     for (const entry of this.entries) {
-      entry.bindGroup = this.makeBindGroup(entry.drawBuffer);
+      entry.bindGroup = this.makeBindGroup(this.drawSlotBuffer, entry.drawSlot * DRAW_UNIFORM_SIZE);
     }
     if (this.barrels) {
       this.barrels.bindGroup = this.makeBindGroup(this.barrels.drawBuffer);
@@ -1200,8 +1214,55 @@ export class Renderer {
     });
   }
 
+  createDrawSlotBuffer(capacity) {
+    return this.device.createBuffer({
+      label: "draw-uniforms",
+      size: capacity * DRAW_UNIFORM_SIZE,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  allocateDrawSlot() {
+    if (this.freeDrawSlots.length) return this.freeDrawSlots.pop();
+    if (this.nextDrawSlot >= this.drawSlotCapacity) {
+      const capacity = this.drawSlotCapacity * 2;
+      const staging = new Float32Array(capacity * DRAW_FLOATS);
+      staging.set(this.drawStaging);
+      this.drawSlotBuffer.destroy?.();
+      this.drawSlotCapacity = capacity;
+      this.drawSlotBuffer = this.createDrawSlotBuffer(capacity);
+      this.drawStaging = staging;
+      this.rebindAll();
+    }
+    return this.nextDrawSlot++;
+  }
+
+  /** Upload the draw uniforms of the given entries in one write. */
+  flushDraws(entries) {
+    if (!entries.length) return;
+    let first = Infinity;
+    let last = -1;
+    for (const entry of entries) {
+      first = Math.min(first, entry.drawSlot);
+      last = Math.max(last, entry.drawSlot);
+    }
+    this.device.queue.writeBuffer(
+      this.drawSlotBuffer,
+      first * DRAW_UNIFORM_SIZE,
+      this.drawStaging,
+      first * DRAW_FLOATS,
+      (last - first + 1) * DRAW_FLOATS,
+    );
+  }
+
+  /** Mark the picture stale after a change the per-frame inputs do not show. */
+  invalidate() {
+    this.version += 1;
+  }
+
   setBarrelColor(color) {
     this.barrelColor = [...color];
+    this.invalidate();
   }
 
   makeBindGroup(drawBuffer, drawOffset = 0) {
@@ -1248,6 +1309,7 @@ export class Renderer {
     }
     this.uploadFeatureMask();
     this.bundleCache.clear();
+    this.invalidate();
   }
 
   depthStencilState(stencil = null) {
@@ -1381,8 +1443,8 @@ export class Renderer {
     const indices = primitive.indices instanceof Uint32Array ? primitive.indices : new Uint32Array(primitive.indices);
     const indexBuffer = this.device.createBuffer({ size: indices.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
     this.device.queue.writeBuffer(indexBuffer, 0, indices);
-    const drawBuffer = this.device.createBuffer({ size: DRAW_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const bindGroup = this.makeBindGroup(drawBuffer);
+    const drawSlot = this.allocateDrawSlot();
+    const bindGroup = this.makeBindGroup(this.drawSlotBuffer, drawSlot * DRAW_UNIFORM_SIZE);
     const drawClass = metadata.kind === "component" || (metadata.innerCopper && this.innerCopperAtFull) ? 1 : 0;
     const entry = {
       ...metadata,
@@ -1393,11 +1455,12 @@ export class Renderer {
       vertexBuffer,
       indexBuffer,
       indexCount: indices.length,
-      drawBuffer,
+      drawSlot,
       bindGroup,
     };
     this.entries.push(entry);
     this.bundleCache.clear();
+    this.invalidate();
     return entry;
   }
 
@@ -1407,7 +1470,7 @@ export class Renderer {
     for (const entry of entries) {
       entry.vertexBuffer?.destroy?.();
       entry.indexBuffer?.destroy?.();
-      entry.drawBuffer?.destroy?.();
+      this.freeDrawSlots.push(entry.drawSlot);
       if (entry.slot != null) {
         this.setSlot(entry.slot, 0, 4);
         this.freeSlots.push(entry.slot);
@@ -1415,6 +1478,7 @@ export class Renderer {
     }
     this.entries = this.entries.filter((entry) => !removeIds.has(entry.id));
     this.bundleCache.clear();
+    this.invalidate();
   }
 
   dispose() {
@@ -1438,6 +1502,7 @@ export class Renderer {
       this.cull?.uniform, this.cull?.lods, this.cull?.counters, this.cull?.readback]) buffer?.destroy?.();
     this.box = null;
     this.cull = null;
+    this.drawSlotBuffer?.destroy?.();
     this.depth = null;
     this.pickTexture = null;
     this.featureMaskBuffer = null;
@@ -1496,6 +1561,7 @@ export class Renderer {
     this.setSlot(0, indexArray.length, 2);
     // Every bind group carries the barrel records: rebuild them all (this one included).
     this.rebindAll();
+    this.invalidate();
   }
 
   render(options) {
@@ -1583,6 +1649,7 @@ export class Renderer {
         layerAlphas?.get(entry.layerId) ?? 1,
       );
     }
+    this.flushDraws(visibleEntries);
     if (opaqueEntries.length > 64) {
       pass.executeBundles([this.renderBundle(opaqueEntries, panel.layerId)]);
     } else {
@@ -1644,6 +1711,7 @@ export class Renderer {
   /** Show or hide the boxes standing in for footprints without a 3D model. */
   setPlaceholdersVisible(visible) {
     this.showPlaceholders = Boolean(visible);
+    this.invalidate();
   }
 
   visible(entry, panelLayer, visibleLayers, showBoard, showComponents, componentOpacity, compareMode = false, visibleTileIds = null) {
@@ -1686,7 +1754,7 @@ export class Renderer {
     compareOffset = null,
     layerAlpha = 1,
   ) {
-    const data = this.drawScratch;
+    const data = this.drawStaging.subarray(entry.drawSlot * DRAW_FLOATS, (entry.drawSlot + 1) * DRAW_FLOATS);
     data.fill(0);
     const color = entry.color || entry.material.baseColor;
     data.set(color, 0);
@@ -1713,7 +1781,6 @@ export class Renderer {
         : layerAlpha;
     const kind = entry.kind === "copper" ? 1 : entry.kind === "component" ? 2 : 0;
     data.set([kind, opacity, isolateNet ? 1 : 0, compareMode ? 1 : 0], 12);
-    this.device.queue.writeBuffer(entry.drawBuffer, 0, data);
   }
 
   writeBarrelDraw(isolateNet = false) {
@@ -1777,6 +1844,7 @@ export class Renderer {
     // Occurrences pick through the lists and counts of the last rendered frame.
     const { pipelines, indirect, barrelInstances } = this.drawSet();
     pass.setPipeline(pipelines.pick);
+    const pickEntries = [];
     for (const entry of this.entries) {
       if (!this.visible(
         entry,
@@ -1801,8 +1869,11 @@ export class Renderer {
         options.compareMode,
         options.compareOffsets?.get(entry.layerId),
       );
-      this.drawEntry(pass, entry, indirect);
+      pickEntries.push(entry);
     }
+    // One upload for the uniforms just written; the draws read them at submit.
+    this.flushDraws(pickEntries);
+    for (const entry of pickEntries) this.drawEntry(pass, entry, indirect);
     if (!options.compareMode && this.barrels) {
       this.writeBarrelDraw(options.isolateNet);
       this.drawBarrels(pass, pipelines.barrelPick, indirect, barrelInstances);
