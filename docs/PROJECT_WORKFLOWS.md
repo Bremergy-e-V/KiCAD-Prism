@@ -165,6 +165,14 @@ misleading marker. Reviewers can reattach an unresolved anchor on a revision;
 legacy threads without provenance remain visibly unpinned. Comparison comments
 retain the base and compare SHAs.
 
+The composer is WYSIWYG: bold, italic, code, lists, quotes and links, with
+`@email` mentions. Paste a screenshot (Ctrl/⌘+V), drop a file, or use the
+paperclip to attach images (PNG, JPEG, WebP, GIF), PDF, ZIP or UTF-8 text, up
+to `COMMENT_ATTACHMENT_MAX_BYTES` each. Images are re-encoded on upload and
+render inline; other files render as downloads. Attachments are stored under
+`COMMENT_ATTACHMENT_ROOT`, never in the project repository, and are served only
+to project members.
+
 Threads and replies update live across viewers. After a disconnection, the
 client replays changes or refreshes the HTTP snapshot; HTTP polling provides a
 fallback when the socket is unavailable. See the
@@ -176,7 +184,13 @@ publish a thread as a GitHub or GitLab issue. The rail shows the linked issue
 and synchronization/retry state; local discussion remains available during a
 forge outage. Configure this through [GitHub setup](GITHUB_APP_SETUP.md),
 [GitLab setup](GITLAB_SETUP.md), and [tracker operations](TRACKER_INTEGRATION.md).
-Exporting `.comments/comments.json` is explicit and does not push a Git commit.
+Exporting comments is explicit and does not push a Git commit. It writes a
+`.comments/` bundle: `comments.json`, `attachments/` with every file
+a live comment references, and `threads/<id>.md`, which forges render with
+images. Importing a repository that carries a bundle restores formatting and
+attachments; files from the repository are re-validated like uploads. A
+comparison's discussion can be downloaded from its rail as Markdown plus
+attachments.
 
 ## Design Comparison
 

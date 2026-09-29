@@ -12,7 +12,7 @@ import re
 from typing import Callable, List, Optional, TypeVar
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, model_validator
 
 from app.api._helpers import get_project_for_role_or_404
@@ -499,6 +499,38 @@ async def get_comparison_comments(
         return listing
 
     return await asyncio.to_thread(read)
+
+
+@router.get("/{project_id}/comparison-comments/report")
+async def get_comparison_discussion_report(
+    project_id: str,
+    base: str,
+    compare: str,
+    domain: Optional[str] = None,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    """The comparison's discussion as Markdown with its attachments, zipped."""
+    domain_norm = _normalize_context(domain) if domain else None
+    base_commit = _normalize_commit(base, "base")
+    compare_commit = _normalize_commit(compare, "compare")
+
+    def build() -> tuple[bytes, str]:
+        project = get_project_for_role_or_404(project_id, user.role)
+        name = project.display_name or project.name
+        scope = f" ({domain_norm})" if domain_norm else ""
+        title = f"{name}: review discussion {base_commit[:10]} → {compare_commit[:10]}{scope}"
+        return comments_store.comparison_discussion_report(
+            project.id, project.path, base_commit, compare_commit, domain_norm, title,
+        ), name
+
+    data, name = await asyncio.to_thread(build)
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "project"
+    filename = f"{safe}-discussion-{base_commit[:10]}-{compare_commit[:10]}.zip"
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"', "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @router.post(

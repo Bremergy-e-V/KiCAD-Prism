@@ -22,7 +22,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple
 
-from app.services import comment_attachments, comment_live_events, comments_revisions, comments_schema_migrations, project_service
+from app.services import comment_attachments, comment_bundle, comment_live_events, comments_revisions, comments_schema_migrations, project_service
 from app.services.comments_revisions import Editor, RevisionConflict  # noqa: F401  (re-exported for callers)
 from app.services.comments_store_codec import (
     ANCHOR_STATE_PINNED,
@@ -138,7 +138,8 @@ class CommentsStoreService:
         if existing_count == 0:
             payload = self._read_comments_json(project_path)
             if payload:
-                import_comments_payload(conn, project_id, payload)
+                bundle_dir = os.path.dirname(get_project_comments_json_path(project_path))
+                import_comments_payload(conn, project_id, payload, bundle_dir)
 
         conn.execute(
             """
@@ -869,6 +870,16 @@ class CommentsStoreService:
                     uploader_display=uploader_display, sha256=digest, filename=filename, prepared=prepared,
                 )
 
+    def comparison_discussion_report(
+        self, project_id: str, project_path: str, base_commit: str, compare_commit: str,
+        comparison_domain: Optional[str], title: str,
+    ) -> bytes:
+        comments = self.get_comparison_comments(
+            project_id, project_path, base_commit, compare_commit, comparison_domain,
+        )["comments"]
+        with self._connect() as conn:
+            return comment_bundle.discussion_report_zip(conn, project_id, comments, title)
+
     def get_attachment(self, project_id: str, attachment_id: str) -> Optional[Dict]:
         self.initialize()
         with self._connect() as conn:
@@ -1175,6 +1186,7 @@ class CommentsStoreService:
 
                 comments_path = get_project_comments_json_path(project_path)
                 os.makedirs(os.path.dirname(comments_path), exist_ok=True)
+                comment_bundle.write_bundle(conn, project_id, os.path.dirname(comments_path), snapshot)
 
                 fd, tmp_path = tempfile.mkstemp(
                     prefix=".comments-",

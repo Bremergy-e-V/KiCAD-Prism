@@ -183,6 +183,21 @@ def _prepare_file(data: bytes, filename: Optional[str]) -> PreparedFile:
     )
 
 
+_EXTENSION_BY_TYPE = {
+    **{media: ext for _pil, media, ext in _IMAGE_FORMATS.values()},
+    **{media: ext for ext, media in _FILE_TYPES.items() if ext != "log"},
+}
+
+
+def extension_for(media_type: str, filename: str = "") -> str:
+    """The extension Prism stores a type under; text keeps its own (md, log)."""
+    if media_type in ("text/plain", "text/markdown") and "." in filename:
+        claimed = filename.rsplit(".", 1)[-1].lower()
+        if claimed in ("txt", "md", "log"):
+            return claimed
+    return _EXTENSION_BY_TYPE.get(media_type, "bin")
+
+
 def write_blob(data: bytes) -> str:
     """Store ``data`` once by digest and return the digest."""
     digest = hashlib.sha256(data).hexdigest()
