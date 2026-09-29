@@ -9,7 +9,7 @@ import type { Comment, CommentReply } from "@/types/comments";
 import { CommentBody } from "./comment-body";
 import { editableMarkdown, quoteMarkdown } from "./quote";
 import { ReactionBar } from "./reactions";
-import { RichComposer, type RichComposerState } from "./rich-composer";
+import { RichComposer, extractMentions, type RichComposerState } from "./rich-composer";
 import { commentPath, threadAction, useApplyThread } from "./thread-updates";
 
 interface ThreadMessageProps {
@@ -64,6 +64,7 @@ export function ThreadMessage({
                     path={commentPath(projectId, thread.id, messagePath)}
                     initialMarkdown={editableMarkdown(message.content, message.contentFormat)}
                     revision={message.revision}
+                    mentions={reply ? undefined : thread.mentions}
                     onDone={(updated) => {
                         if (updated) applyThread?.(updated);
                         setEditing(false);
@@ -142,12 +143,14 @@ function MessageAction({
 
 /** In-place edit: the same WYSIWYG composer, seeded with the stored Markdown. */
 function MessageEditor({
-    projectId, path, initialMarkdown, revision, onDone,
+    projectId, path, initialMarkdown, revision, mentions, onDone,
 }: {
     projectId: string;
     path: string;
     initialMarkdown: string;
     revision?: number;
+    /** A root's mentions; an edit keeps only those still in the text. */
+    mentions?: string[];
     onDone: (updated: Comment | null) => void;
 }) {
     const [draft, setDraft] = useState<RichComposerState>({ markdown: initialMarkdown, uploading: false });
@@ -167,7 +170,14 @@ function MessageEditor({
         try {
             const updated = await threadAction(path, {
                 method: "PATCH",
-                body: JSON.stringify({ content: draft.markdown, contentFormat: "md", expectedRevision: revision }),
+                body: JSON.stringify({
+                    content: draft.markdown,
+                    contentFormat: "md",
+                    expectedRevision: revision,
+                    ...(mentions ? {
+                        mentions: extractMentions(draft.markdown, mentions.map((email) => ({ email, role: "" }))),
+                    } : {}),
+                }),
             }, "Could not save the edit");
             onDone(updated);
         } catch (error) {
