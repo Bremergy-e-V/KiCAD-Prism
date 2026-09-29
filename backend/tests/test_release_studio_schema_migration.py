@@ -1788,6 +1788,7 @@ class ReleaseStudioPostgresSchemaTests(unittest.TestCase):
                 (24, "tracker_connector_delete_cascade"),
                 (25, "tracker_webhook_oauth_tables"),
                 (26, "system_builder"),
+                (27, "system_workspace_version"),
             ],
         )
 

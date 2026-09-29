@@ -76,6 +76,19 @@ to get it wrong are visible on the frontend side.
 One backend rule: the viewer must never infer the old route from the comparison
 object (`design_compare_nodes.py`). Each revision carries its own geometry.
 
+## System Builder
+
+`systems/` implements `docs/system-builder/CONTRACTS.md`, and the contract
+wins over code. `systems/store.py` is the only writer: every engineering
+change goes through `SystemStore.mutation`, which locks the system, checks the
+ETag version and writes audit events in the same transaction.
+`systems/service.py` owns authorization and O1 redaction, and is the only
+thing `backend/app/api/systems.py` calls. `systems/visibility.py` holds the
+folder predicate, which must stay in step with
+`WorkspaceService.get_project_for_role`. `systems/sources.py` is read-only Git
+on the child clone. `systems/jobs.py` runs `systems/interface_extractor.py`
+into the `system_interface_artifacts` cache.
+
 ## Comments and issue publication
 
 `comments_store_service.py` owns local discussion writes; `comments_revisions.py`

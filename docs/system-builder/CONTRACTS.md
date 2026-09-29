@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.0 · 2026-09-27 · ticket SYS-00.** This is the source of truth for
+**Version 1.1 · 2026-09-27 · tickets SYS-00, SYS-04.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -484,7 +484,19 @@ from the caller's role is **restricted**:
   restricted end, return 404.
 
 Adding an instance requires the caller to see the project, via the role-aware
-lookup (`get_project_for_role_or_404`).
+lookup (`get_project_for_role_or_404`, or the same folder predicate in SQL).
+
+Further rules (v1.1):
+
+- An instance whose project has been **deleted** is `unresolved` but not
+  restricted. Nothing hides a deleted project, and what the system shows of it
+  was captured into system rows by someone who could see it.
+- Deleting a system that contains a board the caller cannot see is 409: it
+  would destroy rows the caller cannot see. Cascading an instance removal
+  (`?cascade=links`) onto a link whose other end is restricted is 404.
+- `GET …/history` returns an event with `payload: null, redacted: true` when
+  its payload names a restricted instance or a project hidden from the caller.
+- A system's placement folder must be visible to the caller (422 otherwise).
 
 ### 8.3 Limits (default O4)
 
@@ -496,6 +508,111 @@ lookup (`get_project_for_role_or_404`).
 | CSV upload | 5 MB and 10,000 data rows |
 
 Exceeding a limit returns 422 with the limit name.
+
+### 8.4 Response shapes (SYS-04)
+
+These are the shapes the frontend (SYS-12 onward) builds against. Fields are
+camelCase. Timestamps are ISO-8601 strings.
+
+**System summary** (list items, workspace listing, `system` in the document):
+`{id, kind: "system", name, description, folderId, version, etag,
+instanceCount, openReviewCount, createdBy, createdAt, updatedAt}`.
+
+**Workspace.** `GET /api/workspace/bootstrap` and
+`GET /api/folders/contents` gain `systems`: the summaries visible to the
+caller (for folder contents, only that folder's). Every system mutation also
+moves the workspace bootstrap version (migration 27).
+
+**System document** (`GET /api/systems/{id}`):
+
+```json
+{
+  "system": {"…summary…"},
+  "instances": [{
+    "id": "sin_…", "label": "OBC-A", "restricted": false,
+    "projectId": "prj_…", "projectName": "mini_obc",
+    "baselineCommit": "<40-hex>", "trackedRef": "main", "pinned": false,
+    "resolution": "resolved", "tipCommit": null, "tipCheckedAt": null,
+    "updateAvailable": false,
+    "interface": {"status": "ready|pending|failed", "digest": "sha256:…",
+                  "hasPcb": true, "jobId": null, "errorCode": null},
+    "ports": [{"portKey": "…", "memberKeys": ["…"], "reference": "J7",
+               "libId": "…", "footprint": "…", "value": "…", "dnp": false,
+               "candidate": true, "candidateReason": "refdes",
+               "override": null, "exposed": true, "pinCount": 20}]
+  }],
+  "links": [{
+    "id": "slk_…", "name": "", "harness": null, "updatedAt": "…",
+    "a": {"instanceId": "sin_…", "redacted": false,
+          "port": {"portKey": "…", "memberKeys": ["…"], "reference": "J7",
+                   "libId": "…", "footprint": "…", "pinCount": 20},
+          "resolved": true, "exposed": true},
+    "b": {"…": "…"},
+    "rows": [{"id": "srw_…", "pinA": "3", "pinB": "3", "signal": "SPI_SCK",
+              "source": "manual", "netA": ["/Payload IF/SPI_SCK"], "netB": ["/SCK_IN"],
+              "observedA": {"present": true, "nets": ["…"], "pcbNets": ["…"],
+                            "pinNames": ["…"], "pinTypes": ["…"]},
+              "observedB": {"…": "…"},
+              "redacted": false, "redactedEnds": []}]
+  }],
+  "openReviewCount": 0,
+  "findingCounts": null
+}
+```
+
+- `ports` lists the exposed ports plus any port with an override; it is
+  `null` until the interface is `ready`. `GET …/interface` returns every
+  component, each with `override` and `exposed`, plus `instanceId` and
+  `atBaseline`.
+- `interface.status` is `pending` while extraction is queued or running,
+  and `failed` with an `errorCode` (never the job's message) when the last
+  job failed. Reading the document requests extraction only when no job
+  exists; `GET …/interface` requests it again.
+- `resolved`, `exposed` and `observed*` are `null` while that end's interface
+  is not ready. `observed*.present` is false when the pad no longer exists
+  at the baseline.
+- A restricted instance keeps `id`, `label`, `pinned` and `resolution`; every
+  other field is `null` and `redacted` is true. A link end on it has
+  `port: null, redacted: true`, and each row nulls `pin`, `net` and
+  `observed` on that side and lists the side in `redactedEnds`.
+- `findingCounts` stays `null` (not evaluated) until SYS-08.
+
+**Mutation responses.** Each returns the new `ETag` header.
+
+| Call | Status | Body |
+|---|---|---|
+| `POST /api/systems` | 201 | summary |
+| `PATCH /api/systems/{id}` | 200 | summary |
+| `DELETE /api/systems/{id}` | 204 | none |
+| `POST …/instances` | 201 | `{id, label, projectId, baselineCommit, trackedRef, pinned, resolution, tipCommit, tipCheckedAt}` |
+| `PATCH …/instances/{iid}` | 200 | as above. Changing `trackedRef` clears `tipCommit` |
+| `DELETE …/instances/{iid}` | 204 | none |
+| `PUT …/ports/{portKey}/override` | 200 | the port, as in `ports` |
+| `POST …/links` | 201 | the link, as in the document |
+| `PATCH …/links/{lid}` | 200 | the link |
+| `DELETE …/links/{lid}` | 204 | none |
+| `PUT …/links/{lid}/rows` | 200 | the link |
+| `PUT …/layout` | 200 | `{positions}`; no ETag |
+
+`GET …/history?cursor=&limit=` returns `{events: [{seq, id, at, actor, kind,
+payload, redacted}], nextCursor}`; pass `nextCursor` back as `cursor`.
+
+**Write rules.**
+
+- `POST …/instances` needs `baselineCommit` or `trackedRef`. A baseline may
+  be an unambiguous SHA prefix; it is expanded. An unknown ref or commit is
+  422. A `trackedRef` is resolved against `origin/<ref>`, then the local
+  branch.
+- Creating a link, setting an override or replacing rows needs the
+  instance's interface at its baseline. If it is not ready, the request is
+  409 with detail starting `interface_not_ready`.
+- A link end must name a component at the baseline (422 otherwise) that is
+  exposed (409 otherwise).
+- Every row pad must exist on its port at the baseline (422). Net baselines
+  are taken from that observation. A row `id` that is not in the link is 409.
+- An override's `portKey` must be a component of the board at its baseline
+  (422).
+- A malformed `If-Match`, or one naming another system, is 412.
 
 ## 9. Snapshots, CSV and ICD
 
@@ -666,3 +783,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.0 (pre-merge) | 2026-09-27 | Before the first merge: link ends store `memberKeys` and resolve by intersection, so a deleted unit no longer breaks a multi-unit port (§2.3, §5, §6). §11 aligned with the SYS-01 fixture boards. |
 | 1.0 (pre-merge) | 2026-09-27 | §3: `digest` also omits `projectId` and `commit`; otherwise two commits could never share a digest as §3 requires (found in SYS-02). |
 | 1.0 (pre-merge) | 2026-09-27 | Review of #407: `connectedInterfaceDigest` removed from the §3 example (never stored); `#` references excluded; §4.1 field matching defined; a connector-level item suppresses row items on its end (§6.1); rebind listing criteria defined (§6.4); `accept` on `connector_changed` refreshes row net baselines and refuses vanished pads (§7.1). |
+| 1.1 | 2026-09-27 | SYS-04: response shapes and write rules (§8.4); deleted projects are unresolved, not restricted; restricted-board rules for system deletion, cascades and history (§8.2). No drift rule changed, so no fixture step needs re-running. |
