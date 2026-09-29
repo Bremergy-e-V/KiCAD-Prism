@@ -297,6 +297,14 @@ audit events when applied:
 - The port resolved by key but its `portKey` changed (a unit was removed).
 - A rebind succeeded under §6.4.
 
+They are audited as `connector_relabelled` (reference changed, same
+`portKey`) or `connector_rebound` (`portKey` changed, through `memberKeys` or
+a rebind).
+
+Items are ordered by link ID, then end, then pad number in natural order
+(`"2"` before `"10"`). Unannotated components (§2.3) never resolve a port,
+by key or by rebind.
+
 ### 6.2 Outcome
 
 - **No items**: the instance **auto-advances**. `baseline_commit` becomes the
@@ -321,7 +329,8 @@ implementation asserts, and SYS-05 tests the two against each other.
 
 When a baseline port does not resolve by key, look for candidates among the
 candidate interface's components that are not already bound to a different
-link end of the same instance.
+link end of the same instance. "Bound" means resolved by key for any link end
+of the instance.
 
 **Auto-rebind** applies only when **exactly one** candidate meets all of
 these, and it is then a silent change:
@@ -339,7 +348,8 @@ reference, `libId` or pin count equals the port baseline's. They are sorted by t
 1. reference equal (1/0)
 2. libId equal (1/0)
 3. pin count equal (1/0)
-4. the fraction of connected pads whose net set is equal
+4. the fraction of connected pads whose net set is equal (1.0 when the end
+   has no rows)
 5. then `portKey` ascending, as a stable tiebreak
 
 ### 6.5 Superseding
