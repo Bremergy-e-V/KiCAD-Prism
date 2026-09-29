@@ -9,9 +9,13 @@
 
 import { ApiHttpError, fetchApi, readApiError } from "@/lib/api";
 import type {
+  Decision,
   GeneratorKind,
   GeneratorResult,
+  HistoryPage,
   InstanceInterface,
+  Review,
+  ReviewStatus,
   RowSource,
   SystemDocument,
   SystemInstance,
@@ -194,6 +198,40 @@ export function generateRows(
 
 export function getValidation(systemId: string) {
   return versioned<ValidationReport>(path(systemId, "validation"));
+}
+
+export async function rebaseInstance(systemId: string, etag: string, instanceId: string, commit: string) {
+  const result = await send<
+    QueuedJob | { outcome: "auto_advanced" | "review_opened" | string; reviewId: string | null; instance: InstanceRow }
+  >(path(systemId, "instances", instanceId, "rebase"), { method: "POST", etag, body: json({ commit }) });
+  return result.status === 202
+    ? { state: "queued" as const, job: result.body as QueuedJob }
+    : { state: "done" as const, etag: result.etag, body: result.body as { outcome: string; reviewId: string | null; instance: InstanceRow } };
+}
+
+export function listReviews(systemId: string, status?: ReviewStatus) {
+  const query = status ? `?status=${status}` : "";
+  return send<Review[]>(`${path(systemId, "reviews")}${query}`).then((r) => r.body);
+}
+
+export function decideReviewItem(
+  systemId: string, etag: string, reviewId: string, itemId: string, decision: Decision,
+  payload?: Record<string, unknown>,
+) {
+  return versioned<Review>(path(systemId, "reviews", reviewId, "items", itemId, "decision"),
+    { method: "POST", etag, body: json({ decision, payload: payload ?? null }) }, "Could not record the decision");
+}
+
+export function keepPinned(systemId: string, etag: string, reviewId: string) {
+  return versioned<Review>(path(systemId, "reviews", reviewId, "keep-pinned"), { method: "POST", etag });
+}
+
+export function getHistory(systemId: string, cursor?: number | null, limit = 100) {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) {
+    query.set("cursor", String(cursor));
+  }
+  return send<HistoryPage>(`${path(systemId, "history")}?${query}`).then((r) => r.body);
 }
 
 export type LayoutPositions = Record<string, { x: number; y: number }>;

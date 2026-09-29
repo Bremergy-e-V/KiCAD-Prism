@@ -4,6 +4,7 @@ import type { User } from "@/types/auth";
 import type { SystemDocument } from "@/types/system";
 
 import { BoardsTab } from "./boards-tab";
+import { ChangesTab } from "./changes-tab";
 import { ConnectivityTab } from "./connectivity-tab";
 import { OverviewTab } from "./overview-tab";
 import type { SystemTab } from "./system-tabs";
@@ -29,6 +30,8 @@ export function SystemTabContent({ tab, ...props }: SystemTabProps & { tab: Syst
       return <OverviewTab {...props} />;
     case "boards":
       return <BoardsTab {...props} />;
+    case "changes":
+      return <ChangesTab {...props} />;
     case "connectivity":
       return <ConnectivityTab {...props} />;
     case "diagram":
