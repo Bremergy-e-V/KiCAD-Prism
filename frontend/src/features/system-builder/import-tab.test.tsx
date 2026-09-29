@@ -1,0 +1,88 @@
+import { fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { ImportTab } from "./import-tab";
+import { boardValues, missingTargets, suggestBoardMap, unmappedBoards } from "./import-model";
+import { instance, systemDocument } from "./test-fixtures";
+import type { ImportUpload } from "@/types/system";
+
+afterEach(() => vi.unstubAllGlobals());
+
+const obc = instance("OBC-A");
+const pwr = instance("PWR");
+const secret = instance("SECRET", { restricted: true });
+const doc = systemDocument([obc, pwr, secret]);
+
+const upload: ImportUpload = {
+  importId: "sim_1", filename: "wiring.csv", delimiter: ",", rowCount: 2,
+  columns: ["From Board", "From Ref", "From Pin", "To Board", "To Ref", "To Pin"],
+  sampleRows: [{ "From Board": "obc-a", "From Ref": "J2", "From Pin": "1", "To Board": "PWR", "To Ref": "J1", "To Pin": "1" }],
+  suggestedColumnMap: { from_board: "From Board", from_connector: "From Ref", from_pin: "From Pin", to_board: "To Board", to_connector: "To Ref" },
+  boardValues: { "From Board": ["HARNESS", "obc-a"], "To Board": ["PWR", "SECRET"] },
+};
+
+describe("import model", () => {
+  it("collects board values from the mapped columns and suggests boards by label", () => {
+    const values = boardValues(upload, upload.suggestedColumnMap);
+    expect(values).toEqual(["HARNESS", "obc-a", "PWR", "SECRET"]);
+    const map = suggestBoardMap(values, doc.instances);
+    expect(map).toEqual({ "obc-a": obc.id, PWR: pwr.id });
+    expect(unmappedBoards(values, map)).toEqual(["HARNESS", "SECRET"]);
+    expect(missingTargets(upload.suggestedColumnMap)).toEqual(["To pin"]);
+  });
+});
+
+describe("ImportTab", () => {
+  it("walks upload → map → preview → commit with the same maps", async () => {
+    const calls: [string, RequestInit][] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
+      calls.push([url, init]);
+      const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), {
+        status, headers: { "Content-Type": "application/json", ETag: '"sys:sys_1:3"' },
+      });
+      if (url.endsWith("/imports")) return json(upload, 201);
+      const entry = { line: 2, values: { from_board: "obc-a", from_connector: "J2", from_pin: "1", to_board: "PWR", to_connector: "J1", to_pin: "1" },
+        reason: null, from: null, to: null, signal: "VIN", harness: null, linkName: "", linkId: null, rowId: null, action: "create" };
+      if (url.endsWith("/preview")) {
+        return json({ importId: "sim_1", committed: false, counts: { matched: 1, needsReview: 0, unresolved: 0, conflict: 0 },
+          matched: [entry], needsReview: [], unresolved: [], conflict: [] });
+      }
+      return json({ importId: "sim_1", created: 1, updated: 0, unchanged: 0, linksCreated: ["slk_1"], reviewId: null,
+        counts: { matched: 1, needsReview: 0, unresolved: 0, conflict: 0 }, unresolved: [], conflict: [] });
+    }));
+    const reload = vi.fn(async () => undefined);
+    const { container } = render(<ImportTab systemId="sys_1" document={doc} etag='"sys:sys_1:2"' canEdit user={null} reload={reload} onNavigate={vi.fn()} />);
+
+    const input = container.querySelector("input[type=file]") as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(["x"], "wiring.csv", { type: "text/csv" })] } });
+    fireEvent.click(screen.getByRole("button", { name: /Upload/ }));
+    expect(await screen.findByText(/wiring.csv · 2 rows/)).toBeTruthy();
+    expect(calls[0][1].body).toBeInstanceOf(FormData);
+
+    const previewButton = screen.getByRole("button", { name: "Preview" }) as HTMLButtonElement;
+    expect(previewButton.disabled).toBe(true);
+    expect(screen.getByRole("alert").textContent).toContain("Map To pin");
+    expect(screen.queryByRole("option", { name: "SECRET" })).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Column for To pin"), { target: { value: "To Pin" } });
+    fireEvent.change(screen.getByLabelText("Board for HARNESS"), { target: { value: "skip" } });
+    fireEvent.change(screen.getByLabelText("Board for SECRET"), { target: { value: "skip" } });
+    expect(previewButton.disabled).toBe(false);
+    fireEvent.click(previewButton);
+    expect(await screen.findByText("create (new link)")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Commit 1 row" }));
+    expect(await screen.findByText("Import committed")).toBeTruthy();
+    const commit = calls.find(([url]) => url.endsWith("/commit"))!;
+    const preview = calls.find(([url]) => url.endsWith("/preview"))!;
+    expect(new Headers(commit[1].headers).get("If-Match")).toBe('"sys:sys_1:2"');
+    expect(JSON.parse(String(commit[1].body))).toEqual(JSON.parse(String(preview[1].body)));
+    expect(JSON.parse(String(commit[1].body)).boardMap).toEqual({ "obc-a": obc.id, PWR: pwr.id, HARNESS: "skip", SECRET: "skip" });
+    expect(reload).toHaveBeenCalled();
+  });
+
+  it("is closed to viewers", () => {
+    render(<ImportTab systemId="sys_1" document={doc} etag="e" canEdit={false} user={null} reload={vi.fn()} onNavigate={vi.fn()} />);
+    expect(screen.getByText(/Only designers can import/)).toBeTruthy();
+  });
+});

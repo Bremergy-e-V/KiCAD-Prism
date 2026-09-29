@@ -13,6 +13,10 @@ import type {
   GeneratorKind,
   GeneratorResult,
   HistoryPage,
+  ImportCommitReport,
+  ImportPreview,
+  ImportTarget,
+  ImportUpload,
   InstanceInterface,
   Review,
   ReviewStatus,
@@ -243,4 +247,34 @@ export function getLayout(systemId: string) {
 export function putLayout(systemId: string, positions: LayoutPositions) {
   return send<{ positions: LayoutPositions }>(path(systemId, "layout"),
     { method: "PUT", body: json({ positions }) }).then((r) => r.body.positions);
+}
+
+// ---------------------------------------------------------------------------
+// CSV import (§9.3)
+
+export interface ImportMaps {
+  columnMap: Partial<Record<ImportTarget, string>>;
+  boardMap: Record<string, string>;
+  delimiter?: string | null;
+}
+
+export async function uploadImport(systemId: string, file: File, delimiter?: string) {
+  const form = new FormData();
+  form.append("file", file);
+  if (delimiter) {
+    form.append("delimiter", delimiter);
+  }
+  const { body } = await send<ImportUpload>(path(systemId, "imports"), { method: "POST", body: form },
+    "Could not read the CSV");
+  return body;
+}
+
+export function previewImport(systemId: string, importId: string, maps: ImportMaps) {
+  return versioned<ImportPreview>(path(systemId, "imports", importId, "preview"), { method: "POST", body: json(maps) },
+    "Could not preview the import");
+}
+
+export function commitImport(systemId: string, etag: string, importId: string, maps: ImportMaps) {
+  return versioned<ImportCommitReport>(path(systemId, "imports", importId, "commit"),
+    { method: "POST", etag, body: json(maps) }, "Could not commit the import");
 }
