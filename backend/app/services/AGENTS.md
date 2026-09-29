@@ -95,7 +95,11 @@ its outcome. Project sync queues detection after every successful fetch.
 unredacted and redacted for the reader last by `systems/redaction.py`, which is
 what lets `systems/icd.py` render frozen snapshots and diffs for any reader.
 `systems/csv_import.py` parses, classifies and writes connection CSV imports;
-`systems/generators.py` proposes rows and never writes.
+`systems/generators.py` proposes rows and never writes. A change to what the
+extractor reports must bump `EXTRACTOR_VERSION`, since it keys the cache.
+`backend/tests/test_system_e2e_replay.py` pushes the SYS-01 history to real upstreams
+and runs sync, detection and reconcile end to end; run it after touching any
+of these.
 
 ## Comments and issue publication
 

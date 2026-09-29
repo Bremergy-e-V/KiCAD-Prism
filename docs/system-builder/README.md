@@ -23,6 +23,8 @@ every connected pin was accepted as:
 
 ## Documents
 
+- [User guide](USER_GUIDE.md): creating a system, connecting boards,
+  importing an ICD spreadsheet, deciding reviews, snapshots and the ICD.
 - [Frozen contracts](CONTRACTS.md): identity, the interface artifact, drift
   and auto-accept rules, the HTTP API, CSV and ICD formats, and the fixture
   acceptance matrix. Implementation must follow the current version.

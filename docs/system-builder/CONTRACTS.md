@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.8 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-11.** This is the source of truth for
+**Version 1.9 · 2026-09-30 · tickets SYS-00, SYS-04 to SYS-11, SYS-19.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -134,7 +134,7 @@ that the semantic index uses. It is not a new KiCad parser.
   "schema": "prism.system_interface.v1",
   "projectId": "prj_…",
   "commit": "<40-hex>",
-  "extractor": {"version": "1", "kicadMonkeyVersion": "…"},
+  "extractor": {"version": "2", "kicadMonkeyVersion": "…"},
   "hasPcb": true,
   "components": [
     {
@@ -212,7 +212,11 @@ order says so:
    `J`, `P`, `CN` or `X`, so `J7`, `CN2` and `X1` match but `JP1` and `PS1`
    do not.
 3. **Library.** The `lib_id` library nickname, or the footprint library
-   nickname, starts with `Connector` (case-insensitive).
+   nickname, starts with `Connector` (case-insensitive). Symbols whose name
+   (the part of `lib_id` after `:`) starts with `TestPoint` are excluded from
+   this rule (v1.9): KiCad ships its test points in the `Connector` library,
+   and on real boards they outnumber connectors ten to one. A test point can
+   still be a port through rule 1 or by promotion.
 
 Field names are matched ignoring case and punctuation (`Prism_Port`,
 `prism port` and `PRISMPORT` are the same field); values are matched ignoring
@@ -544,7 +548,7 @@ Further rules (v1.1):
 | Instances per system | 50 |
 | Rows per system | 5,000 |
 | Links per system | 500 |
-| CSV upload | 5 MB and 10,000 data rows |
+| CSV upload | 5 MB and 5,000 data rows |
 
 Exceeding a limit returns 422 with the limit name.
 
@@ -924,8 +928,18 @@ is rebased onto a readable commit (`POST …/rebase`, which then evaluates
 normally from the last accepted row baselines) or removed.
 
 **Extraction cost (default O2).** The extractor reads the schematic in full
-and the board only for pad nets of components with pins. Its cost is measured
-on the JTYU boards in SYS-19 and recorded; the cache makes repeat reads free.
+and the board only for pad nets of components with pins. The cache makes
+repeat reads free, and instances of the same project share one extraction.
+Measured in SYS-19 on an Apple-silicon laptop, cold, one process:
+
+| Board | Components | Ports | Extraction |
+|---|---|---|---|
+| JTYU OBC | 975 | 16 | 20.6 s |
+| JTYU CMBD | 2,440 | 40 | 39.1 s |
+
+Peak resident memory for both in one process was about 2.7 GB. A push that
+changes a tracked board is reported, fetch to review or auto-advance, in about
+30 s, almost all of it extraction. The O2 default stands.
 
 ### 10.2 Audit event kinds
 
@@ -982,3 +996,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.6 | 2026-09-29 | SYS-09: snapshot, ICD and diff implementation rules (§9.1). Creating a snapshot does not bump the version. No drift rule changed. |
 | 1.7 | 2026-09-29 | SYS-10: CSV import implementation rules (§9.3): upload limits, sessions (migration 29), map validation, conflict reasons, promotion on commit, unchanged updates, and import review items. No drift rule changed. |
 | 1.8 | 2026-09-29 | SYS-11: mapping generators and the read-only generate endpoint (§8.5). No drift rule changed. |
+| 1.9 | 2026-09-30 | SYS-19 JTYU acceptance: `TestPoint*` symbols no longer match the library rule (§4.1); extractor version 2, so cached artifacts are re-extracted on first read. O2 measurements recorded (§10.1). §8.3 CSV row limit corrected to the enforced 5,000. Every §11 step re-ran and still matches. |

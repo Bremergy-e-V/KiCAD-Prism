@@ -2,7 +2,8 @@
 
 The order is frozen in ``docs/system-builder/CONTRACTS.md`` §4.1: an explicit
 field wins in both directions, then the reference prefix, then the library
-nickname. Pure: takes plain values, reads nothing.
+nickname, which skips KiCad's test-point symbols (v1.9). Pure: takes plain
+values, reads nothing.
 """
 
 from __future__ import annotations
@@ -30,6 +31,12 @@ def _library(identifier: str) -> str:
     return identifier.split(":", 1)[0] if ":" in identifier else ""
 
 
+def _is_test_point(lib_id: str) -> bool:
+    """KiCad ships ``TestPoint*`` symbols in its ``Connector`` library (v1.9)."""
+
+    return lib_id.rpartition(":")[2].casefold().startswith("testpoint")
+
+
 def classify(
     reference: str,
     lib_id: str,
@@ -48,6 +55,8 @@ def classify(
         return True, "field"
     if reference_prefix(reference) in REFERENCE_PREFIXES:
         return True, "refdes"
+    if _is_test_point(lib_id):
+        return False, "none"
     for identifier in (lib_id, footprint):
         if _library(identifier).casefold().startswith("connector"):
             return True, "library"
