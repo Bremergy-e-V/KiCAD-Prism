@@ -52,6 +52,8 @@ export interface SystemInstance {
   redacted?: boolean;
   projectId: string | null;
   projectName: string | null;
+  /** The board's project was deleted; a designer can still remove it from the system. */
+  projectDeleted?: boolean;
   baselineCommit: string | null;
   trackedRef: string | null;
   pinned: boolean;

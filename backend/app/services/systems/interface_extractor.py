@@ -29,7 +29,7 @@ from app.services import semantic_index_variants
 from app.services.systems import connector_detection
 
 SCHEMA = "prism.system_interface.v1"
-EXTRACTOR_VERSION = "3"
+EXTRACTOR_VERSION = "4"
 _UNCONNECTED_PREFIX = "unconnected-("
 
 
@@ -281,4 +281,30 @@ def extract_for_revision(project: Any, commit: str) -> dict[str, Any]:
             snapshot.project_file,
             project_id=str(project.id),
             commit=snapshot.commit or commit,
+            design=load_configured_design(snapshot),
         )
+
+
+def load_configured_design(snapshot: Any) -> Any:
+    """The design at the snapshot's configured sources (``.prism.json`` at that commit).
+
+    ``KiCadDesign.from_project_file`` only finds sources named after the
+    project file, so a project whose configuration points elsewhere would read
+    as empty or as the wrong board.
+    """
+
+    from kicad_monkey import KiCadDesign
+    from kicad_monkey.kicad_project import KiCadProject
+    from kicad_monkey.kicad_schematic import KiCadSchematic
+
+    from app.services.project_source_snapshot import source_files
+
+    pcb, schematic = source_files(snapshot)
+    project_file = Path(snapshot.project_file)
+    project = KiCadProject.from_file(project_file) if project_file.suffix == ".kicad_pro" else None
+    return KiCadDesign(
+        project=project,
+        schematics=[KiCadSchematic(schematic)] if schematic is not None and schematic.is_file() else [],
+        pcb_path=pcb if pcb is not None and pcb.is_file() else None,
+        project_path=project_file,
+    )

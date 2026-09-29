@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.11 · 2026-09-30 · tickets SYS-00, SYS-04 to SYS-11, SYS-19, polish.** This is the source of truth for
+**Version 1.12 · 2026-09-30 · tickets SYS-00, SYS-04 to SYS-11, SYS-19, polish, review pass.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -403,6 +403,14 @@ invariant 5).
   audits, then each decision in item order, then the baseline moves to
   `to_commit` (audited as `review_applied`). Items whose link was deleted
   meanwhile are skipped.
+- A `source_update` review records `pending_changes.basis`, a digest of every
+  link end on its instance: the port baseline and each row's id, both pads and
+  that end's accepted net. If a decision arrives after links or rows on the
+  instance changed, the review no longer describes the system: nothing is
+  recorded, the review is superseded by a fresh evaluation of the same
+  `to_commit` (which may auto-advance), and the call returns 409
+  `review_stale`. A row added or repointed mid-review is therefore reviewed,
+  never carried onto the new baseline with the old commit's net.
 - Only an `open` `source_update` review takes decisions or `keep-pinned`;
   anything else is 409.
 - `POST …/rebase` accepts a SHA or an unambiguous prefix. It returns 409 at
@@ -532,9 +540,11 @@ lookup (`get_project_for_role_or_404`, or the same folder predicate in SQL).
 
 Further rules (v1.1):
 
-- An instance whose project has been **deleted** is `unresolved` but not
-  restricted. Nothing hides a deleted project, and what the system shows of it
-  was captured into system rows by someone who could see it.
+- An instance whose project has been **deleted** is `unresolved` and, below
+  admin, restricted (v1.12): with its folder gone, nothing says who may read
+  what the system kept of it. It carries `projectDeleted: true`, which
+  survives redaction, and a designer may still remove it (the removal reveals
+  nothing).
 - Deleting a system that contains a board the caller cannot see is 409: it
   would destroy rows the caller cannot see. Cascading an instance removal
   (`?cascade=links`) onto a link whose other end is restricted is 404.
@@ -902,7 +912,10 @@ The job, for each such instance:
 3. If `pinned`, record `update_available` and stop: no extraction, no review.
 4. Otherwise obtain the candidate interface (extract or use the cache), then
    evaluate (§6) and apply the outcome (§6.2, §6.5).
-5. Record `last_checked_commit = tip`.
+5. Record `last_checked_commit = tip`. After `extraction_failed` or
+   `engine_error` it is cleared instead, so the next check retries the tip
+   (v1.12). Unpinning an instance clears it too, and queues a check, so the
+   tip a pinned check only reported is evaluated.
 
 **Idempotency.** Re-running a check for the same tip changes nothing.
 
@@ -916,7 +929,8 @@ The job, for each such instance:
   and baselines current at that moment.
 - A `source_update` review stores its silent changes and port updates in
   `system_reviews.pending_changes` (migration 28). They take effect only
-  when the review is applied, since nothing is re-evaluated at decision time.
+  when the review is applied. A decision re-evaluates only when the review's
+  `basis` no longer matches (§7.1, v1.12).
 - An open review whose `to_commit` is already the tip is left alone
   (`review_current`). An open `baseline_unreachable` review stops evaluation
   until a rebase or removal. Opening one supersedes an open `source_update`
@@ -1004,3 +1018,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.9 | 2026-09-30 | SYS-19 JTYU acceptance: `TestPoint*` symbols no longer match the library rule (§4.1); extractor version 2, so cached artifacts are re-extracted on first read. O2 measurements recorded (§10.1). §8.3 CSV row limit corrected to the enforced 5,000. Every §11 step re-ran and still matches. |
 | 1.10 | 2026-09-30 | Polish: the reference-prefix rule (§4.1) is `J` only; extractor version 3. Every §11 step re-ran and still matches. |
 | 1.11 | 2026-09-30 | Polish: the ICD block diagram uses the shared default layout (§9.5); renderer version 2. No drift rule changed. |
+| 1.12 | 2026-09-30 | Review pass. Reviews record a `basis` and a decision on a stale review re-evaluates it (§7.1, 409 `review_stale`). A deleted project is restricted below admin (§8.2). Unpinning, or a failed extraction or engine error, leaves the tip to be evaluated again (§10.1). Extraction reads the schematic and board that `.prism.json` configures at the commit; extractor version 4. `PUT …/rows` rejects a repeated row id (422), and `rows_replaced` records each added, removed and changed row. |

@@ -51,6 +51,9 @@ time; later reads use the cache.
 
 A **pinned** board keeps its baseline. Prism still notices when its branch
 moves, but only reports "update available" and never opens a review for it.
+**Unpin** checks the branch straight away, so a commit that arrived while the
+board was pinned is reviewed or accepted then. **Check now** waits for its
+check to finish, so any review it opens appears on the page.
 
 ### Which parts are ports
 
@@ -171,6 +174,12 @@ whole review applies at once: the baseline moves to the reviewed commit and
 every decision is written to history. Prism applies exactly the commit it
 reviewed, even if the branch has moved again since.
 
+If a connection on that board is edited while its review is open (a row added,
+moved to another pin or removed), the review no longer matches the system.
+Your next decision is refused with a note, and Prism evaluates the same commit
+again. The new review includes the edited rows, so nothing is carried onto the
+new baseline unchecked.
+
 **Keep pinned** closes the whole review without changes and pins the board at
 its current baseline. Later, **Rebase to tip** under *Updates available on
 pinned boards* on **Changes** moves it to the branch tip.
@@ -230,6 +239,10 @@ A system can include a board from a folder your role cannot see. That board
 appears only as its label, marked restricted. Its project, commits,
 references, pins and nets are hidden everywhere, including exports, snapshots
 and comparisons, and you cannot change anything that touches it.
+
+A board whose project has been deleted is treated the same way for everyone
+except admins. A designer can still remove it from the system with **Remove
+board**.
 
 ## Limits
 

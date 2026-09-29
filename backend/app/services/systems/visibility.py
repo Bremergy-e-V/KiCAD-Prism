@@ -97,11 +97,11 @@ def folder_visible(conn: Any, folder_id: str, role: Role) -> bool:
 
 
 def project_access(conn: Any, project_ids: Iterable[str], role: Role) -> dict[str, dict]:
-    """``{project_id: {"visible": bool, "name": str}}`` for projects that exist.
+    """``{project_id: {"visible": bool, "name": str | None, "deleted": bool}}`` for every id.
 
-    A project missing from the result no longer exists. Its instances are
-    ``unresolved`` but not restricted: nothing hides a deleted project, and
-    everything the system shows of it was captured into system rows.
+    A deleted project stays restricted below admin (§8.2, v1.12): its folder
+    rule no longer exists to say who may read what the system retained of it,
+    so only an admin does.
     """
 
     ids = sorted({str(pid) for pid in project_ids})
@@ -117,4 +117,7 @@ def project_access(conn: Any, project_ids: Iterable[str], role: Role) -> dict[st
         """,
         {"ids": ids, **_params(role)},
     ).fetchall()
-    return {row["id"]: {"visible": bool(row["visible"]), "name": row["name"]} for row in rows}
+    found = {row["id"]: {"visible": bool(row["visible"]), "name": row["name"], "deleted": False} for row in rows}
+    for pid in ids:
+        found.setdefault(pid, {"visible": role == "admin", "name": None, "deleted": True})
+    return found

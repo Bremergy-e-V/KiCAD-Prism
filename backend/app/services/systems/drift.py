@@ -16,7 +16,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Sequence
 
-from app.services.systems.interface_extractor import connected_interface_digest
+from app.services.systems.interface_extractor import canonical_digest, connected_interface_digest
 
 # §6.1 precedence; also the sort order of items on one link end.
 ITEM_KINDS = ("connector_missing", "connector_changed", "pin_missing", "net_changed")
@@ -231,6 +231,30 @@ def _digest_equal(end: _End, component: Optional[Mapping[str, Any]]) -> bool:
         component.get("libId"), component.get("footprint"), {pad: pins[pad] for pad in connected}
     )
     return stored == observed
+
+
+def basis(links: Sequence[Mapping[str, Any]], instance_id: str) -> str:
+    """A digest of what an evaluation of ``instance_id`` read: every link end on
+    it, with its port baseline and each row's pads and accepted net.
+
+    A review records it when it opens. If rows or ports on the instance change
+    while the review is open, its items no longer describe the system, so it
+    must be evaluated again rather than applied (§7.1, v1.12).
+    """
+
+    ends = []
+    for link in sorted(links, key=lambda item: item["id"]):
+        for end in ("a", "b"):
+            if link[f"{end}_instance_id"] != instance_id:
+                continue
+            ends.append({
+                "link": link["id"], "end": end, "port": dict(link[f"{end}_port"]),
+                "rows": sorted(
+                    [row["id"], str(row["pin_a"]), str(row["pin_b"]), sorted(set(row[f"net_{end}"]))]
+                    for row in link.get("rows") or []
+                ),
+            })
+    return canonical_digest(ends)
 
 
 def evaluate(
