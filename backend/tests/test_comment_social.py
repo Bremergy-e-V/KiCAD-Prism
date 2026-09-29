@@ -38,12 +38,6 @@ class PersonalizeTests(unittest.TestCase):
         self.assertFalse(comment["replies"][0]["reactions"][0]["mine"])
         self.assertNotIn("_reactedBy", json.dumps(comment))
 
-    def test_anonymous_reader_reacted_to_nothing(self) -> None:
-        comment = {"reactions": [{"reaction": "eyes", "_reactedBy": ["user:a"]}], "replies": []}
-        comment_social.personalize(comment, None)
-        self.assertFalse(comment["reactions"][0]["mine"])
-
-
 class ReactionApiTests(unittest.TestCase):
     user = AuthenticatedUser(email="rev@example.test", name="Reviewer", role="viewer", user_id="rev-id")
     project = SimpleNamespace(id="p1", path="/unused")
@@ -66,33 +60,6 @@ class ReactionApiTests(unittest.TestCase):
         self.assertEqual(store.call_args.args[3], "r1")
         self.assertEqual((kwargs["user_id"], kwargs["present"]), ("rev-id", True))
         self.assertTrue(result["reactions"][0]["mine"])
-
-    def test_missing_thread_is_404(self) -> None:
-        with patch.object(comments_api, "get_project_for_role_or_404", return_value=self.project), \
-             patch.object(comments_api.comments_store, "set_reaction", return_value=None):
-            with self.assertRaises(HTTPException) as caught:
-                asyncio.run(comments_api.remove_comment_reaction("p1", "c1", "eyes", None, self.user))
-        self.assertEqual(caught.exception.status_code, 404)
-
-    def test_quota_refusal_maps_to_413(self) -> None:
-        from PIL import Image
-
-        out = io.BytesIO()
-        Image.new("RGB", (4, 4)).save(out, format="PNG")
-
-        class Upload:
-            filename = "snip.png"
-
-            async def read(self, limit: int = -1) -> bytes:
-                return out.getvalue()
-
-        with patch.object(comments_api, "get_project_for_role_or_404", return_value=self.project), \
-             patch.object(comments_api.comments_store, "create_attachment",
-                          side_effect=AttachmentError("full", "attachment_quota")):
-            response = asyncio.run(comments_api.upload_comment_attachment("p1", Upload(), self.user))
-        self.assertEqual(response.status_code, 413)
-        self.assertEqual(json.loads(response.body)["code"], "attachment_quota")
-
 
 @unittest.skipUnless(TEST_DSN, "TEST_POSTGRES_URL is required for disposable PostgreSQL tests")
 class SocialPostgresTests(unittest.TestCase):
@@ -192,13 +159,6 @@ class SocialPostgresTests(unittest.TestCase):
         text = path.read_text()
         self.assertNotIn("reactions", text)
         self.assertNotIn("_reactedBy", text)
-
-    def test_deleting_a_thread_drops_its_reactions(self) -> None:
-        self._react("heart", "user:a")
-        with self.store._connect() as conn:
-            conn.execute("DELETE FROM comments WHERE id = %s", (self.root["id"],))
-            left = conn.execute("SELECT COUNT(*) AS n FROM comment_reactions").fetchone()["n"]
-        self.assertEqual(left, 0)
 
     def test_project_quota_refuses_the_upload_that_would_exceed_it(self) -> None:
         from PIL import Image

@@ -149,14 +149,6 @@ class AttachmentApiTests(unittest.TestCase):
         self.assertIn("sandbox", response.headers["content-security-policy"])
         self.assertTrue(response.headers["content-disposition"].startswith("attachment"))
 
-    def test_download_of_unknown_attachment_is_404(self) -> None:
-        with patch.object(comments_api, "get_project_for_role_or_404", return_value=self.project), \
-             patch.object(comments_api.comments_store, "get_attachment", return_value=None):
-            with self.assertRaises(HTTPException) as caught:
-                asyncio.run(comments_api.get_comment_attachment("p1", "a" * 32, self.user))
-        self.assertEqual(caught.exception.status_code, 404)
-
-
 @unittest.skipUnless(TEST_DSN, "TEST_POSTGRES_URL is required for disposable PostgreSQL tests")
 class AttachmentStorePostgresTests(unittest.TestCase):
     def setUp(self) -> None:

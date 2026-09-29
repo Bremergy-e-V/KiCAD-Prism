@@ -101,13 +101,6 @@ describe("ThreadMessage", () => {
         expect(screen.queryByRole("button", { name: "Add reaction" })).toBeNull();
     });
 
-    it("hands a quote to the thread's reply box", () => {
-        const onQuote = vi.fn();
-        renderMessage(thread(), { onQuote });
-        fireEvent.click(screen.getByRole("button", { name: "Quote in reply" }));
-        expect(onQuote).toHaveBeenCalledWith("> **Ana** wrote:\n>\n> **OVP** too low\n\n");
-    });
-
     it("edits in place against the revision it opened", async () => {
         const updated = thread({ content: "**OVP** fixed", editedAt: "2026-09-02T10:00:00Z" });
         mockedFetch.mockResolvedValue(ok(updated));

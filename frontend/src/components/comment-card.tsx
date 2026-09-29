@@ -1,4 +1,4 @@
-import { useRef, useState, type CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import {
     CheckCircle,
     Circle,
@@ -15,11 +15,8 @@ import { formatCommentTimestamp } from "@/components/comment-date";
 import { cn } from "@/lib/utils";
 import { commentClassLabel, type Comment } from "@/types/comments";
 import { ThreadMessage } from "@/features/rich-comments/thread-message";
-import {
-    RichComposer,
-    type RichComposerHandle,
-    type RichComposerState,
-} from "@/features/rich-comments/rich-composer";
+import { RichComposer } from "@/features/rich-comments/rich-composer";
+import { useReplyBox } from "@/features/rich-comments/use-reply-box";
 
 interface CommentCardProps {
     projectId: string;
@@ -49,14 +46,11 @@ export function CommentCard({
     onPromote,
     onRetrySync,
 }: CommentCardProps) {
-    const [replyOpen, setReplyOpen] = useState(false);
-    const [replySeed, setReplySeed] = useState<string | undefined>(undefined);
-    const [reply, setReply] = useState<RichComposerState>({ markdown: "", uploading: false });
+    const replyBox = useReplyBox();
     const [busy, setBusy] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
-    const replyRef = useRef<RichComposerHandle>(null);
     const isResolved = comment.status === "RESOLVED";
-    const canSendReply = Boolean(reply.markdown) && !reply.uploading && !busy;
+    const canSendReply = Boolean(replyBox.draft.markdown) && !replyBox.draft.uploading && !busy;
 
     // The card never runs past the bottom of the viewport; its thread scrolls
     // between the fixed header and action bar instead.
@@ -78,24 +72,14 @@ export function CommentCard({
         if (!canSendReply) return;
         setBusy(true);
         try {
-            await onReply(comment.id, reply.markdown);
-            replyRef.current?.clear();
-            setReplyOpen(false);
-            setReplySeed(undefined);
+            await onReply(comment.id, replyBox.draft.markdown);
+            replyBox.close();
         } finally {
             setBusy(false);
         }
     };
 
     const canInteract = canModify && comment.permissions?.canReply !== false;
-    const quote = (markdown: string) => {
-        if (replyOpen && replyRef.current) {
-            replyRef.current.insertMarkdown(markdown);
-            return;
-        }
-        setReplySeed(markdown);
-        setReplyOpen(true);
-    };
 
     return (
         <dialog
@@ -138,7 +122,7 @@ export function CommentCard({
                 projectId={projectId}
                 thread={comment}
                 canInteract={canInteract}
-                onQuote={quote}
+                onQuote={replyBox.quote}
                 className="px-3 py-2"
             />
 
@@ -168,7 +152,7 @@ export function CommentCard({
                                 thread={comment}
                                 reply={item}
                                 canInteract={canInteract}
-                                onQuote={quote}
+                                onQuote={replyBox.quote}
                                 bodyClassName="text-xs text-muted-foreground"
                             />
                         </div>
@@ -176,21 +160,21 @@ export function CommentCard({
                 </div>
             )}
 
-            {replyOpen && canModify && (
+            {replyBox.open && canModify && (
                 <div className="border-t px-3 py-2">
                     <span className="mb-1 block text-xs font-medium">Reply</span>
                     {/* Opening the reply box is a deliberate request to type in it, so
                         focus follows the reveal. The card itself never takes focus. */}
                     <RichComposer
-                        ref={replyRef}
+                        ref={replyBox.ref}
                         projectId={projectId}
                         ariaLabel="Reply"
                         autoFocus
                         placeholder="Write a reply…"
-                        initialMarkdown={replySeed}
-                        onChange={setReply}
+                        initialMarkdown={replyBox.seed}
+                        onChange={replyBox.setDraft}
                         onSubmit={() => void submitReply()}
-                        onCancel={() => setReplyOpen(false)}
+                        onCancel={replyBox.close}
                         disabled={busy}
                         minHeightClassName="min-h-16"
                     />
@@ -199,7 +183,7 @@ export function CommentCard({
                             type="button"
                             variant="outline"
                             size="sm"
-                            onClick={() => setReplyOpen(false)}
+                            onClick={replyBox.close}
                         >
                             Cancel
                         </Button>
@@ -224,10 +208,7 @@ export function CommentCard({
                         size="icon"
                         className="h-8 w-8"
                         aria-label="Reply"
-                        onClick={() => {
-                            setReplySeed(undefined);
-                            setReplyOpen((open) => !open);
-                        }}
+                        onClick={replyBox.toggle}
                     >
                         <MessageSquareReply className="h-4 w-4" />
                     </Button>

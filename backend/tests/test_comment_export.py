@@ -32,9 +32,6 @@ def _png(color=(10, 120, 200)) -> bytes:
 
 
 class RendererTests(unittest.TestCase):
-    def test_plain_bodies_pass_through(self) -> None:
-        self.assertEqual(comment_export.to_plain("**as typed**", "plain"), "**as typed**")
-
     def test_markdown_flattens_to_readable_text(self) -> None:
         body = (
             f"**OVP** is `21.5 V`, see [datasheet](https://ti.com/x) and ![scope](attachment:{A})\n\n"

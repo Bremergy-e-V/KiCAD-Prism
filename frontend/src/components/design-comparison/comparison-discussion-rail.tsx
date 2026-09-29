@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import type { Comment, CommentContext } from "@/types/comments";
 import { ThreadMessage } from "@/features/rich-comments/thread-message";
 import { ThreadUpdateContext } from "@/features/rich-comments/thread-updates";
+import { useReplyBox } from "@/features/rich-comments/use-reply-box";
 import {
     RichComposer,
     type RichComposerHandle,
@@ -231,21 +232,9 @@ interface RailThreadProps {
 function RailThread({
     projectId, comment, canComment, onThreadChange, onResolve, onTrackerAction, onError,
 }: RailThreadProps) {
-    const [replying, setReplying] = useState(false);
-    const [reply, setReply] = useState<RichComposerState>(EMPTY_DRAFT);
-    const [replySeed, setReplySeed] = useState<string | undefined>(undefined);
+    const replyBox = useReplyBox();
+    const reply = replyBox.draft;
     const [busy, setBusy] = useState(false);
-    const replyRef = useRef<RichComposerHandle>(null);
-
-    const openReply = (seed?: string) => {
-        setReply(EMPTY_DRAFT);
-        setReplySeed(seed);
-        setReplying(true);
-    };
-    const quote = (markdown: string) => {
-        if (replying && replyRef.current) replyRef.current.insertMarkdown(markdown);
-        else openReply(markdown);
-    };
 
     const addReply = async () => {
         if (!reply.markdown || reply.uploading) return;
@@ -263,9 +252,7 @@ function RailThread({
             }
             const payload = (await response.json()) as { comment: Comment };
             onThreadChange(payload.comment);
-            setReply(EMPTY_DRAFT);
-            setReplySeed(undefined);
-            setReplying(false);
+            replyBox.close();
         } catch (caught) {
             onError(caught instanceof Error ? caught.message : "Failed to add reply");
         } finally {
@@ -307,7 +294,7 @@ function RailThread({
                     projectId={projectId}
                     thread={comment}
                     canInteract={canComment}
-                    onQuote={quote}
+                    onQuote={replyBox.quote}
                     bodyClassName="text-xs leading-relaxed"
                     className="mt-2"
                 />
@@ -328,7 +315,7 @@ function RailThread({
                                     thread={comment}
                                     reply={item}
                                     canInteract={canComment}
-                                    onQuote={quote}
+                                    onQuote={replyBox.quote}
                                     bodyClassName="text-xs"
                                 />
                                 <ReplyTrackerState
@@ -344,18 +331,18 @@ function RailThread({
                 )}
                 {canComment && (
                     <div className="mt-2">
-                        {replying ? (
+                        {replyBox.open ? (
                             <div className="space-y-2">
                                 <RichComposer
-                                    ref={replyRef}
+                                    ref={replyBox.ref}
                                     projectId={projectId}
                                     ariaLabel="Reply"
                                     autoFocus
-                                    initialMarkdown={replySeed}
+                                    initialMarkdown={replyBox.seed}
                                     placeholder="Reply…"
-                                    onChange={setReply}
+                                    onChange={replyBox.setDraft}
                                     onSubmit={() => void addReply()}
-                                    onCancel={() => setReplying(false)}
+                                    onCancel={replyBox.close}
                                     disabled={busy}
                                     minHeightClassName="min-h-16"
                                 />
@@ -374,7 +361,7 @@ function RailThread({
                                 variant="ghost"
                                 size="sm"
                                 className="h-7 px-1.5"
-                                onClick={() => openReply()}
+                                onClick={() => replyBox.openWith()}
                             >
                                 <Reply className="mr-1.5 h-3 w-3" />
                                 Reply
