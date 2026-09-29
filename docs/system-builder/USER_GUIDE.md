@@ -29,8 +29,8 @@ designer or admin role.
 
 1. On the workspace page, choose **New system**, give it a name, and pick a
    folder. The folder decides who can see it.
-2. Open the system. It has seven tabs: **Overview**, **Boards**, **Diagram**,
-   **Connectivity**, **Source changes**, **Import** and **History**.
+2. Open the system. It has six tabs: **Overview**, **Diagram**, **Boards**,
+   **Connections**, **Changes** and **History**.
 
 ## Add boards
 
@@ -64,6 +64,9 @@ A part becomes a port when, in this order:
    KiCad's `TestPoint` symbols, which are not ports unless you mark or promote
    them.
 
+A board's label and tracked branch are changed with **Edit board** in its **⋯**
+menu on **Boards**, next to **Check now** and **Pin**.
+
 DNP parts are not ports by default. On the board's **Ports** table you can
 **hide** a detected connector or **promote** any other annotated part, such as
 a test pad. A port that a link uses cannot be hidden. Adding a `Prism_Port`
@@ -73,19 +76,28 @@ field in the schematic is the durable way to fix detection for everyone.
 
 ### Diagram
 
-**Diagram** shows each board with its exposed ports. Drag from a port on one
-board to a port on another to create a link. Drag boards to arrange them. The
-layout is saved for everyone, but it is not part of the engineering record:
-moving a box changes no version and writes no history.
+**Diagram** places the most-connected board in the middle and its partners
+on either side. Each board lists the connectors that are linked, with what
+each one connects to; the other ports sit behind "N unlinked ports". Wires
+run in separate lanes so they never overlap. Hover a wire to see its name and
+pin count, and click it to open its pins.
 
-### Connectivity
+Drag from a port on one board to a port on another to create a link (expand
+a board to reach an unlinked port). Drag boards to arrange them. The layout is
+saved for everyone, but it is not part of the engineering record: moving a box
+changes no version and writes no history. **Auto-arrange** discards a saved
+arrangement and goes back to the default layout.
 
-**Connectivity** lists links. Open one to edit its rows. Each row shows both
-pads, their pin names and the nets on each side. Edits stay in a local draft
+### Connections
+
+**Connections** lists links, with a warning or error count beside any that
+have findings. Open one to edit its rows. The table mirrors the two ends: pin
+and net on one side, the signal in the middle, net and pin on the other. Name,
+harness and deletion are in the link's **⋯** menu. Edits stay in a local draft
 until you save. The editor flags missing pads and duplicate pairs before you
 save, and shows the system's validation findings next to the rows they concern.
 
-To fill a link quickly, use **Generate rows**:
+To fill a link quickly, use **Generate rows**, which opens a side panel:
 
 | Generator | Pairs |
 | --- | --- |
@@ -104,7 +116,8 @@ harness label.
 
 ### Import an existing ICD spreadsheet
 
-**Import** takes a CSV (UTF-8, up to 5 MB and 5,000 rows):
+On **Connections**, **Import CSV** takes a CSV (UTF-8, up to 5 MB and 5,000
+rows):
 
 1. Upload the file. The delimiter is detected, and columns in Prism's own ICD
    export layout are recognised automatically.
@@ -118,7 +131,7 @@ harness label.
    - **Unresolved**: an unknown board, connector or pin;
    - **Conflict**: a duplicate of another row, or a row ID from another link.
 4. Commit. Matched rows are written straight away. Needs-review rows go into an
-   import review on **Source changes**, where you accept each one (optionally
+   import review on **Changes**, where you accept each one (optionally
    with a corrected signal) or skip it.
    Unresolved and conflicting rows are listed in the report and not saved.
 
@@ -134,7 +147,7 @@ manual sync), it checks every board that tracks a branch there. Only pins used
 by a row matter; changes anywhere else on the board are ignored.
 
 - **Nothing a connection uses changed.** The baseline moves to the new commit
-  on its own and appears under **Applied automatically** on **Source changes**.
+  on its own and appears under **Applied automatically** on **Changes**.
   This includes re-annotating a connector (`J2` → `J12`), replacing a symbol
   with an identical one, and sheet or README edits that leave every connected
   net alone.
@@ -160,7 +173,7 @@ reviewed, even if the branch has moved again since.
 
 **Keep pinned** closes the whole review without changes and pins the board at
 its current baseline. Later, **Rebase to tip** under *Updates available on
-pinned boards* on **Source changes** moves it to the branch tip.
+pinned boards* on **Changes** moves it to the branch tip.
 Anything that commit changes on a connection opens a review as usual.
 
 If another push arrives while a review is open, the review is marked
@@ -174,7 +187,7 @@ on.
 
 ## Validation
 
-The **Overview** counts findings, and **Connectivity** shows them on the rows
+The **Overview** counts findings, and **Connections** shows them on the rows
 they concern:
 
 | Rule | Severity | Meaning |
@@ -194,7 +207,7 @@ truth for drift; the PCB only produces the SYS-V06 warning.
 
 ## Snapshots and the ICD
 
-On **History**, create a snapshot at a milestone (PDR, CDR, a build). A
+On **History**, **Take snapshot** at a milestone (PDR, CDR, a build). A
 snapshot freezes every board's baseline, every link and row, and the findings
 at that moment. Snapshots cannot be edited or deleted.
 
