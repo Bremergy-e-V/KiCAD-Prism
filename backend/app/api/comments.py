@@ -11,14 +11,14 @@ import os
 import re
 from typing import Callable, List, Optional, TypeVar
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.api._helpers import get_project_for_role_or_404
 from app.core.security import AuthenticatedUser, require_comment_writer, require_designer, require_viewer
 from app.core.roles import normalize_role
-from app.services import access_service, comment_permissions
+from app.services import access_service, comment_attachments, comment_permissions
 from app.services.comment_anchor_service import (
     AnchorValidationError,
     resolve_canvas_anchor,
@@ -65,6 +65,7 @@ class CreateCommentRequest(BaseModel):
     context: str  # "PCB" or "SCH"
     location: CommentLocation
     content: str
+    contentFormat: Optional[str] = None
     elementId: Optional[str] = None
     elementRef: Optional[str] = None
     elementType: Optional[str] = None
@@ -77,16 +78,19 @@ class CreateCommentRequest(BaseModel):
 
 class CreateReplyRequest(BaseModel):
     content: str
+    contentFormat: Optional[str] = None
 
 
 class UpdateReplyRequest(BaseModel):
     content: str
+    contentFormat: Optional[str] = None
     expectedRevision: Optional[int] = None
 
 
 class UpdateCommentRequest(BaseModel):
     status: Optional[str] = None  # "OPEN" or "RESOLVED"
     content: Optional[str] = None
+    contentFormat: Optional[str] = None
     severity: Optional[str] = None
     commentClass: Optional[str] = None
     mentions: Optional[List[str]] = None
@@ -298,6 +302,8 @@ async def _run_mutation(write: Callable[[], T]):
         return _conflict_response(exc)
     except AnchorValidationError as exc:
         return JSONResponse(status_code=422, content={"detail": exc.detail, "code": exc.code})
+    except comment_attachments.AttachmentError as exc:
+        return JSONResponse(status_code=422, content={"detail": exc.detail, "code": exc.code})
     except ValueError as exc:
         if "immutable" in str(exc).lower():
             return JSONResponse(status_code=422, content={"detail": str(exc), "code": "anchor_immutable"})
@@ -315,7 +321,18 @@ def _normalize_content(content: str, *, field: str = "content") -> str:
     normalized = content.strip()
     if not normalized:
         raise HTTPException(status_code=400, detail=f"{field.capitalize()} cannot be empty")
+    if len(normalized) > comment_attachments.MAX_CONTENT_CHARS:
+        raise HTTPException(status_code=413, detail=f"{field.capitalize()} is too long")
     return normalized
+
+
+def _content_format(value: Optional[str], *, default: Optional[str] = comment_attachments.CONTENT_FORMAT_PLAIN) -> Optional[str]:
+    if value is None:
+        return default
+    try:
+        return comment_attachments.normalize_content_format(value)
+    except comment_attachments.AttachmentError as exc:
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
 
 
 def _normalize_bounds(bounds: Optional[List[float]]) -> Optional[List[float]]:
@@ -557,6 +574,7 @@ async def create_comment(
     """
     context = _normalize_context(request.context)
     content = _normalize_content(request.content)
+    content_format = _content_format(request.contentFormat)
     location = request.location.model_dump()
     location["bounds"] = _normalize_bounds(request.location.bounds)
     comment_class = _normalize_comment_class(request.commentClass)
@@ -589,6 +607,7 @@ async def create_comment(
             context=context,
             location=location,
             content=content,
+            content_format=content_format,
             author=actor.display_name,
             author_user_id=actor.actor_id,
             author_kind=actor.actor_kind,
@@ -629,6 +648,7 @@ async def update_comment(
     if status is not None and status not in {"OPEN", "RESOLVED"}:
         raise HTTPException(status_code=400, detail="Status must be 'OPEN' or 'RESOLVED'")
     content = _normalize_content(request.content) if request.content is not None else None
+    content_format = _content_format(request.contentFormat, default=None)
     severity = _normalize_severity(request.severity) if request.severity is not None else None
     comment_class = _normalize_comment_class(request.commentClass) if request.commentClass is not None else None
 
@@ -646,7 +666,7 @@ async def update_comment(
             project.id, project.path, comment_id, _editor(actor),
             expected_revision=request.expectedRevision, content=content, severity=severity,
             comment_class=comment_class, mentions=request.mentions, status=status,
-            promotion_actor=_promotion_actor(actor),
+            promotion_actor=_promotion_actor(actor), content_format=content_format,
         )
         return _with_permissions(updated, actor) if updated else None
 
@@ -749,6 +769,7 @@ async def add_reply(
     Add a reply to an existing comment.
     """
     content = _normalize_content(request.content)
+    content_format = _content_format(request.contentFormat)
     def write():
         project = get_project_for_role_or_404(project_id, user.role)
         actor = _actor(user)
@@ -758,6 +779,7 @@ async def add_reply(
             project_path=project.path,
             comment_id=comment_id,
             content=content,
+            content_format=content_format,
             author=actor.display_name,
             author_user_id=actor.actor_id,
             author_kind=actor.actor_kind,
@@ -791,6 +813,7 @@ async def update_reply(
     user: AuthenticatedUser = Depends(require_viewer),
 ):
     content = _normalize_content(request.content)
+    content_format = _content_format(request.contentFormat, default=None)
 
     def write():
         project = get_project_for_role_or_404(project_id, user.role)
@@ -802,6 +825,7 @@ async def update_reply(
         updated = comments_store.edit_reply(
             project.id, project.path, comment_id, reply_id, content, _editor(actor),
             expected_revision=request.expectedRevision, promotion_actor=_promotion_actor(actor),
+            content_format=content_format,
         )
         return _with_permissions(updated, actor) if updated else None
 
@@ -932,3 +956,74 @@ async def push_comments(project_id: str, user: AuthenticatedUser = Depends(requi
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail="Failed to export comments") from exc
+
+
+# ============================================================
+# ATTACHMENTS
+# ============================================================
+
+@router.post("/{project_id}/comment-attachments", dependencies=[Depends(require_comment_writer)])
+async def upload_comment_attachment(
+    project_id: str,
+    file: UploadFile = File(...),
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    """Upload a pasted or dropped file ahead of the comment that will reference it.
+
+    The result is ``pending``; saving a root or reply whose Markdown contains
+    ``attachment:<id>`` claims it. Unclaimed uploads are swept after a day.
+    """
+    project = get_project_for_role_or_404(project_id, user.role)
+    actor = _actor(user)
+    try:
+        comment_permissions.authorize(CommentAction.REPLY, actor)
+    except CommentPermissionError as exc:
+        return _permission_response(exc)
+    # One byte past the cap so an oversized upload is refused without reading it all.
+    data = await file.read(comment_attachments.max_upload_bytes() + 1)
+    try:
+        prepared = await asyncio.to_thread(comment_attachments.prepare_upload, data, file.filename)
+    except comment_attachments.AttachmentError as exc:
+        status = 413 if exc.code == "attachment_too_large" else 415 if exc.code == "attachment_type_unsupported" else 400
+        return JSONResponse(status_code=status, content={"detail": exc.detail, "code": exc.code})
+    filename = comment_attachments.safe_filename(file.filename, prepared.extension)
+    created = await asyncio.to_thread(
+        comments_store.create_attachment,
+        project.id, prepared, filename, actor.actor_id, actor.display_name,
+    )
+    created["url"] = f"/api/projects/{project.id}/comment-attachments/{created['id']}"
+    return created
+
+
+@router.get("/{project_id}/comment-attachments/{attachment_id}")
+async def get_comment_attachment(
+    project_id: str,
+    attachment_id: str,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    """Serve an attachment to anyone who can read the project's comments.
+
+    Images are re-encoded at upload and may render inline; every other type is
+    a download. The sandbox CSP and ``nosniff`` stop a browser from treating
+    any stored file as an active document.
+    """
+    project = get_project_for_role_or_404(project_id, user.role)
+    row = await asyncio.to_thread(comments_store.get_attachment, project.id, attachment_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    path = comment_attachments.blob_path(row["sha256"])
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    media_type = str(row["media_type"])
+    inline = media_type.startswith("image/")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=row["filename"],
+        content_disposition_type="inline" if inline else "attachment",
+        headers={
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        },
+    )

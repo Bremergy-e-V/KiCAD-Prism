@@ -40,13 +40,13 @@ _COMMENT_COLUMNS = """
     forge_provider, forge_issue_id, forge_issue_url, forge_sync_state,
     author_user_id, author_kind, revision, updated_at, deleted_at,
     anchor_commit, anchor_revision_key, anchor_source, anchor_state,
-    selected_side, project_relative_path
+    selected_side, project_relative_path, content_format
 """
 
 _REPLY_COLUMNS = """
     id, comment_id, author, timestamp, content,
     author_user_id, author_kind, revision, updated_at, deleted_at, origin,
-    sync_state
+    sync_state, content_format
 """
 
 COMMENT_CLASSES = ("general", "observation", "question", "task")
@@ -176,6 +176,7 @@ def _row_to_reply_dict(row) -> Dict:
         "updatedAt": _iso_timestamp(row.get("updated_at") or row["timestamp"]),
         "revision": int(row.get("revision") or 1),
         "content": row["content"],
+        "contentFormat": row.get("content_format") or "plain",
         "origin": row.get("origin") or comments_revisions.ORIGIN_PRISM,
     }
     if row.get("deleted_at"):
@@ -211,6 +212,7 @@ def _row_to_comment_dict(row, replies: List[Dict]) -> Dict:
         "context": row["context"],
         "location": location,
         "content": row["content"],
+        "contentFormat": row.get("content_format") or "plain",
         "replies": replies,
         "commentClass": _normalize_comment_class(row.get("comment_class")),
         "severity": _normalize_severity(row.get("severity")),
