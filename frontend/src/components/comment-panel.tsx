@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import {
     CheckCircle,
     ChevronDown,
@@ -24,11 +24,8 @@ import type { EcadCommentAnchorResolution } from "@/types/ecad-viewer";
 import { SnipGallery } from "@/features/rich-comments/snip-gallery";
 import { ThreadMessage } from "@/features/rich-comments/thread-message";
 import { useUnreadThreads } from "@/features/rich-comments/unread";
-import {
-    RichComposer,
-    type RichComposerHandle,
-    type RichComposerState,
-} from "@/features/rich-comments/rich-composer";
+import { RichComposer } from "@/features/rich-comments/rich-composer";
+import { useReplyBox } from "@/features/rich-comments/use-reply-box";
 
 interface CommentPanelProps {
     projectId: string;
@@ -222,15 +219,11 @@ function PanelCommentCard({
     onRetrySync?: (commentId: string) => Promise<void>;
     onShareReply?: (commentId: string, replyId: string) => Promise<void>;
 }) {
-    const [isReplying, setIsReplying] = useState(false);
-    // A quote chosen while the reply box is closed opens it seeded.
-    const [replySeed, setReplySeed] = useState<string | undefined>(undefined);
-    const [reply, setReply] = useState<RichComposerState>({ markdown: "", uploading: false });
+    const replyBox = useReplyBox();
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [expanded, setExpanded] = useState(true);
     const [confirmDelete, setConfirmDelete] = useState(false);
-    const replyRef = useRef<RichComposerHandle>(null);
-    const canSendReply = Boolean(reply.markdown) && !reply.uploading && !isSubmitting;
+    const canSendReply = Boolean(replyBox.draft.markdown) && !replyBox.draft.uploading && !isSubmitting;
     const isResolved = comment.status === "RESOLVED";
     const anchorIssue = comment.anchorResolution?.state === "unresolved"
         ? ({
@@ -248,10 +241,8 @@ function PanelCommentCard({
         if (!canSendReply) return;
         setIsSubmitting(true);
         try {
-            await onReply(comment.id, reply.markdown);
-            replyRef.current?.clear();
-            setIsReplying(false);
-            setReplySeed(undefined);
+            await onReply(comment.id, replyBox.draft.markdown);
+            replyBox.close();
             onSeen();
         } finally {
             setIsSubmitting(false);
@@ -261,12 +252,7 @@ function PanelCommentCard({
     const canInteract = canModify && comment.permissions?.canReply !== false;
     const quote = (markdown: string) => {
         setExpanded(true);
-        if (isReplying && replyRef.current) {
-            replyRef.current.insertMarkdown(markdown);
-            return;
-        }
-        setReplySeed(markdown);
-        setIsReplying(true);
+        replyBox.quote(markdown);
     };
 
     return (
@@ -350,10 +336,7 @@ function PanelCommentCard({
                                 variant="ghost"
                                 size="sm"
                                 className="h-6 px-2 text-xs"
-                                onClick={() => {
-                                    setReplySeed(undefined);
-                                    setIsReplying(!isReplying);
-                                }}
+                                onClick={replyBox.toggle}
                             >
                                 <ReplyIcon className="mr-1 h-3 w-3" />
                                 Reply
@@ -392,7 +375,7 @@ function PanelCommentCard({
                 )}
             </div>
 
-            {(comment.replies.length > 0 || (isReplying && canModify)) && (
+            {(comment.replies.length > 0 || (replyBox.open && canModify)) && (
                 <div className="space-y-3 border-t bg-muted/20 p-3">
                     {comment.replies.length > 0 && (
                         <div className="space-y-3">
@@ -438,21 +421,21 @@ function PanelCommentCard({
                         </div>
                     )}
 
-                    {isReplying && canModify && (
+                    {replyBox.open && canModify && (
                         <div className="mt-2 flex items-end gap-2 pt-2">
                             <div className="min-w-0 flex-1 space-y-1 text-xs font-medium">
                                 <span>Reply</span>
                                 {/* Revealing the reply box is a deliberate request to type in it. */}
                                 <RichComposer
-                                    ref={replyRef}
+                                    ref={replyBox.ref}
                                     projectId={projectId}
                                     ariaLabel="Reply"
                                     autoFocus
                                     placeholder="Write a reply..."
-                                    initialMarkdown={replySeed}
-                                    onChange={setReply}
+                                    initialMarkdown={replyBox.seed}
+                                    onChange={replyBox.setDraft}
                                     onSubmit={() => void handleReply()}
-                                    onCancel={() => setIsReplying(false)}
+                                    onCancel={replyBox.close}
                                     disabled={isSubmitting}
                                     minHeightClassName="min-h-16"
                                     className="font-normal"
