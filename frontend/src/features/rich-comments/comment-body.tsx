@@ -4,7 +4,7 @@ import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import type { Options as SanitizeSchema } from "rehype-sanitize";
-import { Paperclip } from "lucide-react";
+import { Image as ImageIcon, Paperclip } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CommentAttachment, CommentContentFormat } from "@/types/comments";
 import { attachmentIdFromRef, attachmentUrl, formatBytes } from "./attachments";
@@ -16,14 +16,16 @@ import { attachmentIdFromRef, attachmentUrl, formatBytes } from "./attachments";
  * by anyone who can comment on the forge issue. There is no raw HTML: without
  * `rehype-raw` it never becomes DOM, and the schema below would drop it anyway.
  * Images load only from Prism's own attachment route -- a hot-linked image is
- * a tracking pixel -- and links are limited to web and mail protocols.
+ * a tracking pixel. An image hosted elsewhere (a forge's own upload, synced
+ * into a linked thread) is shown as a link instead of being fetched. Links
+ * are limited to web and mail protocols.
  */
 const schema: SanitizeSchema = {
     ...defaultSchema,
     protocols: {
         ...defaultSchema.protocols,
         href: ["http", "https", "mailto", "attachment"],
-        src: ["attachment"],
+        src: ["attachment", "http", "https"],
     },
 };
 
@@ -50,7 +52,17 @@ export function CommentBody({ projectId, content, contentFormat, attachments, cl
                     return id ? attachmentUrl(projectId, id) : defaultUrlTransform(url);
                 }}
                 components={{
-                    img: ({ src, alt }) => (src ? <CommentImage src={String(src)} alt={alt ?? ""} /> : null),
+                    img: ({ src, alt }) => {
+                        if (!src) return null;
+                        const url = String(src);
+                        if (url.startsWith(attachmentUrl(projectId, ""))) return <CommentImage src={url} alt={alt ?? ""} />;
+                        return (
+                            <a href={url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1">
+                                <ImageIcon className="h-3 w-3" />
+                                {alt || "External image"}
+                            </a>
+                        );
+                    },
                     a: ({ href, children }) => {
                         const id = href ? attachmentIdFromRef(hrefToRef(projectId, href)) : null;
                         const file = id ? byId.get(id) : undefined;

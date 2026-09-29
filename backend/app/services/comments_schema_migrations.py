@@ -17,6 +17,7 @@ import logging
 from typing import Callable, List, Tuple
 
 from app.services import comment_live_events
+from app.services.trackers import attachment_links
 from app.services.trackers.inbox_store import apply_schema as apply_inbox_schema
 from app.services.trackers.migrations import (
     cascade_comments_tracker_fks,
@@ -243,6 +244,7 @@ MIGRATIONS: List[Tuple[int, str, Callable[[object], None]]] = [
     # Re-installs the v10 trigger function without retry-bookkeeping columns.
     (12, "tracker_projection_ignores_retry_bookkeeping", apply_tracker_projection_events),
     (13, "rich_content_and_attachments", _m013_rich_content_and_attachments),
+    (14, "attachment_remote_links", attachment_links.apply_schema),
 ]
 
 
