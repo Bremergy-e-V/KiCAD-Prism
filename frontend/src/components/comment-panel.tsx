@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
     CheckCircle,
     ChevronDown,
@@ -20,8 +20,15 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { EcadCommentAnchorResolution } from "@/types/ecad-viewer";
+import { CommentBody } from "@/features/rich-comments/comment-body";
+import {
+    RichComposer,
+    type RichComposerHandle,
+    type RichComposerState,
+} from "@/features/rich-comments/rich-composer";
 
 interface CommentPanelProps {
+    projectId: string;
     comments: Comment[];
     onClose: () => void;
     onResolve: (commentId: string, resolved: boolean) => void;
@@ -39,6 +46,7 @@ interface CommentPanelProps {
 }
 
 export function CommentPanel({
+    projectId,
     comments,
     onClose,
     onResolve,
@@ -119,6 +127,7 @@ export function CommentPanel({
                                         {group.map((comment) => (
                                             <PanelCommentCard
                                                 key={comment.id}
+                                                projectId={projectId}
                                                 comment={comment}
                                                 highlighted={highlightedId === comment.id}
                                                 onResolve={onResolve}
@@ -145,6 +154,7 @@ export function CommentPanel({
 }
 
 function PanelCommentCard({
+    projectId,
     comment,
     highlighted,
     onResolve,
@@ -158,6 +168,7 @@ function PanelCommentCard({
     onRetrySync,
     onShareReply,
 }: {
+    projectId: string;
     comment: Comment;
     highlighted: boolean;
     onResolve: (id: string, resolved: boolean) => void;
@@ -172,16 +183,12 @@ function PanelCommentCard({
     onShareReply?: (commentId: string, replyId: string) => Promise<void>;
 }) {
     const [isReplying, setIsReplying] = useState(false);
-    const [replyContent, setReplyContent] = useState("");
+    const [reply, setReply] = useState<RichComposerState>({ markdown: "", uploading: false });
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [expanded, setExpanded] = useState(true);
     const [confirmDelete, setConfirmDelete] = useState(false);
-    const replyRef = useRef<HTMLTextAreaElement>(null);
-
-    // Revealing the reply box is a deliberate request to type in it.
-    useEffect(() => {
-        if (isReplying && canModify) replyRef.current?.focus();
-    }, [isReplying, canModify]);
+    const replyRef = useRef<RichComposerHandle>(null);
+    const canSendReply = Boolean(reply.markdown) && !reply.uploading && !isSubmitting;
     const isResolved = comment.status === "RESOLVED";
     const anchorIssue = comment.anchorResolution?.state === "unresolved"
         ? ({
@@ -196,11 +203,11 @@ function PanelCommentCard({
     creationUrl?.searchParams.set("commit", creationCommit ?? "");
 
     const handleReply = async () => {
-        if (!replyContent.trim()) return;
+        if (!canSendReply) return;
         setIsSubmitting(true);
         try {
-            await onReply(comment.id, replyContent.trim());
-            setReplyContent("");
+            await onReply(comment.id, reply.markdown);
+            replyRef.current?.clear();
             setIsReplying(false);
         } finally {
             setIsSubmitting(false);
@@ -238,8 +245,17 @@ function PanelCommentCard({
                     <CommentSeverityBadge severity={comment.severity ?? "info"} />
                     {anchorIssue && <Badge variant="outline">{anchorIssue}</Badge>}
                 </div>
+            </button>
 
-                <p className="mb-3 whitespace-pre-wrap text-sm">{comment.content}</p>
+            {/* Outside the open-comment button: rich bodies carry links and image buttons. */}
+            <div className="px-3">
+                <CommentBody
+                    projectId={projectId}
+                    content={comment.content}
+                    contentFormat={comment.contentFormat}
+                    attachments={comment.attachments}
+                    className="mb-3"
+                />
 
                 {comment.mentions && comment.mentions.length > 0 && (
                     <div className="mb-3 flex flex-wrap gap-1">
@@ -250,8 +266,7 @@ function PanelCommentCard({
                         ))}
                     </div>
                 )}
-
-            </button>
+            </div>
 
             {(creationUrl || (anchorIssue && comment.permissions?.canEdit && onReattach)) && (
                 <div className="flex flex-wrap items-center gap-2 px-3 pb-2 text-xs">
@@ -334,17 +349,23 @@ function PanelCommentCard({
                                 {comment.replies.length} replies
                             </button>
                             {expanded &&
-                                comment.replies.map((reply) => (
-                                    <div key={reply.id ?? `${reply.timestamp}-${reply.author}-${reply.content}`} className="relative border-l-2 border-muted pl-2 text-sm">
+                                comment.replies.map((item) => (
+                                    <div key={item.id ?? `${item.timestamp}-${item.author}-${item.content}`} className="relative border-l-2 border-muted pl-2 text-sm">
                                         <div className="mb-1 flex items-center justify-between">
-                                            <span className="text-xs font-medium">{reply.author}</span>
+                                            <span className="text-xs font-medium">{item.author}</span>
                                             <span className="text-[10px] text-muted-foreground">
-                                                {new Date(reply.timestamp).toLocaleDateString()}
+                                                {new Date(item.timestamp).toLocaleDateString()}
                                             </span>
                                         </div>
-                                        <p className="text-muted-foreground">{reply.content}</p>
+                                        <CommentBody
+                                            projectId={projectId}
+                                            content={item.content}
+                                            contentFormat={item.contentFormat}
+                                            attachments={item.attachments}
+                                            className="text-muted-foreground"
+                                        />
                                         <ReplyTrackerState
-                                            reply={reply}
+                                            reply={item}
                                             provider={comment.tracker?.provider}
                                             onShare={onShareReply
                                                 ? (replyId) => onShareReply(comment.id, replyId)
@@ -357,26 +378,27 @@ function PanelCommentCard({
 
                     {isReplying && canModify && (
                         <div className="mt-2 flex items-end gap-2 pt-2">
-                            <label className="flex-1 space-y-1 text-xs font-medium">
+                            <div className="min-w-0 flex-1 space-y-1 text-xs font-medium">
                                 <span>Reply</span>
-                                <textarea
+                                {/* Revealing the reply box is a deliberate request to type in it. */}
+                                <RichComposer
                                     ref={replyRef}
-                                    value={replyContent}
-                                    onChange={(e) => setReplyContent(e.target.value)}
+                                    projectId={projectId}
+                                    ariaLabel="Reply"
+                                    autoFocus
                                     placeholder="Write a reply..."
-                                    className="min-h-[60px] w-full resize-none rounded border bg-background p-2 text-sm font-normal text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-                                    onKeyDown={(e) => {
-                                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                                            e.preventDefault();
-                                            void handleReply();
-                                        }
-                                    }}
+                                    onChange={setReply}
+                                    onSubmit={() => void handleReply()}
+                                    onCancel={() => setIsReplying(false)}
+                                    disabled={isSubmitting}
+                                    minHeightClassName="min-h-16"
+                                    className="font-normal"
                                 />
-                            </label>
+                            </div>
                             <Button
                                 size="icon"
                                 className="mb-0.5 h-8 w-8"
-                                disabled={isSubmitting || !replyContent.trim()}
+                                disabled={!canSendReply}
                                 onClick={() => void handleReply()}
                                 aria-label="Send reply"
                             >

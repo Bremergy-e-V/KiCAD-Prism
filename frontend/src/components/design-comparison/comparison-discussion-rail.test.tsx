@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ComparisonDiscussionRail } from "./comparison-discussion-rail";
 import { fetchApi, readApiError } from "@/lib/api";
 import type { Comment } from "@/types/comments";
+import { typeInComposer } from "@/features/rich-comments/test-utils";
 
 vi.mock("@/lib/api", () => ({
     fetchApi: vi.fn(),
@@ -49,8 +50,7 @@ function openReplyComposer() {
     // Two buttons answer to "Reply" across the rail's lifetime, but only one
     // at a time: the opener swaps for the submit button once replying.
     fireEvent.click(screen.getByRole("button", { name: "Reply" }));
-    const textarea = screen.getByPlaceholderText("Reply…");
-    fireEvent.change(textarea, { target: { value: "Looks good to me" } });
+    typeInComposer(screen.getByRole("textbox", { name: "Reply" }), "Looks good to me");
     return screen.getByRole("button", { name: "Reply" });
 }
 
@@ -99,9 +99,9 @@ describe("ComparisonDiscussionRail addReply", () => {
         await waitFor(() => expect(onCommentsChange).toHaveBeenCalledTimes(1));
         expect(mockedFetch).toHaveBeenCalledWith("/api/projects/p1/comments/c1/replies", {
             method: "POST",
-            body: JSON.stringify({ content: "Looks good to me" }),
+            body: JSON.stringify({ content: "Looks good to me", contentFormat: "md" }),
         });
         // Composer reset signals completion.
-        expect(screen.queryByPlaceholderText("Reply…")).toBeNull();
+        expect(screen.queryByRole("textbox", { name: "Reply" })).toBeNull();
     });
 });
