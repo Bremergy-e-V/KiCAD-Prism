@@ -58,15 +58,20 @@ export function CommentCard({
     const isResolved = comment.status === "RESOLVED";
     const canSendReply = Boolean(reply.markdown) && !reply.uploading && !busy;
 
-    const style: CSSProperties = screenPosition
+    // The card never runs past the bottom of the viewport; its thread scrolls
+    // between the fixed header and action bar instead.
+    const top = screenPosition ? Math.min(Math.max(screenPosition.y - 8, 8), window.innerHeight - 200) : null;
+    const style: CSSProperties = screenPosition && top !== null
         ? {
               left: Math.min(Math.max(screenPosition.x + 12, 8), window.innerWidth - 320),
-              top: Math.min(Math.max(screenPosition.y - 8, 8), window.innerHeight - 200),
+              top,
+              maxHeight: `calc(100vh - ${top + 8}px)`,
           }
         : {
               left: "50%",
               top: "20%",
               transform: "translateX(-50%)",
+              maxHeight: "calc(80vh - 8px)",
           };
 
     const submitReply = async () => {
@@ -96,13 +101,13 @@ export function CommentCard({
         <dialog
             open
             className={cn(
-                "fixed z-[110] m-0 w-80 rounded-md border bg-background p-0 text-foreground shadow-lg",
+                "fixed z-[110] m-0 flex w-80 flex-col overflow-hidden rounded-md border bg-background p-0 text-foreground shadow-lg",
                 isResolved && "opacity-80",
             )}
             style={style}
             aria-label="Comment details"
         >
-            <div className="flex items-start justify-between gap-2 border-b px-3 py-2">
+            <div className="flex shrink-0 items-start justify-between gap-2 border-b px-3 py-2">
                 <div className="min-w-0">
                     <div className="truncate text-sm font-medium">{comment.author}</div>
                     <div className="text-[10px] text-muted-foreground">
@@ -121,6 +126,7 @@ export function CommentCard({
                 </Button>
             </div>
 
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <div className="flex flex-wrap gap-1 px-3 pt-2">
                 <Badge variant="secondary" className="h-5 text-[10px]">
                     {commentClassLabel(comment.commentClass ?? "general")}
@@ -133,7 +139,6 @@ export function CommentCard({
                 thread={comment}
                 canInteract={canInteract}
                 onQuote={quote}
-                bodyClassName="max-h-72 overflow-y-auto"
                 className="px-3 py-2"
             />
 
@@ -210,8 +215,10 @@ export function CommentCard({
                 </div>
             )}
 
+            </div>
+
             {canModify && (
-                <div className="flex items-center justify-end gap-1 border-t px-2 py-1.5">
+                <div className="flex shrink-0 items-center justify-end gap-1 border-t px-2 py-1.5">
                     <Button
                         variant="ghost"
                         size="icon"
