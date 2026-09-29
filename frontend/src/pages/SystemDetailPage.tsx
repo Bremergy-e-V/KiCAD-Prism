@@ -23,13 +23,15 @@ export function SystemDetailPage({ user }: SystemDetailPageProps) {
   const system = state.document?.system ?? null;
   const canEdit = canManageProjects(user?.role);
 
-  const setTab = (next: SystemTab) => {
-    setSearchParams((current) => {
-      const params = new URLSearchParams(current);
-      if (next === "overview") {
-        params.delete("tab");
-      } else {
+  /** Switch tab; per-tab selections (`board`, `link`, …) belong to their tab and are replaced. */
+  const setTab = (next: SystemTab, extra: Record<string, string> = {}) => {
+    setSearchParams(() => {
+      const params = new URLSearchParams();
+      if (next !== "overview") {
         params.set("tab", next);
+      }
+      for (const [key, value] of Object.entries(extra)) {
+        params.set(key, value);
       }
       return params;
     });
@@ -115,8 +117,9 @@ export function SystemDetailPage({ user }: SystemDetailPageProps) {
             document={state.document}
             etag={state.etag}
             canEdit={canEdit}
+            user={user}
             reload={state.reload}
-            onNavigateTab={setTab}
+            onNavigate={setTab}
           />
         ) : (
           <div className="p-6 text-sm text-muted-foreground">Loading…</div>

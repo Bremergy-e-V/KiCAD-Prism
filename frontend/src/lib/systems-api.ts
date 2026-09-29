@@ -8,7 +8,7 @@
  */
 
 import { ApiHttpError, fetchApi, readApiError } from "@/lib/api";
-import type { SystemDocument, SystemInstance, SystemSummary } from "@/types/system";
+import type { InstanceInterface, SystemDocument, SystemInstance, SystemPort, SystemSummary } from "@/types/system";
 
 const BASE = "/api/systems";
 
@@ -66,6 +66,12 @@ async function versioned<T>(url: string, init: RequestInit & { etag?: string } =
 
 const json = (value: unknown) => JSON.stringify(value);
 
+/** A queued background job (`202`): extraction, detection or rebase. */
+export interface QueuedJob {
+  job_id: string;
+  status: string;
+}
+
 // ---------------------------------------------------------------------------
 // Systems
 
@@ -96,4 +102,37 @@ export type InstanceRow = Pick<
 export function addInstance(systemId: string, etag: string, input: InstanceInput) {
   return versioned<InstanceRow>(path(systemId, "instances"), { method: "POST", etag, body: json(input) },
     "Could not add the board");
+}
+
+export function updateInstance(
+  systemId: string, etag: string, instanceId: string,
+  fields: { label?: string; pinned?: boolean; trackedRef?: string | null },
+) {
+  return versioned<InstanceRow>(path(systemId, "instances", instanceId), { method: "PATCH", etag, body: json(fields) });
+}
+
+export function removeInstance(systemId: string, etag: string, instanceId: string, cascadeLinks = false) {
+  const query = cascadeLinks ? "?cascade=links" : "";
+  return versioned<void>(`${path(systemId, "instances", instanceId)}${query}`, { method: "DELETE", etag });
+}
+
+export async function getInstanceInterface(
+  systemId: string, instanceId: string, commit?: string,
+): Promise<{ state: "ready"; body: InstanceInterface } | { state: "queued"; job: QueuedJob }> {
+  const query = commit ? `?commit=${encodeURIComponent(commit)}` : "";
+  const { status, body } = await send<InstanceInterface | QueuedJob>(
+    `${path(systemId, "instances", instanceId, "interface")}${query}`,
+  );
+  return status === 202 ? { state: "queued", job: body as QueuedJob } : { state: "ready", body: body as InstanceInterface };
+}
+
+export function checkNow(systemId: string, instanceId: string) {
+  return send<QueuedJob>(path(systemId, "instances", instanceId, "check"), { method: "POST" }).then((r) => r.body);
+}
+
+export function setPortOverride(
+  systemId: string, etag: string, instanceId: string, portKey: string, state: "hidden" | "promoted" | null,
+) {
+  return versioned<SystemPort>(path(systemId, "instances", instanceId, "ports", portKey, "override"),
+    { method: "PUT", etag, body: json({ state }) });
 }
