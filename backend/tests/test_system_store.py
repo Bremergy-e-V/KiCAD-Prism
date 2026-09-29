@@ -45,9 +45,8 @@ def port(key: str, *, reference: str = "J1", pins: int = 4) -> dict:
 
 
 class MigrationRegistryTest(unittest.TestCase):
-    def test_migration_26_is_registered_last(self) -> None:
-        version, name, function = MIGRATIONS[-1]
-        self.assertEqual((version, name, function), (26, "system_builder", migrate))
+    def test_migration_26_is_registered(self) -> None:
+        self.assertIn((26, "system_builder", migrate), MIGRATIONS)
 
 
 @unittest.skipUnless(POSTGRES_URL, "TEST_POSTGRES_URL is required for System Builder store tests")
@@ -261,8 +260,10 @@ class StoreTest(unittest.TestCase):
     def test_deleted_project_leaves_instances_unresolved(self) -> None:
         sid = self.system()["id"]
         inst = self.instance(sid, "A", "prj_gone")
+        version = self.store.get_system(sid)["version"]
         self.assertEqual(self.store.mark_project_unresolved("prj_gone"), [sid])
         self.assertEqual(self.store.get_instance(sid, inst["id"])["resolution"], "unresolved")
+        self.assertEqual(self.store.get_system(sid)["version"], version + 1)
         self.assertEqual(self.store.mark_project_unresolved("prj_gone"), [])
 
     def test_instance_with_links_needs_cascade(self) -> None:

@@ -62,6 +62,9 @@ def load_builtin_job_handlers() -> None:
     register_job_handler("project_thumbnail", run_project_thumbnail_job_v3)
     for job_type in catalog_handlers:
         register_job_handler(job_type, run_catalog_job_v3)
+    from app.services.systems.jobs import EXTRACT_JOB_KIND, run_system_interface_job
+
+    register_job_handler(EXTRACT_JOB_KIND, run_system_interface_job)
     from app.services.trackers.jobs import register_tracker_job_handlers
 
     register_tracker_job_handlers(register_job_handler)
