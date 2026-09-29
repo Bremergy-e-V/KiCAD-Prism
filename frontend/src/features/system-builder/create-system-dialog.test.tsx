@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CreateSystemDialog, submitSystem, validateDraft, type BoardDraft } from "./create-system-dialog";
+import { CreateSystemDialog, submitSystem, validateDraft } from "./create-system-dialog";
+import type { BoardDraft } from "./board-fields";
 import type { Project } from "@/types/project";
 
 const board = (patch: Partial<BoardDraft>): BoardDraft => ({

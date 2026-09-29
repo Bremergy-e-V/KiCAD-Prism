@@ -129,7 +129,8 @@ export interface SystemDocument {
   findingCounts: FindingCounts | null;
 }
 
-export interface InstanceComponent extends SystemPort {
+/** A component from `GET …/interface`: artifact facts plus exposure, with pins instead of a count. */
+export interface InstanceComponent extends Omit<SystemPort, "pinCount"> {
   pins: { pad: string; nets: string[]; pcbNets?: string[] | null; pinNames?: string[] | null; pinTypes?: string[] | null }[];
 }
 
