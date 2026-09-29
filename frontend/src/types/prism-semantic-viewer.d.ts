@@ -124,6 +124,8 @@ export interface PrismSemanticViewerElement extends HTMLElement {
     setLodOverride?: (lod: 0 | 1 | 2 | null) => void;
     /** GPU memory budget in bytes (default 1.5 GB); over it, tiers no occurrence needs are evicted. */
     setGpuBudget?: (bytes: number) => void;
+    /** Every component reference on the board; empty until the viewer is ready. */
+    getComponentReferences?: () => string[];
     resize: () => void;
     /** Null until the viewer is ready. Changes arrive as `prism-semantic-viewer:viewstatechange`. */
     getViewState?: () => PrismSemanticViewState | null;

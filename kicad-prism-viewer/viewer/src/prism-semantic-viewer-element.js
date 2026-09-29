@@ -375,6 +375,11 @@ export class PrismSemanticViewerElement extends HTMLElement {
     return this.controller?.projectPoint?.(point, occurrenceKey) ?? null;
   }
 
+  /** Every component reference on the board; empty until the viewer is ready. */
+  getComponentReferences() {
+    return this.controller?.getComponentReferences?.() ?? [];
+  }
+
   resize() {
     this.controller?.resize?.();
   }
