@@ -1295,6 +1295,7 @@ export function Visualizer({ projectId, user, commit, active: viewerActive = tru
                     context: pendingContext,
                     location: pendingLocation,
                     content: payload.content,
+                    contentFormat: payload.contentFormat,
                     author: user?.name,
                     elementId: pendingElementRef.current?.elementId,
                     elementRef: pendingElementRef.current?.elementRef,
@@ -1341,7 +1342,7 @@ export function Visualizer({ projectId, user, commit, active: viewerActive = tru
         try {
             const response = await fetchApi(`/api/projects/${projectId}/comments/${commentId}/replies`, {
                 method: "POST",
-                body: JSON.stringify({ content }),
+                body: JSON.stringify({ content, contentFormat: "md" }),
             });
             if (!response.ok) throw new Error(await readApiError(response, "Failed to add reply"));
             const payload = await response.json() as { comment: Comment };
@@ -1849,6 +1850,7 @@ export function Visualizer({ projectId, user, commit, active: viewerActive = tru
                             )}
                             <div className="min-h-0 flex-1">
                             <CommentPanel
+                                projectId={projectId}
                                 comments={comments}
                                 onClose={() => setRightRailTab(null)}
                                 onResolve={(commentId, resolved) => void resolveComment(commentId, resolved)}
@@ -1901,6 +1903,7 @@ export function Visualizer({ projectId, user, commit, active: viewerActive = tru
             </div>
 
             {showCommentForm && pendingLocation && <CommentForm
+                projectId={projectId}
                 // Each pin is its own draft, so each is its own component.
                 key={`${pendingLocation.x}:${pendingLocation.y}`}
                 isOpen
@@ -1919,6 +1922,7 @@ export function Visualizer({ projectId, user, commit, active: viewerActive = tru
 
             {selectedComment && (
                 <CommentCard
+                    projectId={projectId}
                     comment={selectedComment}
                     screenPosition={commentCardScreenPosition}
                     canModify={canModifyComments}

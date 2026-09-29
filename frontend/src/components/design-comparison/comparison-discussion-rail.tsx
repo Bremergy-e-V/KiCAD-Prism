@@ -1,12 +1,19 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { CheckCircle2, MessageSquare, Reply, Send, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { ReplyTrackerState } from "@/features/tracker-integration/reply-tracker-state";
 import { TrackerIssueAction } from "@/features/tracker-integration/tracker-issue-action";
 import { fetchApi, readApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { Comment, CommentContext } from "@/types/comments";
+import { CommentBody } from "@/features/rich-comments/comment-body";
+import {
+    RichComposer,
+    type RichComposerHandle,
+    type RichComposerState,
+} from "@/features/rich-comments/rich-composer";
+
+const EMPTY_DRAFT: RichComposerState = { markdown: "", uploading: false };
 
 interface DiscussionAnchor {
     id: string;
@@ -39,14 +46,15 @@ export function ComparisonDiscussionRail({
     onClose,
     embedded = false,
 }: ComparisonDiscussionRailProps) {
-    const [content, setContent] = useState("");
+    const [draft, setDraft] = useState<RichComposerState>(EMPTY_DRAFT);
     const [replyingTo, setReplyingTo] = useState<string | null>(null);
-    const [reply, setReply] = useState("");
+    const [reply, setReply] = useState<RichComposerState>(EMPTY_DRAFT);
+    const draftRef = useRef<RichComposerHandle>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
     const createThread = async () => {
-        if (!content.trim()) return;
+        if (!draft.markdown || draft.uploading) return;
         setBusy(true);
         setError(null);
         try {
@@ -56,7 +64,8 @@ export function ComparisonDiscussionRail({
                     baseCommit: base,
                     compareCommit: compare,
                     domain,
-                    content: content.trim(),
+                    content: draft.markdown,
+                    contentFormat: "md",
                     filePath: anchor?.page ?? undefined,
                     semanticItemId: anchor?.id ?? undefined,
                     semanticItemRef: anchor?.label ?? undefined,
@@ -67,7 +76,7 @@ export function ComparisonDiscussionRail({
                 throw new Error(await readApiError(response, "Failed to add discussion"));
             }
             onCommentsChange([...comments, (await response.json()) as Comment]);
-            setContent("");
+            draftRef.current?.clear();
         } catch (caught) {
             setError(caught instanceof Error ? caught.message : "Failed to add discussion");
         } finally {
@@ -113,14 +122,14 @@ export function ComparisonDiscussionRail({
     };
 
     const addReply = async (comment: Comment) => {
-        if (!reply.trim()) return;
+        if (!reply.markdown || reply.uploading) return;
         setBusy(true);
         try {
             const response = await fetchApi(
                 `/api/projects/${projectId}/comments/${comment.id}/replies`,
                 {
                     method: "POST",
-                    body: JSON.stringify({ content: reply.trim() }),
+                    body: JSON.stringify({ content: reply.markdown, contentFormat: "md" }),
                 },
             );
             if (!response.ok) {
@@ -130,7 +139,7 @@ export function ComparisonDiscussionRail({
             onCommentsChange(
                 comments.map((item) => item.id === payload.comment.id ? payload.comment : item),
             );
-            setReply("");
+            setReply(EMPTY_DRAFT);
             setReplyingTo(null);
         } catch (caught) {
             setError(caught instanceof Error ? caught.message : "Failed to add reply");
@@ -200,7 +209,13 @@ export function ComparisonDiscussionRail({
                                 </Button>
                             )}
                         </div>
-                        <p className="mt-2 whitespace-pre-wrap leading-relaxed">{comment.content}</p>
+                        <CommentBody
+                            projectId={projectId}
+                            content={comment.content}
+                            contentFormat={comment.contentFormat}
+                            attachments={comment.attachments}
+                            className="mt-2 text-xs leading-relaxed"
+                        />
                         <div className="mt-2">
                             <TrackerIssueAction
                                 comment={comment}
@@ -212,8 +227,14 @@ export function ComparisonDiscussionRail({
                             <div className="mt-2 space-y-2 border-l pl-2">
                                 {comment.replies.map((item) => (
                                     <div key={item.id ?? `${item.timestamp}-${item.author}-${item.content}`}>
-                                        <span className="font-medium">{item.author}: </span>
-                                        {item.content}
+                                        <span className="font-medium">{item.author}</span>
+                                        <CommentBody
+                                            projectId={projectId}
+                                            content={item.content}
+                                            contentFormat={item.contentFormat}
+                                            attachments={item.attachments}
+                                            className="text-xs"
+                                        />
                                         <ReplyTrackerState
                                             reply={item}
                                             provider={comment.tracker?.provider}
@@ -229,16 +250,21 @@ export function ComparisonDiscussionRail({
                             <div className="mt-2">
                                 {replyingTo === comment.id ? (
                                     <div className="space-y-2">
-                                        <Textarea
-                                            value={reply}
-                                            onChange={(event) => setReply(event.target.value)}
+                                        <RichComposer
+                                            projectId={projectId}
+                                            ariaLabel="Reply"
+                                            autoFocus
                                             placeholder="Reply…"
-                                            className="min-h-16 text-xs"
+                                            onChange={setReply}
+                                            onSubmit={() => void addReply(comment)}
+                                            onCancel={() => setReplyingTo(null)}
+                                            disabled={busy}
+                                            minHeightClassName="min-h-16"
                                         />
                                         <Button
                                             size="sm"
                                             className="h-7"
-                                            disabled={busy || !reply.trim()}
+                                            disabled={busy || !reply.markdown || reply.uploading}
                                             onClick={() => void addReply(comment)}
                                         >
                                             <Send className="mr-1.5 h-3 w-3" />
@@ -250,7 +276,10 @@ export function ComparisonDiscussionRail({
                                         variant="ghost"
                                         size="sm"
                                         className="h-7 px-1.5"
-                                        onClick={() => setReplyingTo(comment.id)}
+                                        onClick={() => {
+                                            setReply(EMPTY_DRAFT);
+                                            setReplyingTo(comment.id);
+                                        }}
                                     >
                                         <Reply className="mr-1.5 h-3 w-3" />
                                         Reply
@@ -267,17 +296,21 @@ export function ComparisonDiscussionRail({
                     <div className="text-[10px] text-muted-foreground">
                         {anchor ? `New thread on ${anchor.label}` : "New comparison thread"}
                     </div>
-                    <Textarea
-                        value={content}
-                        onChange={(event) => setContent(event.target.value)}
-                        placeholder="Add review context…"
-                        className="min-h-20 text-xs"
+                    <RichComposer
+                        ref={draftRef}
+                        projectId={projectId}
+                        ariaLabel="New discussion"
+                        placeholder="Add review context… Paste a snip to attach it"
+                        onChange={setDraft}
+                        onSubmit={() => void createThread()}
+                        disabled={busy}
+                        minHeightClassName="min-h-20"
                     />
                     {error && <p className="text-[10px] text-destructive">{error}</p>}
                     <Button
                         size="sm"
                         className="w-full"
-                        disabled={busy || !content.trim()}
+                        disabled={busy || !draft.markdown || draft.uploading}
                         onClick={() => void createThread()}
                     >
                         <Send className="mr-2 h-3.5 w-3.5" />

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import {
     CheckCircle,
     Circle,
@@ -14,8 +14,15 @@ import { TrackerIssueAction } from "@/features/tracker-integration/tracker-issue
 import { formatCommentTimestamp } from "@/components/comment-date";
 import { cn } from "@/lib/utils";
 import { commentClassLabel, type Comment } from "@/types/comments";
+import { CommentBody } from "@/features/rich-comments/comment-body";
+import {
+    RichComposer,
+    type RichComposerHandle,
+    type RichComposerState,
+} from "@/features/rich-comments/rich-composer";
 
 interface CommentCardProps {
+    projectId: string;
     comment: Comment;
     screenPosition: { x: number; y: number } | null;
     canModify: boolean;
@@ -31,6 +38,7 @@ interface CommentCardProps {
  * Compact floating card shown when a canvas comment marker is clicked.
  */
 export function CommentCard({
+    projectId,
     comment,
     screenPosition,
     canModify,
@@ -42,18 +50,12 @@ export function CommentCard({
     onRetrySync,
 }: CommentCardProps) {
     const [replyOpen, setReplyOpen] = useState(false);
-    const [replyContent, setReplyContent] = useState("");
+    const [reply, setReply] = useState<RichComposerState>({ markdown: "", uploading: false });
     const [busy, setBusy] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
-    const replyRef = useRef<HTMLTextAreaElement>(null);
+    const replyRef = useRef<RichComposerHandle>(null);
     const isResolved = comment.status === "RESOLVED";
-
-    // Opening the reply box is a deliberate request to type in it, so focus
-    // follows the reveal. The card is a non-modal dialog and never takes focus
-    // on its own.
-    useEffect(() => {
-        if (replyOpen) replyRef.current?.focus();
-    }, [replyOpen]);
+    const canSendReply = Boolean(reply.markdown) && !reply.uploading && !busy;
 
     const style: CSSProperties = screenPosition
         ? {
@@ -67,11 +69,11 @@ export function CommentCard({
           };
 
     const submitReply = async () => {
-        if (!replyContent.trim() || busy) return;
+        if (!canSendReply) return;
         setBusy(true);
         try {
-            await onReply(comment.id, replyContent.trim());
-            setReplyContent("");
+            await onReply(comment.id, reply.markdown);
+            replyRef.current?.clear();
             setReplyOpen(false);
         } finally {
             setBusy(false);
@@ -82,7 +84,7 @@ export function CommentCard({
         <dialog
             open
             className={cn(
-                "fixed z-[110] m-0 w-72 rounded-md border bg-background p-0 text-foreground shadow-lg",
+                "fixed z-[110] m-0 w-80 rounded-md border bg-background p-0 text-foreground shadow-lg",
                 isResolved && "opacity-80",
             )}
             style={style}
@@ -114,7 +116,13 @@ export function CommentCard({
                 <CommentSeverityBadge severity={comment.severity ?? "info"} />
             </div>
 
-            <p className="whitespace-pre-wrap px-3 py-2 text-sm">{comment.content}</p>
+            <CommentBody
+                projectId={projectId}
+                content={comment.content}
+                contentFormat={comment.contentFormat}
+                attachments={comment.attachments}
+                className="max-h-72 overflow-y-auto px-3 py-2"
+            />
 
             {(comment.tracker?.linkState || comment.permissions?.canPublish) && (
                 <div className="px-3 pb-2">
@@ -134,10 +142,16 @@ export function CommentCard({
 
             {comment.replies.length > 0 && (
                 <div className="space-y-2 border-t bg-muted/30 px-3 py-2">
-                    {comment.replies.slice(-3).map((reply) => (
-                        <div key={`${reply.timestamp}-${reply.author}-${reply.content}`} className="text-xs">
-                            <span className="font-medium">{reply.author}</span>
-                            <span className="text-muted-foreground"> · {reply.content}</span>
+                    {comment.replies.slice(-3).map((item) => (
+                        <div key={item.id ?? `${item.timestamp}-${item.author}-${item.content}`} className="text-xs">
+                            <span className="font-medium">{item.author}</span>
+                            <CommentBody
+                                projectId={projectId}
+                                content={item.content}
+                                contentFormat={item.contentFormat}
+                                attachments={item.attachments}
+                                className="text-xs text-muted-foreground"
+                            />
                         </div>
                     ))}
                 </div>
@@ -145,22 +159,20 @@ export function CommentCard({
 
             {replyOpen && canModify && (
                 <div className="border-t px-3 py-2">
-                    <label htmlFor={`comment-card-reply-${comment.id}`} className="mb-1 block text-xs font-medium">
-                        Reply
-                    </label>
-                    <textarea
+                    <span className="mb-1 block text-xs font-medium">Reply</span>
+                    {/* Opening the reply box is a deliberate request to type in it, so
+                        focus follows the reveal. The card itself never takes focus. */}
+                    <RichComposer
                         ref={replyRef}
-                        id={`comment-card-reply-${comment.id}`}
-                        value={replyContent}
-                        onChange={(e) => setReplyContent(e.target.value)}
+                        projectId={projectId}
+                        ariaLabel="Reply"
+                        autoFocus
                         placeholder="Write a reply…"
-                        className="h-16 w-full resize-none rounded-md border bg-background p-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                        onKeyDown={(e) => {
-                            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                                e.preventDefault();
-                                void submitReply();
-                            }
-                        }}
+                        onChange={setReply}
+                        onSubmit={() => void submitReply()}
+                        onCancel={() => setReplyOpen(false)}
+                        disabled={busy}
+                        minHeightClassName="min-h-16"
                     />
                     <div className="mt-2 flex justify-end gap-2">
                         <Button
@@ -174,7 +186,7 @@ export function CommentCard({
                         <Button
                             type="button"
                             size="sm"
-                            disabled={busy || !replyContent.trim()}
+                            disabled={!canSendReply}
                             onClick={() => void submitReply()}
                         >
                             Reply
