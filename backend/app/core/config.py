@@ -497,6 +497,20 @@ class Settings(BaseSettings):
         ),
     )
 
+    COMMENT_ATTACHMENT_ROOT: str = Field(
+        default="",
+        description=(
+            "Content-addressed store for review-comment attachments. Defaults to "
+            "KICAD_PROJECTS_ROOT/.kicad-prism/comment-attachments."
+        ),
+    )
+    COMMENT_ATTACHMENT_MAX_BYTES: int = Field(
+        default=10 * 1024 * 1024,
+        ge=1024,
+        le=100 * 1024 * 1024,
+        description="Largest single file a reviewer can attach to a comment.",
+    )
+
     PRISM_WEBGPU_CONCURRENCY: int = Field(default=1, ge=1, le=8)
     PRISM_DESIGN_COMPARE_CONCURRENCY: int = Field(default=1, ge=1, le=8)
     PRISM_WORKFLOW_CONCURRENCY: int = Field(default=1, ge=1, le=8)
