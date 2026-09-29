@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.9 · 2026-09-30 · tickets SYS-00, SYS-04 to SYS-11, SYS-19.** This is the source of truth for
+**Version 1.10 · 2026-09-30 · tickets SYS-00, SYS-04 to SYS-11, SYS-19, polish.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -134,7 +134,7 @@ that the semantic index uses. It is not a new KiCad parser.
   "schema": "prism.system_interface.v1",
   "projectId": "prj_…",
   "commit": "<40-hex>",
-  "extractor": {"version": "2", "kicadMonkeyVersion": "…"},
+  "extractor": {"version": "3", "kicadMonkeyVersion": "…"},
   "hasPcb": true,
   "components": [
     {
@@ -209,8 +209,9 @@ order says so:
    rule would match. Field `System` equal to `Connector` (case-insensitive) is
    also treated as a candidate.
 2. **Reference prefix.** The alphabetic prefix of the reference is exactly
-   `J`, `P`, `CN` or `X`, so `J7`, `CN2` and `X1` match but `JP1` and `PS1`
-   do not.
+   `J`, so `J7` matches but `JP1` does not (v1.10: `P`, `CN` and `X` were
+   dropped; `X` is an oscillator in many libraries, and `P`/`CN` connectors
+   from a `Connector` library still match rule 3).
 3. **Library.** The `lib_id` library nickname, or the footprint library
    nickname, starts with `Connector` (case-insensitive). Symbols whose name
    (the part of `lib_id` after `:`) starts with `TestPoint` are excluded from
@@ -997,3 +998,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.7 | 2026-09-29 | SYS-10: CSV import implementation rules (§9.3): upload limits, sessions (migration 29), map validation, conflict reasons, promotion on commit, unchanged updates, and import review items. No drift rule changed. |
 | 1.8 | 2026-09-29 | SYS-11: mapping generators and the read-only generate endpoint (§8.5). No drift rule changed. |
 | 1.9 | 2026-09-30 | SYS-19 JTYU acceptance: `TestPoint*` symbols no longer match the library rule (§4.1); extractor version 2, so cached artifacts are re-extracted on first read. O2 measurements recorded (§10.1). §8.3 CSV row limit corrected to the enforced 5,000. Every §11 step re-ran and still matches. |
+| 1.10 | 2026-09-30 | Polish: the reference-prefix rule (§4.1) is `J` only; extractor version 3. Every §11 step re-ran and still matches. |
