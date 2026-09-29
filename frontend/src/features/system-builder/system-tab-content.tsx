@@ -1,9 +1,14 @@
+import { Suspense, lazy } from "react";
+
 import type { User } from "@/types/auth";
 import type { SystemDocument } from "@/types/system";
 
 import { BoardsTab } from "./boards-tab";
 import { OverviewTab } from "./overview-tab";
 import type { SystemTab } from "./system-tabs";
+
+// The canvas library is only loaded when the diagram is opened.
+const DiagramTab = lazy(() => import("./diagram-tab").then((module) => ({ default: module.DiagramTab })));
 
 export interface SystemTabProps {
   systemId: string;
@@ -23,6 +28,12 @@ export function SystemTabContent({ tab, ...props }: SystemTabProps & { tab: Syst
       return <OverviewTab {...props} />;
     case "boards":
       return <BoardsTab {...props} />;
+    case "diagram":
+      return (
+        <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading diagram…</div>}>
+          <DiagramTab {...props} />
+        </Suspense>
+      );
     default:
       return (
         <div className="p-6 text-sm text-muted-foreground">This section is not available yet.</div>

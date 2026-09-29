@@ -8,7 +8,7 @@
  */
 
 import { ApiHttpError, fetchApi, readApiError } from "@/lib/api";
-import type { InstanceInterface, SystemDocument, SystemInstance, SystemPort, SystemSummary } from "@/types/system";
+import type { InstanceInterface, SystemDocument, SystemInstance, SystemLink, SystemPort, SystemSummary } from "@/types/system";
 
 const BASE = "/api/systems";
 
@@ -135,4 +135,30 @@ export function setPortOverride(
 ) {
   return versioned<SystemPort>(path(systemId, "instances", instanceId, "ports", portKey, "override"),
     { method: "PUT", etag, body: json({ state }) });
+}
+
+// ---------------------------------------------------------------------------
+// Links and layout
+
+export interface LinkEndInput {
+  instanceId: string;
+  portKey: string;
+}
+
+export function createLink(
+  systemId: string, etag: string, input: { a: LinkEndInput; b: LinkEndInput; name?: string; harness?: string | null },
+) {
+  return versioned<SystemLink>(path(systemId, "links"), { method: "POST", etag, body: json(input) },
+    "Could not create the link");
+}
+
+export type LayoutPositions = Record<string, { x: number; y: number }>;
+
+export function getLayout(systemId: string) {
+  return send<{ positions: LayoutPositions }>(path(systemId, "layout")).then((r) => r.body.positions);
+}
+
+export function putLayout(systemId: string, positions: LayoutPositions) {
+  return send<{ positions: LayoutPositions }>(path(systemId, "layout"),
+    { method: "PUT", body: json({ positions }) }).then((r) => r.body.positions);
 }

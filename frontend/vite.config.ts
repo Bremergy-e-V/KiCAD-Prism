@@ -58,6 +58,15 @@ export default defineConfig({
           if (id.includes("node_modules/three")) {
             return "three-runtime"
           }
+          // System Builder's diagram canvas; loaded only with that tab.
+          if (
+            id.includes("node_modules/@xyflow/") ||
+            id.includes("node_modules/d3-") ||
+            id.includes("node_modules/zustand") ||
+            id.includes("node_modules/classcat")
+          ) {
+            return "diagram-runtime"
+          }
           if (id.includes("node_modules")) {
             return "vendor"
           }
