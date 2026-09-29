@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.4 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-07.** This is the source of truth for
+**Version 1.5 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-08.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -424,6 +424,23 @@ never reports as passing.
 | `SYS-V07 pin_net_ambiguous` | warning | A connected logical pin carries more than one schematic net |
 | `SYS-V08 open_review` | info | The instance has an open review |
 
+**Report (v1.5).** `GET …/validation` returns `{findings, notEvaluated,
+exempt, counts}` with the system `ETag`.
+
+- A finding is `{rule, name, severity, instanceId, linkId, rowId, end,
+  reference, pin, detail, redacted}`.
+- `notEvaluated` lists `{rule, instanceId, reason}`. An instance whose
+  baseline interface is not extracted yet gets SYS-V03, V04, V06 and V07
+  there, never a pass.
+- `exempt` lists harness-shared fan-out (`{rule, instanceId, portKey,
+  reference, pin, links, harness}`).
+- `counts` is `{error, warning, info, notEvaluated}`. It is also the
+  document's `findingCounts`.
+- SYS-V05 fires for an unresolved instance, and for a baseline whose last
+  extraction job failed; its `detail.reason` is the job's error code.
+- A finding on a restricted instance keeps its rule, IDs and severity, with
+  `reference`, `pin` and `detail` set to `null` and `redacted: true`.
+
 ### 7.3 PCB out of sync
 
 `pcb_out_of_sync` is a warning, never drift. It does not block
@@ -839,3 +856,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.2 | 2026-09-29 | SYS-05: §6 fixes what the rules left open — the audit kind of each silent change, item order, unannotated parts never resolving a port, "bound" meaning resolved by key, and `netOverlap` 1.0 for an end with no rows. No rule changed; every §11 step re-ran and still matches. |
 | 1.3 | 2026-09-29 | SYS-06: detection implementation rules in §10.1 (outcome vocabulary, locking, `pending_changes` on reviews via migration 28, current and unreachable reviews, check now). No drift rule changed. |
 | 1.4 | 2026-09-29 | SYS-07: decision validation and application order (§7.1), rebase behaviour, and the review response shape (§8.4). No drift rule changed. |
+| 1.5 | 2026-09-29 | SYS-08: the validation report shape, not-evaluated and SYS-V05 sources, and finding redaction (§7.2). The F0 and F8 findings goldens pass. |

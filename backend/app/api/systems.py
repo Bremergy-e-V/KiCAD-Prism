@@ -341,7 +341,13 @@ async def replace_rows(
 
 
 # ---------------------------------------------------------------------------
-# Reviews and rebase
+# Validation, reviews and rebase
+
+
+@router.get("/{system_id}/validation")
+async def get_validation(system_id: str, response: Response, user: AuthenticatedUser = Depends(require_viewer)):
+    result = await _run(system_id, lambda: system_service.service.validation_report(_caller(user), system_id))
+    return _respond(result, response)
 
 
 @router.get("/{system_id}/reviews")
