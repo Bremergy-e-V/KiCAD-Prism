@@ -41,6 +41,15 @@ class CheckResult:
     review_id: Optional[str] = None
 
 
+class _Unchanged(Exception):
+    """Raised inside a mutation to leave without writing or bumping the version."""
+
+    def __init__(self, outcome: str, review_id: Optional[str] = None) -> None:
+        super().__init__(outcome)
+        self.outcome = outcome
+        self.review_id = review_id
+
+
 def _default_project_loader(project_id: str) -> Any:
     # Detection acts for the system, not for a user: no role applies here.
     from app.services.project_service import _workspace_row_to_project
@@ -160,7 +169,12 @@ class Detector:
         except Exception:
             logger.exception("Interface extraction failed for %s@%s", instance["project_id"], tip)
             return self._record(instance_id, tip, tip, "extraction_failed")
-        return self._apply(instance, tip, candidate)
+        try:
+            return self._apply(instance, tip, candidate)
+        except drift.DriftInconsistency:
+            # Nothing was applied; the tip stays unchecked so a fixed engine retries it.
+            logger.exception("Drift engine inconsistency for instance %s", instance_id)
+            return self._record(instance_id, tip, None, "engine_error")
 
     def _baseline_unreachable(self, instance: dict, tip: str) -> CheckResult:
         with self._connect() as conn:
@@ -179,14 +193,31 @@ class Detector:
         return self._record(instance["id"], tip, tip, "baseline_unreachable", review["id"])
 
     def _apply(self, instance: dict, tip: str, candidate: Mapping[str, Any]) -> CheckResult:
+        try:
+            return self._apply_locked(instance, tip, candidate)
+        except _Unchanged as unchanged:
+            return self._record(instance["id"], tip, tip, unchanged.outcome, unchanged.review_id)
+
+    def _apply_locked(self, instance: dict, tip: str, candidate: Mapping[str, Any]) -> CheckResult:
         review_id = None
         with self._connect() as conn:
             store = SystemStore(conn)
             with store.mutation(instance["system_id"], expected_version=None, actor=DETECTION_ACTOR) as change:
                 # Under the system lock, so rows and baselines cannot move meanwhile.
+                # A concurrent check of the same tip may have finished first.
                 current = store.get_instance(instance["system_id"], instance["id"])
-                outcome = drift.evaluate(store.list_links(instance["system_id"]), instance["id"], candidate)
                 open_review = store.open_source_review(instance["id"])
+                if current["baseline_commit"] == tip:
+                    raise _Unchanged("at_baseline")
+                if current["pinned"]:
+                    raise _Unchanged("update_available")
+                if open_review is not None and (
+                    open_review["kind"] == "baseline_unreachable" or open_review["to_commit"] == tip
+                ):
+                    outcome_name = ("baseline_unreachable" if open_review["kind"] == "baseline_unreachable"
+                                    else "review_current")
+                    raise _Unchanged(outcome_name, open_review["id"])
+                outcome = drift.evaluate(store.list_links(instance["system_id"]), instance["id"], candidate)
                 if open_review is not None:
                     # §6.5: decisions on the older candidate are discarded.
                     store.set_review_status(change, open_review["id"], "superseded",
@@ -219,9 +250,6 @@ class Detector:
         for instance_id in self.tracked_instances_for_repository(repository_id):
             try:
                 results.append(self.check_instance(instance_id))
-            except drift.DriftInconsistency:
-                logger.exception("Drift engine inconsistency for instance %s", instance_id)
-                results.append(self._record(instance_id, None, None, "engine_error"))
             except Exception:
                 logger.exception("Source check failed for instance %s", instance_id)
                 results.append(CheckResult(instance_id, "check_failed"))

@@ -277,6 +277,35 @@ class DetectionTest(unittest.TestCase):
         self.assertEqual(self.version(), version)
         self.assertEqual(len(self.reviews("OBC-A")), 1)
 
+    def test_a_concurrent_check_of_the_same_tip_does_not_duplicate_the_review(self) -> None:
+        self.move_track("mini_obc", "F1")
+        first = self.detector.check_instance(self.instances["OBC-A"])
+        version = self.version()
+        # A second worker that resolved and extracted before the first applied.
+        instance = self.store.get_instance(self.sid, self.instances["OBC-A"])
+        self.conn.commit()
+        project = self.projects["prj_obc"]
+        from app.services.systems.jobs import extract_and_store
+
+        candidate = extract_and_store(project, self.commits["mini_obc"]["F1"], self.connect)
+        late = self.detector._apply(instance, self.commits["mini_obc"]["F1"], candidate)
+        self.assertEqual((late.outcome, late.review_id), ("review_current", first.review_id))
+        self.assertEqual(self.version(), version)
+        self.assertEqual(len(self.reviews("OBC-A")), 1)
+
+    def test_engine_inconsistency_applies_nothing_and_leaves_the_tip_unchecked(self) -> None:
+        from app.services.systems import drift
+
+        self.move_track("mini_obc", "F1")
+        version = self.version()
+        with mock.patch.object(drift, "_digest_equal", return_value=True), \
+                self.assertLogs("app.services.systems.detection", "ERROR"):
+            result = self.detector.check_instance(self.instances["OBC-A"])
+        self.assertEqual(result.outcome, "engine_error")
+        self.assertEqual(self.version(), version)
+        self.assertEqual(self.reviews("OBC-A"), [])
+        self.assertIsNone(self.store.get_source_check(self.instances["OBC-A"])["last_checked_commit"])
+
     def test_tip_at_baseline_and_missing_ref(self) -> None:
         self.assertEqual(self.detector.check_instance(self.instances["PAY"]).outcome, "at_baseline")
         subprocess.run(["git", "-C", str(self.repos["mini_payload"]), "branch", "-D", "track"],
