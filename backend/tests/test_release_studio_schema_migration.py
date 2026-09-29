@@ -1789,6 +1789,7 @@ class ReleaseStudioPostgresSchemaTests(unittest.TestCase):
                 (25, "tracker_webhook_oauth_tables"),
                 (26, "system_builder"),
                 (27, "system_workspace_version"),
+                (28, "system_review_pending_changes"),
             ],
         )
 

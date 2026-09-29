@@ -33,6 +33,7 @@ from app.services.workspace_migrations import m024_tracker_connector_delete_casc
 from app.services.workspace_migrations import m025_tracker_webhook_oauth
 from app.services.workspace_migrations import m026_system_builder
 from app.services.workspace_migrations import m027_system_workspace_version
+from app.services.workspace_migrations import m028_system_review_pending_changes
 from app.services.trackers import migrations as tracker_migrations
 
 
@@ -64,6 +65,7 @@ MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (25, tracker_migrations.WORKSPACE_WEBHOOK_OAUTH_NAME, m025_tracker_webhook_oauth.migrate),
     (26, "system_builder", m026_system_builder.migrate),
     (27, "system_workspace_version", m027_system_workspace_version.migrate),
+    (28, "system_review_pending_changes", m028_system_review_pending_changes.migrate),
 )
 
 

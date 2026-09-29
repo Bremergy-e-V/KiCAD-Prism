@@ -87,7 +87,9 @@ thing `backend/app/api/systems.py` calls. `systems/visibility.py` holds the
 folder predicate, which must stay in step with
 `WorkspaceService.get_project_for_role`. `systems/sources.py` is read-only Git
 on the child clone. `systems/jobs.py` runs `systems/interface_extractor.py`
-into the `system_interface_artifacts` cache.
+into the `system_interface_artifacts` cache. `systems/drift.py` is the pure
+drift engine; `systems/detection.py` resolves tips after a fetch and applies
+its outcome. Project sync queues detection after every successful fetch.
 
 ## Comments and issue publication
 

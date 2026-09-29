@@ -73,6 +73,12 @@ def _default_project_loader(project_id: str) -> Any:
     return _workspace_row_to_project(row) if row else None
 
 
+def _default_enqueue_check(instance_id: str, project_id: str, *, requested_by: str) -> Mapping[str, Any]:
+    from app.services.systems.detection import enqueue_instance_check
+
+    return enqueue_instance_check(instance_id, project_id, requested_by=requested_by)
+
+
 class SystemService:
     def __init__(
         self,
@@ -80,10 +86,12 @@ class SystemService:
         connect: Callable[[], ContextManager[Any]] = workspace_connection,
         project_loader: Callable[[str], Any] = _default_project_loader,
         enqueue: Callable[..., Mapping[str, Any]] = enqueue_extraction,
+        enqueue_check: Callable[..., Mapping[str, Any]] | None = None,
     ) -> None:
         self._connect = connect
         self._load_project = project_loader
         self._enqueue = enqueue
+        self._enqueue_check = enqueue_check or _default_enqueue_check
 
     # ------------------------------------------------------------------
     # Plumbing
@@ -495,6 +503,17 @@ class SystemService:
                 raise NotFound("Commit not found")
         job = self._enqueue(instance["project_id"], target, requested_by=caller.email)
         return "queued", {"job_id": str(job["job_id"]), "status": job["status"]}
+
+    def check_now(self, caller: Caller, system_id: str, instance_id: str) -> dict:
+        """``POST …/check`` (§8.1): queue detection for one instance now."""
+
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            instance = self._open_instance(store, system_id, instance_id, caller)
+        if not instance["tracked_ref"]:
+            raise Conflict("instance does not track a branch")
+        job = self._enqueue_check(instance_id, instance["project_id"], requested_by=caller.email)
+        return {"job_id": str(job["job_id"]), "status": job["status"]}
 
     def set_override(
         self, caller: Caller, system_id: str, version: int, instance_id: str, port_key: str,

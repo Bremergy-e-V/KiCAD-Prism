@@ -185,8 +185,15 @@ class SystemApiTest(unittest.TestCase):
             self.enqueued.append((project_id, commit))
             return {"job_id": f"job-{len(self.enqueued)}", "status": "queued"}
 
+        self.checks: list[tuple[str, str]] = []
+
+        def enqueue_check(instance_id: str, project_id: str, *, requested_by: str = "") -> dict:
+            self.checks.append((instance_id, project_id))
+            return {"job_id": "check-job", "status": "queued"}
+
         self.service = SystemService(
-            connect=connect, project_loader=self.projects.get, enqueue=enqueue
+            connect=connect, project_loader=self.projects.get, enqueue=enqueue,
+            enqueue_check=enqueue_check,
         )
         patcher = mock.patch.object(service_module, "service", self.service)
         patcher.start()
@@ -450,6 +457,17 @@ class SystemApiTest(unittest.TestCase):
         self.assertEqual(self.enqueued[-1], ("prj_obc", f1))
         self.assertEqual(self.call("GET", f"/{sid}/instances/{obc}/interface?commit={'e' * 40}").status, 404)
         self.assertEqual(self.call("GET", f"/{sid}/instances/{obc}/interface?commit=abc").status, 422)
+
+    def test_check_now_queues_detection_for_a_tracked_instance(self) -> None:
+        sid, _etag, obc, pay = self.two_boards()
+        self.assertEqual(self.call("POST", f"/{sid}/instances/{obc}/check", user="viewer").status, 403)
+        queued = self.call("POST", f"/{sid}/instances/{obc}/check")
+        self.assertEqual((queued.status, queued.json), (202, {"job_id": "check-job", "status": "queued"}))
+        self.assertEqual(self.checks, [(obc, "prj_obc")])
+        # PAY was added by commit, without a tracked branch.
+        self.assertEqual(self.call("POST", f"/{sid}/instances/{pay}/check").status, 409)
+        self.hide_project("prj_obc", "fld_admins")
+        self.assertEqual(self.call("POST", f"/{sid}/instances/{obc}/check").status, 404)
 
     def test_port_overrides(self) -> None:
         sid, etag, obc, pay = self.two_boards()
