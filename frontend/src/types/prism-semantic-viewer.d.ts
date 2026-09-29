@@ -69,6 +69,9 @@ export interface PrismSemanticViewState {
     layers: PrismSemanticLayerState[];
     showBoard: boolean;
     showComponents: boolean;
+    /** Boxes standing in for footprints without a 3D model. */
+    showPlaceholders: boolean;
+    realisticColors: boolean;
     /** 0..1 */
     separation: number;
     isolateNet: boolean;
@@ -129,6 +132,8 @@ export interface PrismSemanticViewerElement extends HTMLElement {
     applyLayerPreset?: (preset: PrismSemanticLayerPreset) => void;
     setShowBoard?: (visible: boolean) => void;
     setShowComponents?: (visible: boolean) => void;
+    setShowPlaceholders?: (visible: boolean) => void;
+    setRealisticColors?: (enabled: boolean) => void;
     setSeparation?: (value: number) => void;
     showNetLayers?: () => void;
     setNetIsolation?: (enabled: boolean) => void;
