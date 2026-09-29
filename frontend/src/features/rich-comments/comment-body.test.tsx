@@ -46,11 +46,14 @@ describe("CommentBody", () => {
         expect(container.querySelector("img")).toBeNull();
     });
 
-    it("loads images only from Prism attachments", () => {
+    it("loads images only from Prism attachments and links the rest", () => {
         const container = body(`![ext](https://x.test/p.gif)\n\n![snip](attachment:${ID})`);
         const images = container.querySelectorAll("img");
         expect(images).toHaveLength(1);
         expect(images[0]!.getAttribute("src")).toBe(`/api/projects/p1/comment-attachments/${ID}`);
+        const external = Array.from(container.querySelectorAll("a")).find((a) => a.textContent?.includes("ext"));
+        expect(external?.getAttribute("href")).toBe("https://x.test/p.gif");
+        expect(external?.getAttribute("rel")).toBe("noopener noreferrer");
     });
 
     it("renders file attachments as downloads and external links safely", () => {
