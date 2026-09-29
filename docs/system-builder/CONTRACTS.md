@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.2 · 2026-09-29 · tickets SYS-00, SYS-04, SYS-05.** This is the source of truth for
+**Version 1.3 · 2026-09-29 · tickets SYS-00, SYS-04, SYS-05, SYS-06.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -726,6 +726,26 @@ The job, for each such instance:
 
 **Idempotency.** Re-running a check for the same tip changes nothing.
 
+**Implementation rules (v1.3).**
+
+- `last_outcome` is one of `ref_missing`, `at_baseline`, `update_available`,
+  `baseline_unreachable`, `auto_advanced`, `review_opened`, `review_current`,
+  `extraction_failed`, `project_missing`, `source_unavailable` or
+  `engine_error`. Recording an outcome never bumps the system version.
+- Evaluation and its application run under the system lock, against the rows
+  and baselines current at that moment.
+- A `source_update` review stores its silent changes and port updates in
+  `system_reviews.pending_changes` (migration 28). They take effect only
+  when the review is applied, since nothing is re-evaluated at decision time.
+- An open review whose `to_commit` is already the tip is left alone
+  (`review_current`). An open `baseline_unreachable` review stops evaluation
+  until a rebase or removal. Opening one supersedes an open `source_update`
+  review.
+- `POST …/check` re-checks one tracked instance even when its tip was already
+  seen (409 for an untracked instance). A repository check that is queued or
+  running absorbs further fetches; the next fetch after it finishes picks up
+  anything it missed.
+
 **Baseline unreachable (default O3).** If the baseline commit cannot be read,
 the instance becomes `unresolved` and a `baseline_unreachable` review is
 opened. It has no items and no auto-advance. It closes only when the instance
@@ -785,3 +805,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.0 (pre-merge) | 2026-09-27 | Review of #407: `connectedInterfaceDigest` removed from the §3 example (never stored); `#` references excluded; §4.1 field matching defined; a connector-level item suppresses row items on its end (§6.1); rebind listing criteria defined (§6.4); `accept` on `connector_changed` refreshes row net baselines and refuses vanished pads (§7.1). |
 | 1.1 | 2026-09-27 | SYS-04: response shapes and write rules (§8.4); deleted projects are unresolved, not restricted; restricted-board rules for system deletion, cascades and history (§8.2). No drift rule changed, so no fixture step needs re-running. |
 | 1.2 | 2026-09-29 | SYS-05: §6 fixes what the rules left open — the audit kind of each silent change, item order, unannotated parts never resolving a port, "bound" meaning resolved by key, and `netOverlap` 1.0 for an end with no rows. No rule changed; every §11 step re-ran and still matches. |
+| 1.3 | 2026-09-29 | SYS-06: detection implementation rules in §10.1 (outcome vocabulary, locking, `pending_changes` on reviews via migration 28, current and unreachable reviews, check now). No drift rule changed. |

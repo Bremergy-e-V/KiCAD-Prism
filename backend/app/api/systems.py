@@ -247,6 +247,16 @@ async def get_interface(
     return body
 
 
+@router.post("/{system_id}/instances/{instance_id}/check", dependencies=[Depends(require_designer)])
+async def check_instance(
+    system_id: str, instance_id: str, user: AuthenticatedUser = Depends(require_viewer),
+):
+    body = await _run(system_id, lambda: system_service.service.check_now(
+        _caller(user), system_id, instance_id,
+    ))
+    return JSONResponse(status_code=202, content=body)
+
+
 @router.put(
     "/{system_id}/instances/{instance_id}/ports/{port_key:path}/override",
     dependencies=[Depends(require_designer)],

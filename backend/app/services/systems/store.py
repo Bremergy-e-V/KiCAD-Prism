@@ -14,8 +14,8 @@ which:
 Detection passes ``expected_version=None``: it has no ETag, but its changes
 still move the version so an editor holding the old ETag gets 412.
 
-Reviews and snapshots get their store methods with the tickets that use them
-(SYS-06/07/09); their tables already exist.
+Reviews are opened and superseded here for detection (SYS-06); decisions
+arrive with SYS-07 and snapshots with SYS-09.
 """
 
 from __future__ import annotations
@@ -602,6 +602,99 @@ class SystemStore:
              "added": sorted(kept - existing), "removed": sorted(existing - kept)},
         )
         return self.get_link(change.system_id, link_id)["rows"]
+
+    # ------------------------------------------------------------------
+    # Reviews (§5, §6.2, §6.5, §10.1)
+
+    def open_source_review(self, instance_id: str) -> Optional[dict]:
+        """The instance's open ``source_update`` or ``baseline_unreachable`` review."""
+        row = self.conn.execute(
+            """
+            SELECT * FROM system_reviews
+            WHERE instance_id = %s AND status = 'open'
+              AND kind IN ('source_update', 'baseline_unreachable')
+            """,
+            (instance_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def open_review(
+        self, change: Mutation, *, instance_id: Optional[str], kind: str,
+        from_commit: Optional[str], to_commit: Optional[str],
+        items: Sequence[Mapping[str, Any]] = (),
+        pending_changes: Mapping[str, Any] | None = None,
+    ) -> dict:
+        """Create an open review with its items, in order, and audit it."""
+        review_id = new_id("srv_")
+        self.conn.execute(
+            """
+            INSERT INTO system_reviews
+                (id, system_id, instance_id, kind, from_commit, to_commit, pending_changes)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (review_id, change.system_id, instance_id, kind, from_commit, to_commit,
+             Jsonb(dict(pending_changes or {}))),
+        )
+        for ordinal, item in enumerate(items):
+            self.conn.execute(
+                """
+                INSERT INTO system_review_items
+                    (id, review_id, ordinal, kind, link_id, link_end, row_ids,
+                     expected, observed, candidates)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (new_id("sri_"), review_id, ordinal, item["kind"], item.get("linkId"),
+                 item.get("end"), Jsonb(list(item.get("rowIds") or [])),
+                 Jsonb(item.get("expected")), Jsonb(item.get("observed")),
+                 None if item.get("candidates") is None else Jsonb(list(item["candidates"]))),
+            )
+        change.audit(
+            "review_opened",
+            {"reviewId": review_id, "instanceId": instance_id, "kind": kind,
+             "from": from_commit, "to": to_commit, "itemCount": len(items)},
+        )
+        return self.get_review(change.system_id, review_id)
+
+    def set_review_status(
+        self, change: Mutation, review_id: str, status: str, *, audit_kind: Optional[str] = None,
+        payload: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE system_reviews SET status = %s, decided_by = %s, decided_at = NOW()
+            WHERE id = %s AND system_id = %s
+            """,
+            (status, change.actor, review_id, change.system_id),
+        )
+        if audit_kind:
+            change.audit(audit_kind, {"reviewId": review_id, "status": status, **dict(payload or {})})
+
+    def get_review(self, system_id: str, review_id: str) -> dict:
+        row = self.conn.execute(
+            "SELECT * FROM system_reviews WHERE system_id = %s AND id = %s", (system_id, review_id)
+        ).fetchone()
+        if row is None:
+            raise NotFound(review_id)
+        review = dict(row)
+        review["items"] = [
+            dict(item)
+            for item in self.conn.execute(
+                "SELECT * FROM system_review_items WHERE review_id = %s ORDER BY ordinal",
+                (review_id,),
+            ).fetchall()
+        ]
+        return review
+
+    def list_reviews(self, system_id: str, *, status: Optional[str] = None) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT id FROM system_reviews
+            WHERE system_id = %s AND (%s::text IS NULL OR status = %s::text)
+            ORDER BY created_at DESC, id
+            """,
+            (system_id, status, status),
+        ).fetchall()
+        return [self.get_review(system_id, row["id"]) for row in rows]
 
     # ------------------------------------------------------------------
     # Audit history
