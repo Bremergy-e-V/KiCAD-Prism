@@ -89,6 +89,26 @@ def _request(app, method: str, path: str, *, body=None, headers=None, user="desi
     )
 
 
+class RoutingTest(unittest.TestCase):
+    def test_main_registers_the_systems_router(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
+        self.assertIn('app.include_router(systems_router, prefix="/api/systems"', source)
+        app = FastAPI()
+        app.include_router(systems_api.router, prefix="/api/systems")
+        paths = set(app.openapi()["paths"])
+        for path in ("/api/systems", "/api/systems/{system_id}",
+                     "/api/systems/{system_id}/instances/{instance_id}/interface",
+                     "/api/systems/{system_id}/links/{link_id}/rows",
+                     "/api/systems/{system_id}/history", "/api/systems/{system_id}/layout"):
+            self.assertIn(path, paths)
+
+    def test_extraction_job_handler_is_registered(self) -> None:
+        from app.services.job_handlers import load_builtin_job_handlers, registered_job_kinds
+
+        load_builtin_job_handlers()
+        self.assertIn(EXTRACT_JOB_KIND, registered_job_kinds())
+
+
 @unittest.skipUnless(POSTGRES_URL, "TEST_POSTGRES_URL is required for System Builder API tests")
 @unittest.skipUnless(psycopg is not None, "psycopg is required for System Builder API tests")
 class SystemApiTest(unittest.TestCase):
