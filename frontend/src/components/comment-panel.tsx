@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import {
     CheckCircle,
     ChevronDown,
+    Images,
     ChevronRight,
     Circle,
     MessageSquare,
@@ -20,7 +21,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { EcadCommentAnchorResolution } from "@/types/ecad-viewer";
-import { CommentBody } from "@/features/rich-comments/comment-body";
+import { SnipGallery } from "@/features/rich-comments/snip-gallery";
+import { ThreadMessage } from "@/features/rich-comments/thread-message";
+import { useUnreadThreads } from "@/features/rich-comments/unread";
 import {
     RichComposer,
     type RichComposerHandle,
@@ -63,6 +66,12 @@ export function CommentPanel({
     onShareReply,
 }: CommentPanelProps) {
     const [filter, setFilter] = useState<"ALL" | "OPEN" | "RESOLVED">("ALL");
+    const [view, setView] = useState<"threads" | "snips">("threads");
+    const { isUnread, markSeen } = useUnreadThreads(projectId);
+    const openThread = (comment: Comment) => {
+        markSeen(comment);
+        onCommentClick(comment);
+    };
 
     const filteredComments = comments.filter((c) => {
         if (filter === "ALL") return true;
@@ -96,9 +105,12 @@ export function CommentPanel({
                     <button
                         key={value}
                         type="button"
-                        onClick={() => setFilter(value)}
+                        onClick={() => {
+                            setFilter(value);
+                            setView("threads");
+                        }}
                         className={`rounded-full px-3 py-1 text-xs transition-colors ${
-                            filter === value
+                            view === "threads" && filter === value
                                 ? "bg-primary font-medium text-primary-foreground"
                                 : "bg-transparent text-muted-foreground hover:bg-muted"
                         }`}
@@ -106,11 +118,33 @@ export function CommentPanel({
                         {value === "ALL" ? "All" : value === "OPEN" ? "Open" : "Resolved"}
                     </button>
                 ))}
+                <button
+                    type="button"
+                    onClick={() => setView(view === "snips" ? "threads" : "snips")}
+                    aria-pressed={view === "snips"}
+                    className={`ml-auto inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs transition-colors ${
+                        view === "snips"
+                            ? "bg-primary font-medium text-primary-foreground"
+                            : "bg-transparent text-muted-foreground hover:bg-muted"
+                    }`}
+                >
+                    <Images className="h-3 w-3" />
+                    Snips
+                </button>
             </div>
 
             <ScrollArea className="flex-1 p-4">
                 <div className="space-y-6">
-                    {filteredComments.length === 0 ? (
+                    {view === "snips" ? (
+                        <SnipGallery
+                            projectId={projectId}
+                            comments={comments}
+                            onOpenThread={(comment) => {
+                                setView("threads");
+                                openThread(comment);
+                            }}
+                        />
+                    ) : filteredComments.length === 0 ? (
                         <div className="py-8 text-center text-sm text-muted-foreground">
                             No comments found.
                         </div>
@@ -130,10 +164,12 @@ export function CommentPanel({
                                                 projectId={projectId}
                                                 comment={comment}
                                                 highlighted={highlightedId === comment.id}
+                                                unread={isUnread(comment)}
+                                                onSeen={() => markSeen(comment)}
                                                 onResolve={onResolve}
                                                 onReply={onReply}
                                                 onDelete={onDelete}
-                                                onClick={() => onCommentClick(comment)}
+                                                onClick={() => openThread(comment)}
                                                 canModify={canModify}
                                                 anchorStatus={anchorStatuses[comment.id]}
                                                 onReattach={onReattach}
@@ -157,6 +193,8 @@ function PanelCommentCard({
     projectId,
     comment,
     highlighted,
+    unread,
+    onSeen,
     onResolve,
     onReply,
     onDelete,
@@ -171,6 +209,8 @@ function PanelCommentCard({
     projectId: string;
     comment: Comment;
     highlighted: boolean;
+    unread: boolean;
+    onSeen: () => void;
     onResolve: (id: string, resolved: boolean) => void;
     onReply: (id: string, content: string) => Promise<void>;
     onDelete: (id: string) => Promise<void>;
@@ -183,6 +223,8 @@ function PanelCommentCard({
     onShareReply?: (commentId: string, replyId: string) => Promise<void>;
 }) {
     const [isReplying, setIsReplying] = useState(false);
+    // A quote chosen while the reply box is closed opens it seeded.
+    const [replySeed, setReplySeed] = useState<string | undefined>(undefined);
     const [reply, setReply] = useState<RichComposerState>({ markdown: "", uploading: false });
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [expanded, setExpanded] = useState(true);
@@ -209,9 +251,22 @@ function PanelCommentCard({
             await onReply(comment.id, reply.markdown);
             replyRef.current?.clear();
             setIsReplying(false);
+            setReplySeed(undefined);
+            onSeen();
         } finally {
             setIsSubmitting(false);
         }
+    };
+
+    const canInteract = canModify && comment.permissions?.canReply !== false;
+    const quote = (markdown: string) => {
+        setExpanded(true);
+        if (isReplying && replyRef.current) {
+            replyRef.current.insertMarkdown(markdown);
+            return;
+        }
+        setReplySeed(markdown);
+        setIsReplying(true);
     };
 
     return (
@@ -228,6 +283,9 @@ function PanelCommentCard({
             >
                 <div className="mb-2 flex items-start justify-between">
                     <div className="flex items-center gap-2">
+                        {unread && (
+                            <span className="h-2 w-2 shrink-0 rounded-full bg-primary" role="img" aria-label="New activity" />
+                        )}
                         <span className="text-sm font-semibold">{comment.author}</span>
                         {comment.elementRef && (
                             <Badge variant="outline" className="h-5 px-1 text-[10px]">
@@ -249,11 +307,11 @@ function PanelCommentCard({
 
             {/* Outside the open-comment button: rich bodies carry links and image buttons. */}
             <div className="px-3">
-                <CommentBody
+                <ThreadMessage
                     projectId={projectId}
-                    content={comment.content}
-                    contentFormat={comment.contentFormat}
-                    attachments={comment.attachments}
+                    thread={comment}
+                    canInteract={canInteract}
+                    onQuote={quote}
                     className="mb-3"
                 />
 
@@ -292,7 +350,10 @@ function PanelCommentCard({
                                 variant="ghost"
                                 size="sm"
                                 className="h-6 px-2 text-xs"
-                                onClick={() => setIsReplying(!isReplying)}
+                                onClick={() => {
+                                    setReplySeed(undefined);
+                                    setIsReplying(!isReplying);
+                                }}
                             >
                                 <ReplyIcon className="mr-1 h-3 w-3" />
                                 Reply
@@ -357,12 +418,13 @@ function PanelCommentCard({
                                                 {new Date(item.timestamp).toLocaleDateString()}
                                             </span>
                                         </div>
-                                        <CommentBody
+                                        <ThreadMessage
                                             projectId={projectId}
-                                            content={item.content}
-                                            contentFormat={item.contentFormat}
-                                            attachments={item.attachments}
-                                            className="text-muted-foreground"
+                                            thread={comment}
+                                            reply={item}
+                                            canInteract={canInteract}
+                                            onQuote={quote}
+                                            bodyClassName="text-muted-foreground"
                                         />
                                         <ReplyTrackerState
                                             reply={item}
@@ -387,6 +449,7 @@ function PanelCommentCard({
                                     ariaLabel="Reply"
                                     autoFocus
                                     placeholder="Write a reply..."
+                                    initialMarkdown={replySeed}
                                     onChange={setReply}
                                     onSubmit={() => void handleReply()}
                                     onCancel={() => setIsReplying(false)}

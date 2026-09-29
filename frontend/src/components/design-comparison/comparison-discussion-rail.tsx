@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { CheckCircle2, Download, MessageSquare, Reply, Send, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ReplyTrackerState } from "@/features/tracker-integration/reply-tracker-state";
@@ -6,7 +6,8 @@ import { TrackerIssueAction } from "@/features/tracker-integration/tracker-issue
 import { fetchApi, readApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import type { Comment, CommentContext } from "@/types/comments";
-import { CommentBody } from "@/features/rich-comments/comment-body";
+import { ThreadMessage } from "@/features/rich-comments/thread-message";
+import { ThreadUpdateContext } from "@/features/rich-comments/thread-updates";
 import {
     RichComposer,
     type RichComposerHandle,
@@ -52,8 +53,6 @@ export function ComparisonDiscussionRail({
     embedded = false,
 }: ComparisonDiscussionRailProps) {
     const [draft, setDraft] = useState<RichComposerState>(EMPTY_DRAFT);
-    const [replyingTo, setReplyingTo] = useState<string | null>(null);
-    const [reply, setReply] = useState<RichComposerState>(EMPTY_DRAFT);
     const draftRef = useRef<RichComposerHandle>(null);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -126,34 +125,12 @@ export function ComparisonDiscussionRail({
         }
     };
 
-    const addReply = async (comment: Comment) => {
-        if (!reply.markdown || reply.uploading) return;
-        setBusy(true);
-        try {
-            const response = await fetchApi(
-                `/api/projects/${projectId}/comments/${comment.id}/replies`,
-                {
-                    method: "POST",
-                    body: JSON.stringify({ content: reply.markdown, contentFormat: "md" }),
-                },
-            );
-            if (!response.ok) {
-                throw new Error(await readApiError(response, "Failed to add reply"));
-            }
-            const payload = (await response.json()) as { comment: Comment };
-            onCommentsChange(
-                comments.map((item) => item.id === payload.comment.id ? payload.comment : item),
-            );
-            setReply(EMPTY_DRAFT);
-            setReplyingTo(null);
-        } catch (caught) {
-            setError(caught instanceof Error ? caught.message : "Failed to add reply");
-        } finally {
-            setBusy(false);
-        }
-    };
+    const applyThread = useCallback((updated: Comment) => {
+        onCommentsChange(comments.map((item) => item.id === updated.id ? updated : item));
+    }, [comments, onCommentsChange]);
 
     return (
+        <ThreadUpdateContext.Provider value={applyThread}>
         <aside
             className={cn(
                 "flex h-full flex-col bg-background",
@@ -195,114 +172,16 @@ export function ComparisonDiscussionRail({
                     </p>
                 )}
                 {comments.map((comment) => (
-                    <article
+                    <RailThread
                         key={comment.id}
-                        className={`rounded-md border p-3 text-xs ${
-                            comment.status === "RESOLVED" ? "opacity-60" : ""
-                        }`}
-                    >
-                        <div className="flex items-start justify-between gap-2">
-                            <div>
-                                <div className="font-medium">{comment.author}</div>
-                                <div className="mt-0.5 text-[10px] text-muted-foreground">
-                                    {comment.elementRef || "Whole comparison"}
-                                </div>
-                            </div>
-                            {canComment && (
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6"
-                                    onClick={() => void resolveThread(comment)}
-                                    aria-label={
-                                        comment.status === "RESOLVED"
-                                            ? "Reopen discussion"
-                                            : "Resolve discussion"
-                                    }
-                                >
-                                    <CheckCircle2 className="h-3.5 w-3.5" />
-                                </Button>
-                            )}
-                        </div>
-                        <CommentBody
-                            projectId={projectId}
-                            content={comment.content}
-                            contentFormat={comment.contentFormat}
-                            attachments={comment.attachments}
-                            className="mt-2 text-xs leading-relaxed"
-                        />
-                        <div className="mt-2">
-                            <TrackerIssueAction
-                                comment={comment}
-                                onPromote={(id) => trackerAction(`${id}/promote`, "Failed to create issue")}
-                                onRetry={(id) => trackerAction(`${id}/tracker/retry`, "Failed to retry issue sync")}
-                            />
-                        </div>
-                        {!!comment.replies.length && (
-                            <div className="mt-2 space-y-2 border-l pl-2">
-                                {comment.replies.map((item) => (
-                                    <div key={item.id ?? `${item.timestamp}-${item.author}-${item.content}`}>
-                                        <span className="font-medium">{item.author}</span>
-                                        <CommentBody
-                                            projectId={projectId}
-                                            content={item.content}
-                                            contentFormat={item.contentFormat}
-                                            attachments={item.attachments}
-                                            className="text-xs"
-                                        />
-                                        <ReplyTrackerState
-                                            reply={item}
-                                            provider={comment.tracker?.provider}
-                                            onShare={(replyId) => trackerAction(
-                                                `${comment.id}/replies/${replyId}/share`, "Failed to share reply",
-                                            )}
-                                        />
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                        {canComment && (
-                            <div className="mt-2">
-                                {replyingTo === comment.id ? (
-                                    <div className="space-y-2">
-                                        <RichComposer
-                                            projectId={projectId}
-                                            ariaLabel="Reply"
-                                            autoFocus
-                                            placeholder="Reply…"
-                                            onChange={setReply}
-                                            onSubmit={() => void addReply(comment)}
-                                            onCancel={() => setReplyingTo(null)}
-                                            disabled={busy}
-                                            minHeightClassName="min-h-16"
-                                        />
-                                        <Button
-                                            size="sm"
-                                            className="h-7"
-                                            disabled={busy || !reply.markdown || reply.uploading}
-                                            onClick={() => void addReply(comment)}
-                                        >
-                                            <Send className="mr-1.5 h-3 w-3" />
-                                            Reply
-                                        </Button>
-                                    </div>
-                                ) : (
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-7 px-1.5"
-                                        onClick={() => {
-                                            setReply(EMPTY_DRAFT);
-                                            setReplyingTo(comment.id);
-                                        }}
-                                    >
-                                        <Reply className="mr-1.5 h-3 w-3" />
-                                        Reply
-                                    </Button>
-                                )}
-                            </div>
-                        )}
-                    </article>
+                        projectId={projectId}
+                        comment={comment}
+                        canComment={canComment}
+                        onThreadChange={applyThread}
+                        onResolve={resolveThread}
+                        onTrackerAction={trackerAction}
+                        onError={setError}
+                    />
                 ))}
             </div>
 
@@ -334,5 +213,175 @@ export function ComparisonDiscussionRail({
                 </div>
             )}
         </aside>
+        </ThreadUpdateContext.Provider>
+    );
+}
+
+interface RailThreadProps {
+    projectId: string;
+    comment: Comment;
+    canComment: boolean;
+    onThreadChange: (updated: Comment) => void;
+    onResolve: (comment: Comment) => Promise<void>;
+    onTrackerAction: (path: string, fallback: string) => Promise<void>;
+    onError: (message: string | null) => void;
+}
+
+/** One discussion thread with its own reply box. */
+function RailThread({
+    projectId, comment, canComment, onThreadChange, onResolve, onTrackerAction, onError,
+}: RailThreadProps) {
+    const [replying, setReplying] = useState(false);
+    const [reply, setReply] = useState<RichComposerState>(EMPTY_DRAFT);
+    const [replySeed, setReplySeed] = useState<string | undefined>(undefined);
+    const [busy, setBusy] = useState(false);
+    const replyRef = useRef<RichComposerHandle>(null);
+
+    const openReply = (seed?: string) => {
+        setReply(EMPTY_DRAFT);
+        setReplySeed(seed);
+        setReplying(true);
+    };
+    const quote = (markdown: string) => {
+        if (replying && replyRef.current) replyRef.current.insertMarkdown(markdown);
+        else openReply(markdown);
+    };
+
+    const addReply = async () => {
+        if (!reply.markdown || reply.uploading) return;
+        setBusy(true);
+        try {
+            const response = await fetchApi(
+                `/api/projects/${projectId}/comments/${comment.id}/replies`,
+                {
+                    method: "POST",
+                    body: JSON.stringify({ content: reply.markdown, contentFormat: "md" }),
+                },
+            );
+            if (!response.ok) {
+                throw new Error(await readApiError(response, "Failed to add reply"));
+            }
+            const payload = (await response.json()) as { comment: Comment };
+            onThreadChange(payload.comment);
+            setReply(EMPTY_DRAFT);
+            setReplySeed(undefined);
+            setReplying(false);
+        } catch (caught) {
+            onError(caught instanceof Error ? caught.message : "Failed to add reply");
+        } finally {
+            setBusy(false);
+        }
+    };
+
+    return (
+            <article
+                key={comment.id}
+                className={`rounded-md border p-3 text-xs ${
+                    comment.status === "RESOLVED" ? "opacity-60" : ""
+                }`}
+            >
+                <div className="flex items-start justify-between gap-2">
+                    <div>
+                        <div className="font-medium">{comment.author}</div>
+                        <div className="mt-0.5 text-[10px] text-muted-foreground">
+                            {comment.elementRef || "Whole comparison"}
+                        </div>
+                    </div>
+                    {canComment && (
+                        <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={() => void onResolve(comment)}
+                            aria-label={
+                                comment.status === "RESOLVED"
+                                    ? "Reopen discussion"
+                                    : "Resolve discussion"
+                            }
+                        >
+                            <CheckCircle2 className="h-3.5 w-3.5" />
+                        </Button>
+                    )}
+                </div>
+                <ThreadMessage
+                    projectId={projectId}
+                    thread={comment}
+                    canInteract={canComment}
+                    onQuote={quote}
+                    bodyClassName="text-xs leading-relaxed"
+                    className="mt-2"
+                />
+                <div className="mt-2">
+                    <TrackerIssueAction
+                        comment={comment}
+                        onPromote={(id) => onTrackerAction(`${id}/promote`, "Failed to create issue")}
+                        onRetry={(id) => onTrackerAction(`${id}/tracker/retry`, "Failed to retry issue sync")}
+                    />
+                </div>
+                {!!comment.replies.length && (
+                    <div className="mt-2 space-y-2 border-l pl-2">
+                        {comment.replies.map((item) => (
+                            <div key={item.id ?? `${item.timestamp}-${item.author}-${item.content}`}>
+                                <span className="font-medium">{item.author}</span>
+                                <ThreadMessage
+                                    projectId={projectId}
+                                    thread={comment}
+                                    reply={item}
+                                    canInteract={canComment}
+                                    onQuote={quote}
+                                    bodyClassName="text-xs"
+                                />
+                                <ReplyTrackerState
+                                    reply={item}
+                                    provider={comment.tracker?.provider}
+                                    onShare={(replyId) => onTrackerAction(
+                                        `${comment.id}/replies/${replyId}/share`, "Failed to share reply",
+                                    )}
+                                />
+                            </div>
+                        ))}
+                    </div>
+                )}
+                {canComment && (
+                    <div className="mt-2">
+                        {replying ? (
+                            <div className="space-y-2">
+                                <RichComposer
+                                    ref={replyRef}
+                                    projectId={projectId}
+                                    ariaLabel="Reply"
+                                    autoFocus
+                                    initialMarkdown={replySeed}
+                                    placeholder="Reply…"
+                                    onChange={setReply}
+                                    onSubmit={() => void addReply()}
+                                    onCancel={() => setReplying(false)}
+                                    disabled={busy}
+                                    minHeightClassName="min-h-16"
+                                />
+                                <Button
+                                    size="sm"
+                                    className="h-7"
+                                    disabled={busy || !reply.markdown || reply.uploading}
+                                    onClick={() => void addReply()}
+                                >
+                                    <Send className="mr-1.5 h-3 w-3" />
+                                    Reply
+                                </Button>
+                            </div>
+                        ) : (
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-1.5"
+                                onClick={() => openReply()}
+                            >
+                                <Reply className="mr-1.5 h-3 w-3" />
+                                Reply
+                            </Button>
+                        )}
+                    </div>
+                )}
+            </article>
     );
 }

@@ -16,6 +16,8 @@ import { uploadIntoEditor } from "./composer-uploads";
 export interface RichComposerHandle {
     clear: () => void;
     focus: () => void;
+    /** Append Markdown (a quote) at the end and put the caret after it. */
+    insertMarkdown: (markdown: string) => void;
 }
 
 export interface RichComposerState {
@@ -37,6 +39,8 @@ interface RichComposerProps {
     disabled?: boolean;
     autoFocus?: boolean;
     ariaLabel: string;
+    /** Markdown the editor opens with: an edit, or a reply seeded with a quote. */
+    initialMarkdown?: string;
     /** Minimum editable height, as a Tailwind class. */
     minHeightClassName?: string;
     className?: string;
@@ -133,6 +137,7 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(fu
         disabled = false,
         autoFocus = false,
         ariaLabel,
+        initialMarkdown,
         minHeightClassName = "min-h-24",
         className,
     },
@@ -238,6 +243,8 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(fu
     const editor = useEditor({
         editable: !disabled,
         autofocus: autoFocus ? "end" : false,
+        content: initialMarkdown ?? "",
+        contentType: "markdown",
         extensions: [
             StarterKit.configure({
                 paragraph: false,
@@ -275,6 +282,10 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(fu
                 return true;
             },
         },
+        // A seeded editor is postable as it opens, before any keystroke.
+        onCreate: ({ editor: current }) => {
+            if (!current.isEmpty) emit(current);
+        },
         onUpdate: ({ editor: current }) => {
             emit(current);
             refreshMention(current);
@@ -293,6 +304,10 @@ export const RichComposer = forwardRef<RichComposerHandle, RichComposerProps>(fu
             setMentionQuery(null);
         },
         focus: () => editor?.commands.focus("end"),
+        insertMarkdown: (markdown: string) => {
+            if (!editor || editor.isDestroyed) return;
+            editor.chain().focus("end").insertContent(markdown, { contentType: "markdown" }).focus("end").run();
+        },
     }), [editor]);
 
     return (

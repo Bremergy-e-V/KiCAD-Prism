@@ -229,6 +229,28 @@ def row_to_dict(row) -> Dict:
 _COLUMNS = "id, project_id, comment_id, reply_id, uploader_user_id, sha256, filename, media_type, size_bytes, width, height, state, created_at"
 
 
+def project_quota_bytes() -> int:
+    return int(settings.COMMENT_ATTACHMENT_PROJECT_QUOTA_BYTES)
+
+
+def check_quota(conn, project_id: str, incoming_bytes: int) -> None:
+    """Refuse an upload that would take the project past its attachment quota.
+
+    Uploads are serialized per project for the rest of the transaction, so two
+    concurrent pastes cannot both squeeze under the limit.
+    """
+    quota = project_quota_bytes()
+    if quota <= 0:
+        return
+    conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (f"prism:comment-attachment-quota:{project_id}",))
+    row = conn.execute(
+        "SELECT COALESCE(SUM(size_bytes), 0) AS used FROM comment_attachments WHERE project_id = %s",
+        (project_id,),
+    ).fetchone()
+    if int(row["used"]) + incoming_bytes > quota:
+        raise AttachmentError("This project has reached its attachment storage limit", "attachment_quota")
+
+
 def insert_pending(
     conn, *, project_id: str, uploader_user_id: Optional[str], uploader_display: str,
     sha256: str, filename: str, prepared: PreparedFile,

@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.api._helpers import get_project_for_role_or_404
 from app.core.security import AuthenticatedUser, require_comment_writer, require_designer, require_viewer
 from app.core.roles import normalize_role
-from app.services import access_service, comment_attachments, comment_permissions
+from app.services import access_service, comment_attachments, comment_permissions, comment_social
 from app.services.comment_anchor_service import (
     AnchorValidationError,
     resolve_canvas_anchor,
@@ -244,6 +244,7 @@ def _authored(value: dict) -> AuthoredObject:
 
 
 def _with_permissions(comment: dict, actor: ActorIdentity) -> dict:
+    comment_social.personalize(comment, actor.actor_id)
     tracker = comment.get("tracker") or {}
     promote_role = normalize_role(tracker.get("promoteMinRole")) or "designer"
     linked = bool(tracker.get("linkState"))
@@ -431,8 +432,10 @@ async def get_comments(
                 project, listing["comments"], displayed, bindings,
             )
         actor = _read_actor(user)
-        if actor is not None:
-            listing["comments"] = [_with_permissions(comment, actor) for comment in listing["comments"]]
+        listing["comments"] = [
+            _with_permissions(comment, actor) if actor is not None else comment_social.personalize(comment, None)
+            for comment in listing["comments"]
+        ]
         return listing
 
     try:
@@ -461,8 +464,8 @@ async def get_comment_thread(
             bindings = comments_store.get_anchor_bindings(project.id, [comment_id])
             [comment] = resolve_displayed_bindings(project, [comment], displayed, bindings)
         actor = _read_actor(user)
-        if comment is not None and actor is not None:
-            comment = _with_permissions(comment, actor)
+        if comment is not None:
+            comment = _with_permissions(comment, actor) if actor is not None else comment_social.personalize(comment, None)
         return {"comment": comment, "cursor": cursor}
 
     try:
@@ -494,8 +497,10 @@ async def get_comparison_comments(
             comparison_domain=domain_norm,
         )
         actor = _read_actor(user)
-        if actor is not None:
-            listing["comments"] = [_with_permissions(comment, actor) for comment in listing["comments"]]
+        listing["comments"] = [
+            _with_permissions(comment, actor) if actor is not None else comment_social.personalize(comment, None)
+            for comment in listing["comments"]
+        ]
         return listing
 
     return await asyncio.to_thread(read)
@@ -901,6 +906,46 @@ async def delete_reply(
     return result
 
 
+async def _set_reaction(
+    project_id: str, comment_id: str, reply_id: Optional[str], reaction: str,
+    user: AuthenticatedUser, *, present: bool,
+):
+    if reaction not in comment_social.REACTIONS:
+        raise HTTPException(status_code=422, detail="Unknown reaction")
+
+    def write():
+        project = get_project_for_role_or_404(project_id, user.role)
+        actor = _actor(user)
+        comment_permissions.authorize(CommentAction.REPLY, actor)
+        updated = comments_store.set_reaction(
+            project.id, project.path, comment_id, reply_id,
+            user_id=actor.actor_id, user_display=actor.display_name, reaction=reaction, present=present,
+        )
+        return _with_permissions(updated, actor) if updated else None
+
+    result = await _run_mutation(write)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Comment not found")
+    return result
+
+
+@router.put("/{project_id}/comments/{comment_id}/reactions/{reaction}", dependencies=[Depends(require_comment_writer)])
+async def add_comment_reaction(
+    project_id: str, comment_id: str, reaction: str, replyId: Optional[str] = None,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    """React to a root, or to one of its replies with ``replyId``. Idempotent."""
+    return await _set_reaction(project_id, comment_id, replyId, reaction, user, present=True)
+
+
+@router.delete("/{project_id}/comments/{comment_id}/reactions/{reaction}", dependencies=[Depends(require_comment_writer)])
+async def remove_comment_reaction(
+    project_id: str, comment_id: str, reaction: str, replyId: Optional[str] = None,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    return await _set_reaction(project_id, comment_id, replyId, reaction, user, present=False)
+
+
 @router.delete("/{project_id}/comments/{comment_id}", dependencies=[Depends(require_comment_writer)])
 async def delete_comment(
     project_id: str,
@@ -1022,10 +1067,13 @@ async def upload_comment_attachment(
         status = 413 if exc.code == "attachment_too_large" else 415 if exc.code == "attachment_type_unsupported" else 400
         return JSONResponse(status_code=status, content={"detail": exc.detail, "code": exc.code})
     filename = comment_attachments.safe_filename(file.filename, prepared.extension)
-    created = await asyncio.to_thread(
-        comments_store.create_attachment,
-        project.id, prepared, filename, actor.actor_id, actor.display_name,
-    )
+    try:
+        created = await asyncio.to_thread(
+            comments_store.create_attachment,
+            project.id, prepared, filename, actor.actor_id, actor.display_name,
+        )
+    except comment_attachments.AttachmentError as exc:
+        return JSONResponse(status_code=413, content={"detail": exc.detail, "code": exc.code})
     created["url"] = f"/api/projects/{project.id}/comment-attachments/{created['id']}"
     return created
 
