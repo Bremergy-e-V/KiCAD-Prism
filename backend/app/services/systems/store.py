@@ -292,6 +292,9 @@ class SystemStore:
                 (instance_id,),
             )
             self.conn.execute("DELETE FROM system_source_checks WHERE instance_id = %s", (instance_id,))
+        elif changed.get("pinned", {}).get("after") is False:
+            # A pinned check only reported the tip; unpinned, the same tip must be evaluated.
+            self.conn.execute("DELETE FROM system_source_checks WHERE instance_id = %s", (instance_id,))
         if changed:
             change.audit("instance_updated", {"instanceId": instance_id, **changed})
         return self.get_instance(change.system_id, instance_id)
@@ -562,8 +565,10 @@ class SystemStore:
         """
 
         link = self.get_link(change.system_id, link_id)
-        existing = {row["id"] for row in link["rows"]}
+        previous = {row["id"]: row for row in link["rows"]}
+        existing = set(previous)
         seen: set[tuple[str, str]] = set()
+        ids: set[str] = set()
         normalized = []
         for row in rows:
             pin_a, pin_b = str(row.get("pinA") or ""), str(row.get("pinB") or "")
@@ -578,6 +583,10 @@ class SystemStore:
             row_id = row.get("id")
             if row_id is not None and row_id not in existing:
                 raise Conflict(f"row {row_id} does not belong to this link")
+            if row_id is not None and row_id in ids:
+                raise Invalid(f"row {row_id} appears twice")
+            if row_id is not None:
+                ids.add(row_id)
             normalized.append(
                 (row_id or new_id("srw_"), pin_a, pin_b, str(row.get("signal") or ""),
                  _nets(row.get("netA") or []), _nets(row.get("netB") or []), source)
@@ -601,10 +610,24 @@ class SystemStore:
                 (row_id, link_id, pin_a, pin_b, signal, Jsonb(net_a), Jsonb(net_b), source),
             )
         kept = {row[0] for row in normalized}
+
+        def described(pin_a: str, pin_b: str, signal: str, net_a: list, net_b: list) -> dict:
+            return {"pinA": pin_a, "pinB": pin_b, "signal": signal, "netA": net_a, "netB": net_b}
+
+        after = {row[0]: described(*row[1:6]) for row in normalized}
+        before = {rid: described(r["pin_a"], r["pin_b"], r["signal"], list(r["net_a"]), list(r["net_b"]))
+                  for rid, r in previous.items()}
         change.audit(
             "rows_replaced",
             {"linkId": link_id, "rowCount": len(normalized),
-             "added": sorted(kept - existing), "removed": sorted(existing - kept)},
+             "added": sorted(kept - existing), "removed": sorted(existing - kept),
+             # What each row was and became, so history explains the engineering change.
+             "rows": {
+                 "added": [{"id": rid, **after[rid]} for rid in sorted(kept - existing)],
+                 "removed": [{"id": rid, **before[rid]} for rid in sorted(existing - kept)],
+                 "changed": [{"id": rid, "before": before[rid], "after": after[rid]}
+                             for rid in sorted(kept & existing) if before[rid] != after[rid]],
+             }},
         )
         return self.get_link(change.system_id, link_id)["rows"]
 
@@ -836,6 +859,21 @@ class SystemStore:
     # ------------------------------------------------------------------
     # Audit history
 
+    def instance_projects(self, system_id: str) -> dict[str, str]:
+        """Every instance the system has had, current or removed, and its project."""
+
+        rows = self.conn.execute(
+            """
+            SELECT id, project_id FROM system_instances WHERE system_id = %s
+            UNION
+            SELECT payload->>'instanceId', payload->>'projectId' FROM system_audit_events
+            WHERE system_id = %s AND kind IN ('instance_added', 'instance_removed')
+              AND payload ? 'instanceId' AND payload ? 'projectId'
+            """,
+            (system_id, system_id),
+        ).fetchall()
+        return {row["id"]: row["project_id"] for row in rows}
+
     def history(self, system_id: str, *, before_seq: Optional[int] = None, limit: int = 100) -> list[dict]:
         rows = self.conn.execute(
             """
@@ -909,9 +947,12 @@ class SystemStore:
 
     def record_source_check(
         self, instance_id: str, *, tip_commit: Optional[str], checked_commit: Optional[str],
-        outcome: str,
+        outcome: str, retry: bool = False,
     ) -> None:
-        """Record what detection saw. Not a design change: no version bump, no audit."""
+        """Record what detection saw. Not a design change: no version bump, no audit.
+
+        ``retry`` forgets the checked commit, so the next check evaluates the tip again.
+        """
         self.conn.execute(
             "UPDATE system_instances SET tip_commit = %s, tip_checked_at = NOW() WHERE id = %s",
             (tip_commit, instance_id),
@@ -921,10 +962,10 @@ class SystemStore:
             INSERT INTO system_source_checks (instance_id, last_checked_commit, last_outcome)
             VALUES (%s, %s, %s)
             ON CONFLICT (instance_id) DO UPDATE SET
-                last_checked_commit = COALESCE(EXCLUDED.last_checked_commit,
-                                               system_source_checks.last_checked_commit),
+                last_checked_commit = CASE WHEN %s THEN NULL ELSE COALESCE(
+                    EXCLUDED.last_checked_commit, system_source_checks.last_checked_commit) END,
                 last_outcome = EXCLUDED.last_outcome,
                 checked_at = NOW()
             """,
-            (instance_id, checked_commit, outcome),
+            (instance_id, checked_commit, outcome, retry),
         )

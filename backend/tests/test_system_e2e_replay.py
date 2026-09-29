@@ -407,6 +407,61 @@ class ReplayTest(unittest.TestCase):
             port = self.link("L-J2J1")["a"]["port"]
             self.assertEqual(port["reference"], "J6")
 
+    # ------------------------------------------------------------------ rows edited during a review
+
+    def edit_rows(self, link: str, change) -> None:
+        current = self.link(link)
+        rows = [{"id": r["id"], "pinA": r["pinA"], "pinB": r["pinB"], "signal": r["signal"]}
+                for r in current["rows"]]
+        self.mutate("PUT", f"/links/{current['id']}/rows", body=change(rows))
+
+    def accept_all(self, review: dict, *, expect: int = 200):
+        response = None
+        for item in review["items"]:
+            self.document()
+            response = self.call("POST", f"/{self.sid}/reviews/{review['id']}/items/{item['id']}/decision",
+                                 headers={"If-Match": self.etag}, body={"decision": "accept"})
+            if response.status != 200:
+                break
+        self.assertEqual(response.status, expect, response.text)
+        self.drain()
+        return response
+
+    def test_a_row_added_during_a_review_is_reviewed_not_left_stale(self) -> None:
+        tip, _ = self.push_and_fetch("mini_obc", "F5")  # sheet rename: every sheet net changes
+        [review] = self.reviews("open", "OBC-A")
+        self.assertNotIn("19", [pin for item in review["items"] for pin in item["pins"]])
+        pin_b = self.link("L-J7J4")["rows"][0]["pinB"]
+        self.edit_rows("L-J7J4", lambda rows: rows + [{"pinA": "19", "pinB": pin_b, "signal": "SPARE"}])
+
+        stale = self.accept_all(review, expect=409)
+        self.assertIn("review_stale", stale.text)
+        self.assertEqual([r["id"] for r in self.reviews("superseded", "OBC-A")], [review["id"]])
+        [fresh] = self.reviews("open", "OBC-A")
+        self.assertEqual(fresh["toCommit"], tip)
+        self.assertIn("19", [p for item in fresh["items"] for p in item["pins"]])
+
+        self.accept_all(fresh)
+        self.assertEqual(self.instance("OBC-A")["baselineCommit"], tip)
+        rows = self.link("L-J7J4")["rows"]
+        self.assertEqual([r["pinA"] for r in rows if r["netA"] != r["observedA"]["nets"]], [])
+        self.assertEqual(self.row("L-J7J4", "19")["netA"], ["/Payload Interface/SPARE19"])
+
+    def test_a_reviewed_row_moved_to_another_pad_is_evaluated_again(self) -> None:
+        self.push_and_fetch("mini_obc", "F1")  # J7.17 becomes unconnected
+        [review] = self.reviews("open", "OBC-A")
+        [item] = review["items"]
+        moved = item["rowIds"][0]
+        used = {r["pinA"] for r in self.link("L-J7J4")["rows"]}
+        spare = next(str(pad) for pad in range(1, 21) if str(pad) not in used)
+        self.edit_rows("L-J7J4", lambda rows: [{**r, "pinA": spare} if r["id"] == moved else r for r in rows])
+
+        self.accept_all(review, expect=409)
+        # Pad 17 no longer carries a row, so nothing on the board drifted: the tip is accepted.
+        self.assertEqual(self.reviews("open", "OBC-A"), [])
+        self.assertEqual(self.instance("OBC-A")["baselineCommit"], self.commits["mini_obc"]["F1"])
+        self.assertIsNotNone(self.row("L-J7J4", spare))
+
     # ------------------------------------------------------------------ silent steps
 
     def test_auto_advance_steps_move_the_baseline_without_a_review(self) -> None:

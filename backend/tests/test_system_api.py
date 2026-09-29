@@ -667,18 +667,67 @@ class SystemApiTest(unittest.TestCase):
         self.assertEqual(self.call("DELETE", f"/{sid}", headers={"If-Match": etag}).status, 409)
         self.assertEqual(self.call("DELETE", f"/{sid}", headers={"If-Match": etag}, user="admin").status, 204)
 
-    def test_deleted_project_leaves_an_unresolved_unrestricted_instance(self) -> None:
-        sid, etag, obc, pay = self.two_boards()
+    def delete_project(self, project_id: str) -> None:
         with self.connect() as conn:
-            SystemStore(conn).mark_project_unresolved("prj_pay")
-            conn.execute("DELETE FROM ws_projects WHERE id = 'prj_pay'")
+            SystemStore(conn).mark_project_unresolved(project_id)
+            conn.execute("DELETE FROM ws_projects WHERE id = %s", (project_id,))
             conn.commit()
-        document = self.call("GET", f"/{sid}", user="viewer")
-        self.assertNotEqual(document.headers["etag"], etag)
-        instance = next(i for i in document.json["instances"] if i["id"] == pay)
-        self.assertEqual(instance["resolution"], "unresolved")
-        self.assertFalse(instance["restricted"])
-        self.assertIsNone(instance["projectName"])
+
+    def test_deleted_project_stays_restricted_below_admin(self) -> None:
+        sid, etag, obc, pay = self.two_boards()
+        created = self.link_j7_j4(sid, etag, obc, pay)
+        self.mutate("PUT", f"/{sid}/links/{created.json['id']}/rows", created.headers["etag"],
+                    body=[{"pinA": "3", "pinB": "3", "signal": "SPI_SCK"}])
+        self.delete_project("prj_pay")
+
+        viewer = self.call("GET", f"/{sid}", user="viewer")
+        instance = next(i for i in viewer.json["instances"] if i["id"] == pay)
+        self.assertEqual((instance["resolution"], instance["restricted"], instance["projectId"],
+                          instance["projectDeleted"]), ("unresolved", True, None, True))
+        serialized = json.dumps(viewer.json)
+        for secret in ("prj_pay", "/SCK_IN", self.commits["mini_payload"]["F0"]):
+            self.assertNotIn(secret, serialized)
+        self.assertNotIn("prj_pay", json.dumps(self.call("GET", f"/{sid}/history", user="viewer").json))
+
+        admin = next(i for i in self.call("GET", f"/{sid}", user="admin").json["instances"] if i["id"] == pay)
+        self.assertEqual((admin["restricted"], admin["projectId"], admin["projectName"]),
+                         (False, "prj_pay", None))
+
+        # A designer cannot read it, but can clear it out of the system.
+        etag = viewer.headers["etag"]
+        self.assertEqual(self.call("PATCH", f"/{sid}/instances/{pay}", body={"label": "X"},
+                                   headers={"If-Match": etag}).status, 404)
+        self.mutate("DELETE", f"/{sid}/instances/{pay}?cascade=links", etag, expect=204)
+        self.assertEqual(self.call("GET", f"/{sid}").json["links"], [])
+
+    def test_history_redacts_events_of_a_removed_restricted_board(self) -> None:
+        sid, etag, obc, pay = self.two_boards()
+        etag = self.mutate("PATCH", f"/{sid}/instances/{pay}", etag, body={"label": "PAY-2"}).headers["etag"]
+        self.mutate("DELETE", f"/{sid}/instances/{pay}", etag, expect=204)
+        self.hide_project("prj_pay", "fld_admins")
+        events = self.call("GET", f"/{sid}/history", user="viewer").json["events"]
+        relabel = next(e for e in events if e["kind"] == "instance_updated")
+        self.assertEqual((relabel["redacted"], relabel["payload"]), (True, None))
+        self.assertNotIn("PAY-2", json.dumps(events))
+
+    def test_rows_reject_a_repeated_id_and_audit_what_changed(self) -> None:
+        sid, etag, obc, pay = self.two_boards()
+        created = self.link_j7_j4(sid, etag, obc, pay)
+        lid = created.json["id"]
+        first = self.mutate("PUT", f"/{sid}/links/{lid}/rows", created.headers["etag"],
+                            body=[{"pinA": "3", "pinB": "3", "signal": "SCK"}])
+        rid, etag = first.json["rows"][0]["id"], first.headers["etag"]
+        repeated = [{"id": rid, "pinA": "3", "pinB": "3"}, {"id": rid, "pinA": "4", "pinB": "4"}]
+        self.mutate("PUT", f"/{sid}/links/{lid}/rows", etag, expect=422, body=repeated)
+
+        self.mutate("PUT", f"/{sid}/links/{lid}/rows", etag,
+                    body=[{"id": rid, "pinA": "4", "pinB": "3", "signal": "SCK2"}])
+        event = next(e for e in self.call("GET", f"/{sid}/history").json["events"] if e["kind"] == "rows_replaced")
+        [changed] = event["payload"]["rows"]["changed"]
+        self.assertEqual(changed["id"], rid)
+        self.assertEqual((changed["before"]["pinA"], changed["before"]["signal"]), ("3", "SCK"))
+        self.assertEqual((changed["after"]["pinA"], changed["after"]["signal"]), ("4", "SCK2"))
+        self.assertNotEqual(changed["before"]["netA"], changed["after"]["netA"])
 
     # ------------------------------------------------------------------ history and layout
 
@@ -722,7 +771,7 @@ class SystemApiTest(unittest.TestCase):
             second = jobs.extract_and_store(project, f0, self.connect)
         self.assertEqual(extract.call_count, 1)
         self.assertEqual(first["digest"], second["digest"])
-        self.assertEqual(artifact_key("prj_obc", f0), f"system-interface:v3:prj_obc:{f0}")
+        self.assertEqual(artifact_key("prj_obc", f0), f"system-interface:v4:prj_obc:{f0}")
 
     def test_extraction_job_fails_permanently_without_a_source(self) -> None:
         from app.services.job_runtime import PermanentJobError

@@ -90,6 +90,37 @@ describe("BoardsTab", () => {
     expect(screen.queryByRole("button", { name: "Board actions" })).toBeNull();
   });
 
+  it("offers to remove a board whose project was deleted", async () => {
+    const fetchMock = vi.fn(async () => new Response(null, { status: 204, headers: { ETag: '"sys:sys_1:2"' } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const gone = instance("GONE", { restricted: true, projectId: null, ports: null, projectDeleted: true });
+    renderTab({ document: systemDocument([obc, gone], []) }, `/systems/sys_1?tab=boards&board=${gone.id}`);
+    expect(screen.getByText(/project has been deleted/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Remove board/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove board" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect((fetchMock.mock.calls[0] as unknown as [string])[0]).toBe(`/api/systems/sys_1/instances/${gone.id}`);
+  });
+
+  it("waits for the branch check to finish before reloading", async () => {
+    const statuses = ["queued", "running", "completed"];
+    const fetchMock = vi.fn(async (url: string) => {
+      const body = url.startsWith("/api/jobs/")
+        ? { job_id: "chk-1", kind: "system_source_check", status: statuses.shift(), stage: "", message: "", percent: 0 }
+        : { job_id: "chk-1", status: "queued" };
+      return new Response(JSON.stringify(body), { status: url.endsWith("/check") ? 202 : 200,
+        headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const tracked = instance("OBC", { trackedRef: "main", ports: [port("J7")] });
+    const reload = renderTab({ document: systemDocument([tracked], []) });
+    fireEvent.click(screen.getByRole("button", { name: /Check now/ }));
+    await waitFor(() => expect(reload).toHaveBeenCalled(), { timeout: 4000 });
+    const urls = fetchMock.mock.calls.map(([url]) => url);
+    expect(urls[0]).toBe(`/api/systems/sys_1/instances/${tracked.id}/check`);
+    expect(urls.filter((url) => url === "/api/jobs/chk-1")).toHaveLength(3);
+  });
+
   it("edits the label and branch in one dialog", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { ETag: '"sys:sys_1:2"', "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);

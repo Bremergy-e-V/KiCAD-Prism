@@ -44,6 +44,25 @@ def _open_source_review(store: SystemStore, system_id: str, review_id: str) -> d
     return review
 
 
+class StaleReview(Exception):
+    """Rows or ports on the review's instance changed after it opened (v1.12).
+
+    Raised before anything is written, so the caller can roll back and have
+    the review evaluated again.
+    """
+
+    def __init__(self, review: Mapping[str, Any]) -> None:
+        super().__init__(review["id"])
+        self.review = dict(review)
+
+
+def is_stale(store: SystemStore, review: Mapping[str, Any]) -> bool:
+    recorded = (review.get("pending_changes") or {}).get("basis")
+    if recorded is None:
+        return False  # opened before reviews recorded their basis
+    return drift.basis(store.list_links(review["system_id"]), review["instance_id"]) != recorded
+
+
 def candidate_interface(store: SystemStore, review: Mapping[str, Any]) -> dict:
     instance = store.get_instance(review["system_id"], review["instance_id"])
     found = store.get_interface(instance["project_id"], review["to_commit"], EXTRACTOR_VERSION)
@@ -118,6 +137,8 @@ def decide(store: SystemStore, change: Mutation, review_id: str, item_id: str, d
     item = next((i for i in review["items"] if i["id"] == item_id), None)
     if item is None:
         raise NotFound("Review item not found")
+    if is_stale(store, review):
+        raise StaleReview(review)
     candidate = candidate_interface(store, review)
     _validate(store, review, item, decision, dict(payload or {}), candidate)
     store.set_item_decision(change, review_id, item_id, decision, payload)

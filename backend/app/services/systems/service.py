@@ -122,16 +122,21 @@ class SystemService:
         return visibility.project_access(store.conn, [i["project_id"] for i in instances], caller.role)
 
     def _open_instance(
-        self, store: SystemStore, system_id: str, instance_id: str, caller: Caller
+        self, store: SystemStore, system_id: str, instance_id: str, caller: Caller,
+        *, allow_deleted: bool = False,
     ) -> dict:
-        """An instance the caller may change; restricted ones are 404 (§8.2)."""
+        """An instance the caller may change; restricted ones are 404 (§8.2).
+
+        ``allow_deleted`` admits an instance restricted only because its project
+        was deleted: removing it reveals nothing.
+        """
 
         try:
             instance = store.get_instance(system_id, instance_id)
         except NotFound:
             raise NotFound("Instance not found") from None
-        access = self._access(store, [instance], caller).get(instance["project_id"])
-        if access is not None and not access["visible"]:
+        access = self._access(store, [instance], caller)[instance["project_id"]]
+        if not access["visible"] and not (allow_deleted and access["deleted"]):
             raise NotFound("Instance not found")
         return instance
 
@@ -320,6 +325,8 @@ class SystemService:
             "restricted": False,
             "projectId": instance["project_id"],
             "projectName": access["name"] if access else None,
+            # Not sensitive, and survives redaction: tells a designer the board can be removed.
+            "projectDeleted": bool(access and access["deleted"]),
             "baselineCommit": instance["baseline_commit"],
             "trackedRef": instance["tracked_ref"],
             "pinned": instance["pinned"],
@@ -455,11 +462,18 @@ class SystemService:
         with self._tx() as store:
             self._system(store, system_id, caller)
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
-                self._open_instance(store, system_id, instance_id, caller)
+                before = self._open_instance(store, system_id, instance_id, caller)
                 row = store.update_instance(
                     change, instance_id, label=fields.get("label"), pinned=fields.get("pinned"),
                     tracked_ref=tracked_ref,
                 )
+        resumed = before["pinned"] and not row["pinned"]
+        if row["tracked_ref"] and (resumed or row["tracked_ref"] != before["tracked_ref"]):
+            # Evaluate the branch now rather than at the next fetch.
+            try:
+                self._enqueue_check(instance_id, row["project_id"], requested_by=caller.email)
+            except Exception:
+                logger.exception("Could not enqueue a source check for instance %s", instance_id)
         return Result(self._instance_row(row), system_id, change.version)
 
     def remove_instance(
@@ -468,7 +482,7 @@ class SystemService:
         with self._tx() as store:
             self._system(store, system_id, caller)
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
-                self._open_instance(store, system_id, instance_id, caller)
+                self._open_instance(store, system_id, instance_id, caller, allow_deleted=True)
                 if cascade:
                     self._require_open_links(store, system_id, caller, instance_id=instance_id)
                 store.remove_instance(change, instance_id, cascade_links=cascade)
@@ -485,8 +499,9 @@ class SystemService:
             if instance_id not in (link["a_instance_id"], link["b_instance_id"]):
                 continue
             for other in (link["a_instance_id"], link["b_instance_id"]):
-                seen = access.get(instances[other]["project_id"])
-                if seen is not None and not seen["visible"]:
+                if other == instance_id:
+                    continue
+                if not access[instances[other]["project_id"]]["visible"]:
                     raise NotFound("Link not found")
 
     def interface(
@@ -712,7 +727,7 @@ class SystemService:
                 "linkId": item["link_id"], "end": end, "rowIds": list(item["row_ids"]), "pins": pins,
                 "expected": item["expected"], "observed": item["observed"],
                 "candidates": item["candidates"], "decision": item["decision"],
-                "decisionPayload": item["decision_payload"],
+                "decisionPayload": item["decision_payload"], "redacted": False,
             })
         return {**base, "redacted": False, "fromCommit": review["from_commit"],
                 "toCommit": review["to_commit"], "pendingChanges": review["pending_changes"],
@@ -721,8 +736,7 @@ class SystemService:
     def _restricted_instances(self, store: SystemStore, system_id: str, caller: Caller) -> set[str]:
         instances = store.list_instances(system_id)
         access = self._access(store, instances, caller)
-        return {i["id"] for i in instances
-                if access.get(i["project_id"]) is not None and not access[i["project_id"]]["visible"]}
+        return {i["id"] for i in instances if not access[i["project_id"]]["visible"]}
 
     def list_reviews(self, caller: Caller, system_id: str, status: Optional[str]) -> list[dict]:
         with self._tx() as store:
@@ -759,13 +773,42 @@ class SystemService:
         self, caller: Caller, system_id: str, version: int, review_id: str, item_id: str,
         decision: str, payload: Optional[Mapping[str, Any]],
     ) -> Result:
+        try:
+            return self._decide(caller, system_id, version, review_id, item_id, decision, payload)
+        except reconcile.StaleReview as stale:
+            self._reevaluate(caller, stale.review)
+            raise Conflict(
+                "review_stale: links or rows on this board changed while the review was open, "
+                "so it has been evaluated again; review the new items"
+            ) from None
+
+    def _reevaluate(self, caller: Caller, review: Mapping[str, Any]) -> None:
+        """Replace a stale review with a fresh evaluation of the same commit."""
+
+        from app.services.systems.detection import apply_evaluation
+
+        with self._tx() as store:
+            with store.mutation(review["system_id"], expected_version=None, actor=caller.actor) as change:
+                current = store.get_review(review["system_id"], review["id"])
+                if current["status"] != "open" or not reconcile.is_stale(store, current):
+                    return  # someone else already re-evaluated it
+                instance = store.get_instance(review["system_id"], review["instance_id"])
+                candidate = reconcile.candidate_interface(store, current)
+                apply_evaluation(store, change, instance, current["to_commit"], candidate,
+                                 auto_kind="baseline_auto_advanced")
+
+    def _decide(
+        self, caller: Caller, system_id: str, version: int, review_id: str, item_id: str,
+        decision: str, payload: Optional[Mapping[str, Any]],
+    ) -> Result:
         with self._tx() as store:
             self._system(store, system_id, caller)
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
                 self._open_review_instance(store, system_id, review_id, caller)
                 self._require_visible_import_item(store, system_id, review_id, item_id, caller)
                 review = reconcile.decide(store, change, review_id, item_id, decision, payload)
-                body = self._review_doc(store, review, False)
+                restricted = self._restricted_instances(store, system_id, caller)
+                body = self._review_doc(store, review, False, restricted)
         return Result(body, system_id, change.version)
 
     def keep_pinned(self, caller: Caller, system_id: str, version: int, review_id: str) -> Result:
@@ -774,7 +817,8 @@ class SystemService:
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
                 self._open_review_instance(store, system_id, review_id, caller)
                 review = reconcile.keep_pinned(store, change, review_id)
-                body = self._review_doc(store, review, False)
+                restricted = self._restricted_instances(store, system_id, caller)
+                body = self._review_doc(store, review, False, restricted)
         return Result(body, system_id, change.version)
 
     def rebase(
@@ -837,7 +881,7 @@ class SystemService:
 
         projects = {i["id"]: i["projectId"] for i in document["instances"]}
         access = visibility.project_access(store.conn, projects.values(), caller.role)
-        return {iid for iid, pid in projects.items() if access.get(pid) is not None and not access[pid]["visible"]}
+        return {iid for iid, pid in projects.items() if not access[pid]["visible"]}
 
     def create_snapshot(self, caller: Caller, system_id: str, version: int, name: str, note: str) -> Result:
         """Freeze the unredacted document at ``version`` (§9.1). The version is not bumped."""
@@ -1015,15 +1059,16 @@ class SystemService:
         with self._tx() as store:
             self._system(store, system_id, caller)
             events = store.history(system_id, before_seq=cursor, limit=limit)
-            instances = store.list_instances(system_id)
-            project_ids = {i["project_id"] for i in instances}
+            # Removed instances too: their older events still name them.
+            owners = store.instance_projects(system_id)
+            project_ids = set(owners.values())
             for event in events:
                 project = (event["payload"] or {}).get("projectId")
                 if isinstance(project, str):
                     project_ids.add(project)
             access = visibility.project_access(store.conn, project_ids, caller.role)
         hidden_projects = {pid for pid, seen in access.items() if not seen["visible"]}
-        hidden_instances = {i["id"] for i in instances if i["project_id"] in hidden_projects}
+        hidden_instances = {iid for iid, pid in owners.items() if pid in hidden_projects}
         out = []
         for event in events:
             text = json.dumps(event["payload"], sort_keys=True)

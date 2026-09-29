@@ -115,6 +115,15 @@ class DetectionTest(FixtureSystemCase):
         self.assertEqual(pinned["baseline_commit"], self.commits["mini_obc"]["F0"])
         self.assertEqual(self.store.get_source_check(self.instances["OBC-B"])["last_outcome"], "update_available")
 
+    def test_unpinning_evaluates_the_tip_a_pinned_check_already_saw(self) -> None:
+        self.move_track("mini_obc", "F1")
+        self.assertEqual(self.detector.check_instance(self.instances["OBC-B"]).outcome, "update_available")
+        with self.store.mutation(self.sid, expected_version=None, actor="user:t") as change:
+            self.store.update_instance(change, self.instances["OBC-B"], pinned=False)
+        self.conn.commit()
+        self.assertEqual(self.detector.check_instance(self.instances["OBC-B"]).outcome, "review_opened")
+        self.assertEqual(len(self.reviews("OBC-B", "open")), 1)
+
     # ------------------------------------------------------------------ idempotency and edges
 
     def test_rechecking_the_same_tip_changes_nothing(self) -> None:
@@ -187,7 +196,9 @@ class DetectionTest(FixtureSystemCase):
         self.move_track("mini_obc", "F1")
         self.detector.check_instance(self.instances["OBC-A"])
         [review] = self.reviews("OBC-A", "open")
-        self.assertEqual(review["pending_changes"], {"portUpdates": [], "silent": []})
+        pending = dict(review["pending_changes"])
+        self.assertTrue(pending.pop("basis").startswith("sha256:"))
+        self.assertEqual(pending, {"portUpdates": [], "silent": []})
 
     def test_extraction_failure_is_recorded_not_raised(self) -> None:
         self.move_track("mini_obc", "F1")
@@ -197,6 +208,20 @@ class DetectionTest(FixtureSystemCase):
             result = failing.check_instance(self.instances["OBC-A"])
         self.assertEqual(result.outcome, "extraction_failed")
         self.assertEqual(self.reviews("OBC-A"), [])
+        self.assertIsNone(self.store.get_source_check(self.instances["OBC-A"])["last_checked_commit"])
+        # The next fetch retries the same tip instead of skipping it.
+        self.assertEqual(self.detector.check_instance(self.instances["OBC-A"]).outcome, "review_opened")
+
+    def test_a_failure_after_a_forced_check_still_retries(self) -> None:
+        self.move_track("mini_obc", "F1")
+        self.detector.check_instance(self.instances["OBC-B"])  # pinned: records the tip as checked
+        failing = Detector(connect=self.connect, project_loader=self.projects.get,
+                           extract=mock.Mock(side_effect=ValueError("broken")))
+        self.conn.execute("UPDATE system_instances SET pinned = false WHERE id = %s", (self.instances["OBC-B"],))
+        self.conn.commit()
+        with self.assertLogs("app.services.systems.detection", "ERROR"):
+            failing.check_instance(self.instances["OBC-B"], force=True)
+        self.assertIsNone(self.store.get_source_check(self.instances["OBC-B"])["last_checked_commit"])
 
     # ------------------------------------------------------------------ enqueueing
 

@@ -32,6 +32,7 @@ import {
   setPortOverride,
   updateInstance,
 } from "@/lib/systems-api";
+import { throwIfJobFailed, watchPrismJob } from "@/lib/jobs";
 import { cn } from "@/lib/utils";
 import type { User } from "@/types/auth";
 import type { InstanceComponent, SystemDocument, SystemInstance, SystemPort } from "@/types/system";
@@ -211,19 +212,50 @@ function BoardDetail({ systemId, document, instance, etag, canEdit, busy, run }:
   const linkCount = document.links.filter((link) => link.a.instanceId === instance.id || link.b.instanceId === instance.id).length;
   const editable = canEdit && !instance.restricted;
 
+  const removeDialog = (
+    <ConfirmDialog
+      open={dialog === "remove"}
+      onOpenChange={(open) => setDialog(open ? "remove" : null)}
+      title={`Remove ${instance.label}?`}
+      description={linkCount > 0
+        ? `This board is an end of ${linkCount} ${linkCount === 1 ? "link" : "links"}. Removing it deletes those links and their rows.`
+        : "The board is removed from this system. The project itself is not touched."}
+      confirmLabel="Remove board"
+      destructive
+      busy={busy === "remove"}
+      onConfirm={() => {
+        void run("remove", () => removeInstance(systemId, etag, instance.id, linkCount > 0), `Removed ${instance.label}`)
+          .then(() => setDialog(null));
+      }}
+    />
+  );
+
   if (instance.restricted) {
     return (
-      <div className="space-y-2">
+      <div className="space-y-3">
         <h2 className="flex items-center gap-2 text-lg font-semibold"><Lock className="h-4 w-4" /> {instance.label}</h2>
         <p className="text-sm text-muted-foreground">
-          This board's project is in a folder you cannot see. Its details and connections on its side are hidden.
+          {instance.projectDeleted
+            ? "This board's project has been deleted. Only an admin can see what the system kept of it."
+            : "This board's project is in a folder you cannot see. Its details and connections on its side are hidden."}
         </p>
+        {canEdit && instance.projectDeleted && (
+          <Button variant="outline" size="sm" onClick={() => setDialog("remove")}>
+            <Trash2 className="mr-1 h-4 w-4" /> Remove board
+          </Button>
+        )}
+        {removeDialog}
       </div>
     );
   }
 
   const save = (fields: Parameters<typeof updateInstance>[3], message: string) =>
     run("update", () => updateInstance(systemId, etag, instance.id, fields), message);
+  // The check runs as a job; wait for it so a review it opens shows up on this page.
+  const checkBranch = async () => {
+    const job = await checkNow(systemId, instance.id);
+    throwIfJobFailed(await watchPrismJob(job.job_id), "The branch check failed");
+  };
 
   return (
     <div className="space-y-6">
@@ -241,12 +273,17 @@ function BoardDetail({ systemId, document, instance, etag, canEdit, busy, run }:
             {instance.trackedRef && (
               <>
                 <Button variant="outline" size="sm" disabled={busy !== null}
-                  onClick={() => void run("check", () => checkNow(systemId, instance.id), "Checking the branch for changes")}>
+                  onClick={() => void run("check", checkBranch, "Branch checked")}>
                   <RefreshCw className="mr-1 h-4 w-4" /> Check now
                 </Button>
                 <Button variant="outline" size="sm" disabled={busy !== null}
                   title={instance.pinned ? "Apply or review new commits again" : "Keep this baseline; only report new commits"}
-                  onClick={() => void save({ pinned: !instance.pinned }, instance.pinned ? "Unpinned" : "Pinned")}>
+                  onClick={() => void (instance.pinned
+                    ? run("update", async () => {
+                      await updateInstance(systemId, etag, instance.id, { pinned: false });
+                      await checkBranch();
+                    }, "Unpinned and checked the branch")
+                    : save({ pinned: true }, "Pinned"))}>
                   {instance.pinned ? <PinOff className="mr-1 h-4 w-4" /> : <Pin className="mr-1 h-4 w-4" />}
                   {instance.pinned ? "Unpin" : "Pin"}
                 </Button>
@@ -299,21 +336,7 @@ function BoardDetail({ systemId, document, instance, etag, canEdit, busy, run }:
           onSave={async (fields) => Boolean(await save(fields, "Board updated"))} />
       )}
 
-      <ConfirmDialog
-        open={dialog === "remove"}
-        onOpenChange={(open) => setDialog(open ? "remove" : null)}
-        title={`Remove ${instance.label}?`}
-        description={linkCount > 0
-          ? `This board is an end of ${linkCount} ${linkCount === 1 ? "link" : "links"}. Removing it deletes those links and their rows.`
-          : "The board is removed from this system. The project itself is not touched."}
-        confirmLabel="Remove board"
-        destructive
-        busy={busy === "remove"}
-        onConfirm={() => {
-          void run("remove", () => removeInstance(systemId, etag, instance.id, linkCount > 0), `Removed ${instance.label}`)
-            .then(() => setDialog(null));
-        }}
-      />
+      {removeDialog}
     </div>
   );
 }

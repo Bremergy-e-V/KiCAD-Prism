@@ -72,8 +72,9 @@ def _silent_row(silent: drift.Silent) -> dict:
             "before": dict(silent.before), "after": dict(silent.after)}
 
 
-def _pending_changes(outcome: drift.Outcome) -> dict:
+def _pending_changes(outcome: drift.Outcome, basis: str) -> dict:
     return {
+        "basis": basis,
         "portUpdates": [
             {"linkId": link_id, "end": end, "port": port}
             for (link_id, end), port in sorted(outcome.port_updates.items())
@@ -94,7 +95,8 @@ def apply_evaluation(
     evaluation replaces both. Returns ``(outcome, review_id)``.
     """
 
-    outcome = drift.evaluate(store.list_links(instance["system_id"]), instance["id"], candidate)
+    links = store.list_links(instance["system_id"])
+    outcome = drift.evaluate(links, instance["id"], candidate)
     open_review = store.open_source_review(instance["id"])
     if open_review is not None:
         if open_review["kind"] == "baseline_unreachable":
@@ -115,7 +117,7 @@ def apply_evaluation(
         change, instance_id=instance["id"], kind="source_update",
         from_commit=instance["baseline_commit"], to_commit=tip,
         items=[_item_row(item) for item in outcome.items],
-        pending_changes=_pending_changes(outcome),
+        pending_changes=_pending_changes(outcome, drift.basis(links, instance["id"])),
     )
     return "review_opened", review["id"]
 
@@ -152,10 +154,10 @@ class Detector:
     # One instance
 
     def _record(self, instance_id: str, tip: Optional[str], checked: Optional[str], outcome: str,
-                review_id: Optional[str] = None) -> CheckResult:
+                review_id: Optional[str] = None, *, retry: bool = False) -> CheckResult:
         with self._connect() as conn:
             SystemStore(conn).record_source_check(
-                instance_id, tip_commit=tip, checked_commit=checked, outcome=outcome
+                instance_id, tip_commit=tip, checked_commit=checked, outcome=outcome, retry=retry
             )
             conn.commit()
         return CheckResult(instance_id, outcome, tip, review_id)
@@ -206,13 +208,14 @@ class Detector:
             candidate = self._extract(project, tip)
         except Exception:
             logger.exception("Interface extraction failed for %s@%s", instance["project_id"], tip)
-            return self._record(instance_id, tip, tip, "extraction_failed")
+            # The tip stays unchecked so the next fetch retries it.
+            return self._record(instance_id, tip, None, "extraction_failed", retry=True)
         try:
             return self._apply(instance, tip, candidate)
         except drift.DriftInconsistency:
             # Nothing was applied; the tip stays unchecked so a fixed engine retries it.
             logger.exception("Drift engine inconsistency for instance %s", instance_id)
-            return self._record(instance_id, tip, None, "engine_error")
+            return self._record(instance_id, tip, None, "engine_error", retry=True)
 
     def _baseline_unreachable(self, instance: dict, tip: str) -> CheckResult:
         with self._connect() as conn:

@@ -16,6 +16,7 @@ def redact_instance(instance: Mapping[str, Any]) -> dict:
         "id": instance["id"], "label": instance["label"], "restricted": True, "redacted": True,
         "projectId": None, "projectName": None, "baselineCommit": None, "trackedRef": None,
         "pinned": instance["pinned"], "resolution": instance["resolution"],
+        "projectDeleted": instance.get("projectDeleted", False),
         "tipCommit": None, "tipCheckedAt": None, "updateAvailable": None,
         "interface": None, "ports": None,
     }

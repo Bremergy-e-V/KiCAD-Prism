@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from unittest import mock
 
@@ -244,6 +245,26 @@ class ImportTest(ImportCase):
         admin = Caller(role="admin", email="admin@example.com")
         [shown] = [r for r in self.service.list_reviews(admin, self.sid, "open") if r["id"] == review_id]
         self.assertEqual(shown["items"][0]["observed"]["signal"], "DATA_OUT")
+
+
+    def test_a_decision_response_redacts_other_items_on_restricted_boards(self) -> None:
+        self.delete_link("L-J7J4")
+        self.delete_link("L-J2J1")
+        upload = self.upload(PLAIN_HEADER + "OBC-A,J7,5,PAY,J4,5,DATA_OUT,\nOBC-A,J2,3,PWR,J1,3,NOT_THIS_NET,\n")
+        committed = self.commit(upload["importId"])
+        self.assertEqual(committed["counts"]["needsReview"], 2, committed)
+        self.conn.execute("INSERT INTO ws_folders (id, visibility_mode, allowed_roles)"
+                          " VALUES ('fld_admins', 'roles', '[\"admin\"]')")
+        self.conn.execute("UPDATE ws_projects SET folder_id = 'fld_admins' WHERE id = 'prj_pay'")
+        self.conn.commit()
+        [review] = [r for r in self.service.list_reviews(DESIGNER, self.sid, "open")
+                    if r["id"] == committed["reviewId"]]
+        visible = next(i for i in review["items"] if not i["redacted"])
+        body = self.service.decide(DESIGNER, self.sid, self.version(), review["id"], visible["id"],
+                                   "remove_rows", None).body
+        hidden = [i for i in body["items"] if i["id"] != visible["id"]]
+        self.assertEqual([(i["redacted"], i["observed"]) for i in hidden], [(True, None)])
+        self.assertNotIn("DATA_OUT", json.dumps(body))
 
 
 class ImportApiTest(ImportCase):
