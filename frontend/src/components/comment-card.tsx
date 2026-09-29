@@ -14,7 +14,7 @@ import { TrackerIssueAction } from "@/features/tracker-integration/tracker-issue
 import { formatCommentTimestamp } from "@/components/comment-date";
 import { cn } from "@/lib/utils";
 import { commentClassLabel, type Comment } from "@/types/comments";
-import { CommentBody } from "@/features/rich-comments/comment-body";
+import { ThreadMessage } from "@/features/rich-comments/thread-message";
 import {
     RichComposer,
     type RichComposerHandle,
@@ -50,6 +50,7 @@ export function CommentCard({
     onRetrySync,
 }: CommentCardProps) {
     const [replyOpen, setReplyOpen] = useState(false);
+    const [replySeed, setReplySeed] = useState<string | undefined>(undefined);
     const [reply, setReply] = useState<RichComposerState>({ markdown: "", uploading: false });
     const [busy, setBusy] = useState(false);
     const [confirmDelete, setConfirmDelete] = useState(false);
@@ -75,9 +76,20 @@ export function CommentCard({
             await onReply(comment.id, reply.markdown);
             replyRef.current?.clear();
             setReplyOpen(false);
+            setReplySeed(undefined);
         } finally {
             setBusy(false);
         }
+    };
+
+    const canInteract = canModify && comment.permissions?.canReply !== false;
+    const quote = (markdown: string) => {
+        if (replyOpen && replyRef.current) {
+            replyRef.current.insertMarkdown(markdown);
+            return;
+        }
+        setReplySeed(markdown);
+        setReplyOpen(true);
     };
 
     return (
@@ -116,12 +128,13 @@ export function CommentCard({
                 <CommentSeverityBadge severity={comment.severity ?? "info"} />
             </div>
 
-            <CommentBody
+            <ThreadMessage
                 projectId={projectId}
-                content={comment.content}
-                contentFormat={comment.contentFormat}
-                attachments={comment.attachments}
-                className="max-h-72 overflow-y-auto px-3 py-2"
+                thread={comment}
+                canInteract={canInteract}
+                onQuote={quote}
+                bodyClassName="max-h-72 overflow-y-auto"
+                className="px-3 py-2"
             />
 
             {(comment.tracker?.linkState || comment.permissions?.canPublish) && (
@@ -145,12 +158,13 @@ export function CommentCard({
                     {comment.replies.slice(-3).map((item) => (
                         <div key={item.id ?? `${item.timestamp}-${item.author}-${item.content}`} className="text-xs">
                             <span className="font-medium">{item.author}</span>
-                            <CommentBody
+                            <ThreadMessage
                                 projectId={projectId}
-                                content={item.content}
-                                contentFormat={item.contentFormat}
-                                attachments={item.attachments}
-                                className="text-xs text-muted-foreground"
+                                thread={comment}
+                                reply={item}
+                                canInteract={canInteract}
+                                onQuote={quote}
+                                bodyClassName="text-xs text-muted-foreground"
                             />
                         </div>
                     ))}
@@ -168,6 +182,7 @@ export function CommentCard({
                         ariaLabel="Reply"
                         autoFocus
                         placeholder="Write a reply…"
+                        initialMarkdown={replySeed}
                         onChange={setReply}
                         onSubmit={() => void submitReply()}
                         onCancel={() => setReplyOpen(false)}
@@ -202,7 +217,10 @@ export function CommentCard({
                         size="icon"
                         className="h-8 w-8"
                         aria-label="Reply"
-                        onClick={() => setReplyOpen((open) => !open)}
+                        onClick={() => {
+                            setReplySeed(undefined);
+                            setReplyOpen((open) => !open);
+                        }}
                     >
                         <MessageSquareReply className="h-4 w-4" />
                     </Button>

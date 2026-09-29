@@ -510,6 +510,11 @@ class Settings(BaseSettings):
         le=100 * 1024 * 1024,
         description="Largest single file a reviewer can attach to a comment.",
     )
+    COMMENT_ATTACHMENT_PROJECT_QUOTA_BYTES: int = Field(
+        default=2 * 1024 * 1024 * 1024,
+        ge=0,
+        description="Total attachment storage one project may use. 0 means no limit.",
+    )
     COMMENT_ATTACHMENT_LINK_SECRET: SecretStr = Field(
         default=SecretStr(""),
         description=(

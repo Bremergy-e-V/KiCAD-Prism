@@ -22,7 +22,7 @@ import uuid
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple
 
-from app.services import comment_attachments, comment_bundle, comment_live_events, comments_revisions, comments_schema_migrations, project_service
+from app.services import comment_attachments, comment_bundle, comment_live_events, comment_social, comments_revisions, comments_schema_migrations, project_service
 from app.services.comments_revisions import Editor, RevisionConflict  # noqa: F401  (re-exported for callers)
 from app.services.comments_store_codec import (
     ANCHOR_STATE_PINNED,
@@ -206,6 +206,7 @@ class CommentsStoreService:
         ]
         attach_tracker_projections(conn, project_id, comments, workspace_schema=self.workspace_schema)
         comment_attachments.decorate(conn, project_id, comments)
+        comment_social.decorate(conn, project_id, comments)
 
         return {
             "meta": dict(COMMENTS_META),
@@ -245,6 +246,7 @@ class CommentsStoreService:
 
         comment = _row_to_comment_dict(row, [_row_to_reply_dict(reply) for reply in reply_rows])
         comment_attachments.decorate(conn, project_id, [comment])
+        comment_social.decorate(conn, project_id, [comment])
         attach_tracker_projection(
             conn, project_id, comment,
             workspace_schema=self.workspace_schema, unsynced_reply_ids=unsynced_reply_ids,
@@ -462,6 +464,7 @@ class CommentsStoreService:
                     for row in rows
                 ]
                 comment_attachments.decorate(conn, project_id, comments)
+                comment_social.decorate(conn, project_id, comments)
                 return {
                     "meta": dict(COMMENTS_META),
                     "cursor": cursor,
@@ -861,10 +864,11 @@ class CommentsStoreService:
     ) -> Dict:
         """Store an upload as ``pending`` until a root or reply references it."""
         self.initialize()
-        digest = comment_attachments.write_blob(prepared.data)
         with self._connect() as conn:
             with conn.transaction():
                 comment_attachments.sweep_stale_pending(conn, project_id)
+                comment_attachments.check_quota(conn, project_id, len(prepared.data))
+                digest = comment_attachments.write_blob(prepared.data)
                 return comment_attachments.insert_pending(
                     conn, project_id=project_id, uploader_user_id=uploader_user_id,
                     uploader_display=uploader_display, sha256=digest, filename=filename, prepared=prepared,
@@ -1122,7 +1126,36 @@ class CommentsStoreService:
                 )
                 return self._get_comment_with_replies(conn, project_id, comment_id)
 
-
+    @_retry_on_deadlock
+    def set_reaction(
+        self, project_id: str, project_path: str, comment_id: str, reply_id: Optional[str], *,
+        user_id: str, user_display: str, reaction: str, present: bool,
+    ) -> Optional[Dict]:
+        """Toggle one reader's reaction on a root or reply; None when it is gone."""
+        self.initialize()
+        with self._connect() as conn:
+            with conn.transaction():
+                self._bootstrap_project_if_needed(conn, project_id, project_path)
+                root = conn.execute(
+                    """SELECT scope, base_commit, compare_commit FROM comments
+                       WHERE project_id = %s AND id = %s AND deleted_at IS NULL""",
+                    (project_id, comment_id),
+                ).fetchone()
+                if root is None:
+                    return None
+                if reply_id is not None and self._live_reply(conn, project_id, comment_id, reply_id) is None:
+                    return None
+                changed = comment_social.set_reaction(
+                    conn, project_id=project_id, comment_id=comment_id, target_id=reply_id or comment_id,
+                    user_id=user_id, user_display=user_display, reaction=reaction, present=present,
+                )
+                if changed:
+                    comment_live_events.record_change(
+                        conn, project_id=project_id, comment_id=comment_id,
+                        scope=root["scope"], change_kind="upsert",
+                        base_commit=root["base_commit"], compare_commit=root["compare_commit"],
+                    )
+                return self._get_comment_with_replies(conn, project_id, comment_id)
 
     def delete_project_comments(self, project_id: str) -> None:
         """Remove every comment listing stored for a deleted project."""
@@ -1183,6 +1216,7 @@ class CommentsStoreService:
             with conn.transaction():
                 self._bootstrap_project_if_needed(conn, project_id, project_path)
                 snapshot = self._build_snapshot(conn, project_id)
+                comment_social.strip(snapshot["comments"])
 
                 comments_path = get_project_comments_json_path(project_path)
                 os.makedirs(os.path.dirname(comments_path), exist_ok=True)

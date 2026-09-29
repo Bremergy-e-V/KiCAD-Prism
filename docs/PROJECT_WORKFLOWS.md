@@ -172,6 +172,14 @@ to `COMMENT_ATTACHMENT_MAX_BYTES` each. Images are re-encoded on upload and
 render inline; other files render as downloads. Attachments are stored under
 `COMMENT_ATTACHMENT_ROOT`, never in the project repository, and are served only
 to project members.
+A project's attachments are capped in total by
+`COMMENT_ATTACHMENT_PROJECT_QUOTA_BYTES` (2 GiB by default, `0` for no limit).
+
+Each message carries emoji reactions, an "edited" marker once its text has
+changed, and actions to quote it into a reply or (for its author) edit it in
+place. The comments panel lists every snip in the review in one gallery and
+marks threads with activity since you last opened them; unread state is kept
+per browser. Reactions are not exported to the `.comments/` bundle.
 
 Threads and replies update live across viewers. After a disconnection, the
 client replays changes or refreshes the HTTP snapshot; HTTP polling provides a
