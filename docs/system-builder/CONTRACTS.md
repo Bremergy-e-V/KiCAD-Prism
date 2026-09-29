@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.5 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-08.** This is the source of truth for
+**Version 1.6 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-09.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -676,6 +676,41 @@ the canonical document.
 - The ICD is rendered from the frozen document on read, and
   `renderer_version` is stamped on it.
 
+**Implementation rules (v1.6).**
+
+- `POST …/snapshots` requires `If-Match` and freezes exactly that version. It
+  writes `snapshot_created` but does **not** bump the version: a snapshot
+  changes no engineering state, so it must not invalidate other editors'
+  ETags. It returns 201 with the snapshot metadata and the unchanged ETag. A
+  duplicate name (after trimming) is 409.
+- The frozen document is the §8.1 body plus `validation` (the full §7.2
+  report) and `reviewRowIds` (the sorted row IDs named by open review items),
+  serialized to JSON. `digest` is `sha256` over its canonical form, like §3.
+- `GET …/snapshots` lists metadata only (`id`, `name`, `note`, `createdBy`,
+  `createdAt`, `digest`, `openReviewCount`, `rendererVersion`), newest first.
+  `GET …/snapshots/{sid}` adds `document`.
+- Redaction on read uses the reader's access **today** to each project the
+  frozen document names, so an instance removed since the snapshot is still
+  redacted if its project is hidden.
+- Diffs (`…/diff?against=live|<sid>`) redact both sides with the **union** of
+  their restricted instances, so a comparison cannot reveal a hidden side by
+  difference. The body is `{snapshotId, against, boards, links}`:
+  - `boards` lists instances `added`, `removed` or `rebased` (baseline commit
+    changed), with `before` and `after` commits;
+  - `links` lists links `added`, `removed` or `changed`. Each has
+    `rows: {added, removed, changed}`, and a changed row carries `before` and
+    `after` of `pinA`, `pinB`, `signal`, `netA` and `netB`. A rename or harness
+    change alone marks a link `changed`.
+- ICD CSV is served as an attachment, `text/csv`. ICD HTML is served inline
+  with `Content-Security-Policy: default-src 'none'; style-src
+  'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none';
+  frame-ancestors 'self'`. Both carry `nosniff` and `Cache-Control:
+  no-store`. The live ICD carries the system ETag; a snapshot ICD does not.
+- CSV `status` is `error` when an error finding names the row (SYS-V01,
+  SYS-V04) or the link's end (SYS-V03); otherwise `review` when an open review
+  item names the row; otherwise `ok`. `*_net` falls back to the accepted net
+  baseline when there is no current observation. Restricted ends are empty.
+
 ### 9.2 CSV columns (export and import)
 
 Export columns, in this order:
@@ -857,3 +892,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.3 | 2026-09-29 | SYS-06: detection implementation rules in §10.1 (outcome vocabulary, locking, `pending_changes` on reviews via migration 28, current and unreachable reviews, check now). No drift rule changed. |
 | 1.4 | 2026-09-29 | SYS-07: decision validation and application order (§7.1), rebase behaviour, and the review response shape (§8.4). No drift rule changed. |
 | 1.5 | 2026-09-29 | SYS-08: the validation report shape, not-evaluated and SYS-V05 sources, and finding redaction (§7.2). The F0 and F8 findings goldens pass. |
+| 1.6 | 2026-09-29 | SYS-09: snapshot, ICD and diff implementation rules (§9.1). Creating a snapshot does not bump the version. No drift rule changed. |

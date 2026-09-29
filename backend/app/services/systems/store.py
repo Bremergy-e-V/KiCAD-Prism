@@ -14,8 +14,8 @@ which:
 Detection passes ``expected_version=None``: it has no ETag, but its changes
 still move the version so an editor holding the old ETag gets 412.
 
-Reviews are opened and superseded here for detection (SYS-06); decisions
-arrive with SYS-07 and snapshots with SYS-09.
+Reviews are opened and superseded here for detection (SYS-06), decided for
+reconcile (SYS-07), and snapshots are frozen here for SYS-09.
 """
 
 from __future__ import annotations
@@ -164,8 +164,11 @@ class SystemStore:
 
     @contextmanager
     def mutation(
-        self, system_id: str, *, expected_version: Optional[int], actor: str
+        self, system_id: str, *, expected_version: Optional[int], actor: str, bump: bool = True
     ) -> Iterator[Mutation]:
+        """``bump=False`` locks and checks the version but leaves it alone, for
+        audited writes that change no engineering state (a snapshot, §9.1)."""
+
         row = self.conn.execute(
             "SELECT version FROM system_projects WHERE id = %s FOR UPDATE", (system_id,)
         ).fetchone()
@@ -175,6 +178,8 @@ class SystemStore:
             raise StaleVersion(int(row["version"]))
         change = Mutation(self, system_id, actor, int(row["version"]))
         yield change
+        if not bump:
+            return
         bumped = self.conn.execute(
             """
             UPDATE system_projects SET version = version + 1, updated_at = NOW()
@@ -739,6 +744,50 @@ class SystemStore:
             (system_id, status, status),
         ).fetchall()
         return [self.get_review(system_id, row["id"]) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Snapshots (§9.1): immutable, stored unredacted
+
+    _SNAPSHOT_META = "id, system_id, name, note, created_by, created_at, digest, open_review_count, renderer_version"
+
+    def create_snapshot(
+        self, change: Mutation, *, name: str, note: str, document: Mapping[str, Any], digest: str,
+        open_review_count: int, renderer_version: str,
+    ) -> dict:
+        if not name.strip():
+            raise Invalid("name is required")
+        snapshot_id = new_id("ssn_")
+        row = self.conn.execute(
+            f"""
+            INSERT INTO system_snapshots
+                (id, system_id, name, note, created_by, document, digest, open_review_count, renderer_version)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT ON CONSTRAINT system_snapshots_name_key DO NOTHING
+            RETURNING {self._SNAPSHOT_META}
+            """,
+            (snapshot_id, change.system_id, name.strip(), note, change.actor, Jsonb(dict(document)),
+             digest, int(open_review_count), renderer_version),
+        ).fetchone()
+        if row is None:
+            raise Conflict(f"a snapshot named {name.strip()!r} already exists")
+        change.audit("snapshot_created", {"snapshotId": snapshot_id, "name": row["name"], "digest": digest})
+        return dict(row)
+
+    def list_snapshots(self, system_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            f"SELECT {self._SNAPSHOT_META} FROM system_snapshots WHERE system_id = %s ORDER BY created_at DESC, id",
+            (system_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_snapshot(self, system_id: str, snapshot_id: str) -> dict:
+        row = self.conn.execute(
+            f"SELECT {self._SNAPSHOT_META}, document FROM system_snapshots WHERE system_id = %s AND id = %s",
+            (system_id, snapshot_id),
+        ).fetchone()
+        if row is None:
+            raise NotFound("Snapshot not found")
+        return dict(row)
 
     # ------------------------------------------------------------------
     # Audit history
