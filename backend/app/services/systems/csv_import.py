@@ -222,7 +222,7 @@ def _resolve_end(values: Mapping[str, str], side: str, board_map: Mapping[str, s
         "instanceId": target, "label": instances[target]["label"], "reference": reference,
         "portKey": component["portKey"], "port": exposure.port_baseline(component),
         "exposed": exposure.is_exposed(component, override), "pin": pad,
-        "pinName": pins[pad].get("name"), "nets": sorted(set(pins[pad].get("nets") or [])),
+        "pinNames": pins[pad].get("pinNames"), "nets": sorted(set(pins[pad].get("nets") or [])),
     }, None
 
 

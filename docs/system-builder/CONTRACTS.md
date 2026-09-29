@@ -809,7 +809,7 @@ On commit:
   unresolved, conflict}`. Each entry is `{line, values, reason, from, to,
   signal, harness, linkName, linkId, rowId, action}`, where `action` is
   `create` or `update` and `from`/`to` carry the resolved instance, reference,
-  portKey, port baseline, `exposed`, pin, pin name and nets.
+  portKey, port baseline, `exposed`, pin, `pinNames` and nets.
 - **Commit** requires `If-Match`, re-classifies under the lock, writes Matched
   rows, opens the `import` review, and audits `import_committed`. It returns
   `{importId, created, updated, unchanged, linksCreated, reviewId, counts,

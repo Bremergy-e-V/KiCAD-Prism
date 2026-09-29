@@ -142,6 +142,10 @@ class ImportTest(ImportCase):
             "conflict": [(5, "duplicate_upload"), (12, "same_port"), (13, "duplicate_existing")],
         })
         self.assertEqual(preview["matched"][0]["signal"], "SPI_SCK")
+        j7 = next(c for c in csv_import.baseline_interfaces(self.store, self.sid)[self.instances["OBC-A"]]["components"]
+                  if c["reference"] == "J7")
+        pin3 = next(p for p in j7["pins"] if p["pad"] == "3")
+        self.assertEqual(preview["matched"][0]["from"]["pinNames"], pin3["pinNames"])
 
         report = self.commit(upload["importId"], board_map=boards)
         self.assertEqual((report["created"], len(report["linksCreated"])), (3, 2))
