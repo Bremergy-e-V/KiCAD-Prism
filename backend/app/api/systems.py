@@ -84,6 +84,15 @@ class RowRequest(BaseModel):
     source: Literal["manual", "generator", "import"] = "manual"
 
 
+class DecisionRequest(BaseModel):
+    decision: Literal["accept", "remap", "bind_candidate", "remove_rows"]
+    payload: Optional[dict[str, Any]] = None
+
+
+class RebaseRequest(BaseModel):
+    commit: str = Field(min_length=7, max_length=40)
+
+
 class Position(BaseModel):
     x: float = Field(allow_inf_nan=False)
     y: float = Field(allow_inf_nan=False)
@@ -329,6 +338,59 @@ async def replace_rows(
         _caller(user), system_id, version, link_id, rows,
     ))
     return _respond(result, response)
+
+
+# ---------------------------------------------------------------------------
+# Reviews and rebase
+
+
+@router.get("/{system_id}/reviews")
+async def list_reviews(
+    system_id: str,
+    status: Optional[Literal["open", "applied", "kept_pinned", "superseded", "closed"]] = Query(default=None),
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    return await _run(system_id, lambda: system_service.service.list_reviews(_caller(user), system_id, status))
+
+
+@router.post(
+    "/{system_id}/reviews/{review_id}/items/{item_id}/decision", dependencies=[Depends(require_designer)]
+)
+async def decide_review_item(
+    system_id: str, review_id: str, item_id: str, body: DecisionRequest, request: Request,
+    response: Response, user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.decide(
+        _caller(user), system_id, version, review_id, item_id, body.decision, body.payload,
+    ))
+    return _respond(result, response)
+
+
+@router.post("/{system_id}/reviews/{review_id}/keep-pinned", dependencies=[Depends(require_designer)])
+async def keep_review_pinned(
+    system_id: str, review_id: str, request: Request, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.keep_pinned(
+        _caller(user), system_id, version, review_id,
+    ))
+    return _respond(result, response)
+
+
+@router.post("/{system_id}/instances/{instance_id}/rebase", dependencies=[Depends(require_designer)])
+async def rebase_instance(
+    system_id: str, instance_id: str, body: RebaseRequest, request: Request, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    state, outcome = await _run(system_id, lambda: system_service.service.rebase(
+        _caller(user), system_id, version, instance_id, body.commit,
+    ))
+    if state == "queued":
+        return JSONResponse(status_code=202, content=outcome)
+    return _respond(outcome, response)
 
 
 # ---------------------------------------------------------------------------

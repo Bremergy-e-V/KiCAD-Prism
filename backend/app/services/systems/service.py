@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Any, Callable, ContextManager, Iterator, Mapping, Optional, Sequence
 
 from app.core.roles import Role
-from app.services.systems import exposure, sources, visibility
+from app.services.systems import drift, exposure, reconcile, sources, visibility
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
 from app.services.systems.jobs import (
     EXTRACT_JOB_KIND,
@@ -641,6 +641,119 @@ class SystemService:
                 store.replace_rows(change, link_id, captured)
                 body = self._link_body(store, system_id, link_id)
         return Result(body, system_id, change.version)
+
+    # ------------------------------------------------------------------
+    # Reviews and rebase (§7.1, §8.1)
+
+    def _review_doc(self, store: SystemStore, review: Mapping[str, Any], restricted: bool) -> dict:
+        base = {"id": review["id"], "kind": review["kind"], "status": review["status"],
+                "instanceId": review["instance_id"], "createdAt": _iso(review["created_at"]),
+                "decidedBy": review["decided_by"], "decidedAt": _iso(review["decided_at"])}
+        if restricted:
+            return {**base, "redacted": True, "fromCommit": None, "toCommit": None,
+                    "pendingChanges": None, "items": None}
+        rows = {row["id"]: row for link in store.list_links(review["system_id"]) for row in link["rows"]}
+        items = []
+        for item in review["items"]:
+            end = item["link_end"]
+            pins = sorted({rows[rid][f"pin_{end}"] for rid in item["row_ids"] if rid in rows},
+                          key=drift.pad_sort_key) if end else []
+            items.append({
+                "id": item["id"], "ordinal": item["ordinal"], "kind": item["kind"],
+                "linkId": item["link_id"], "end": end, "rowIds": list(item["row_ids"]), "pins": pins,
+                "expected": item["expected"], "observed": item["observed"],
+                "candidates": item["candidates"], "decision": item["decision"],
+                "decisionPayload": item["decision_payload"],
+            })
+        return {**base, "redacted": False, "fromCommit": review["from_commit"],
+                "toCommit": review["to_commit"], "pendingChanges": review["pending_changes"],
+                "items": items}
+
+    def _restricted_instances(self, store: SystemStore, system_id: str, caller: Caller) -> set[str]:
+        instances = store.list_instances(system_id)
+        access = self._access(store, instances, caller)
+        return {i["id"] for i in instances
+                if access.get(i["project_id"]) is not None and not access[i["project_id"]]["visible"]}
+
+    def list_reviews(self, caller: Caller, system_id: str, status: Optional[str]) -> list[dict]:
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            restricted = self._restricted_instances(store, system_id, caller)
+            return [self._review_doc(store, review, review["instance_id"] in restricted)
+                    for review in store.list_reviews(system_id, status=status)]
+
+    def _open_review_instance(self, store: SystemStore, system_id: str, review_id: str, caller: Caller) -> None:
+        try:
+            review = store.get_review(system_id, review_id)
+        except NotFound:
+            raise NotFound("Review not found") from None
+        if review["instance_id"]:
+            try:
+                self._open_instance(store, system_id, review["instance_id"], caller)
+            except NotFound:
+                raise NotFound("Review not found") from None
+
+    def decide(
+        self, caller: Caller, system_id: str, version: int, review_id: str, item_id: str,
+        decision: str, payload: Optional[Mapping[str, Any]],
+    ) -> Result:
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                self._open_review_instance(store, system_id, review_id, caller)
+                review = reconcile.decide(store, change, review_id, item_id, decision, payload)
+                body = self._review_doc(store, review, False)
+        return Result(body, system_id, change.version)
+
+    def keep_pinned(self, caller: Caller, system_id: str, version: int, review_id: str) -> Result:
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                self._open_review_instance(store, system_id, review_id, caller)
+                review = reconcile.keep_pinned(store, change, review_id)
+                body = self._review_doc(store, review, False)
+        return Result(body, system_id, change.version)
+
+    def rebase(
+        self, caller: Caller, system_id: str, version: int, instance_id: str, commit: str
+    ) -> tuple[str, Any]:
+        """``POST …/rebase``: evaluate an explicit commit like detection (§8.1, §10.1).
+
+        Returns ``("queued", job)`` while the commit's interface is extracted,
+        else ``("done", Result)``.
+        """
+
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            instance = self._open_instance(store, system_id, instance_id, caller)
+            project = self._require_project(store, instance["project_id"], caller)
+        try:
+            target = sources.resolve_commit(project, commit)
+        except sources.SourceError as error:
+            raise Invalid(str(error)) from None
+        if target is None:
+            raise Invalid("commit does not exist in the project repository")
+        if target == instance["baseline_commit"]:
+            raise Conflict("commit is already the baseline")
+        with self._tx() as store:
+            candidate = store.get_interface(instance["project_id"], target, EXTRACTOR_VERSION)
+        if candidate is None:
+            job = self._enqueue(instance["project_id"], target, requested_by=caller.email)
+            return "queued", {"job_id": str(job["job_id"]), "status": job["status"]}
+        from app.services.systems.detection import apply_evaluation
+
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                current = self._open_instance(store, system_id, instance_id, caller)
+                if current["baseline_commit"] == target:
+                    raise Conflict("commit is already the baseline")
+                outcome, review_id = apply_evaluation(
+                    store, change, current, target, candidate, auto_kind="baseline_rebased"
+                )
+                row = store.get_instance(system_id, instance_id)
+        body = {"outcome": outcome, "reviewId": review_id, "instance": self._instance_row(row)}
+        return "done", Result(body, system_id, change.version)
 
     # ------------------------------------------------------------------
     # History and layout

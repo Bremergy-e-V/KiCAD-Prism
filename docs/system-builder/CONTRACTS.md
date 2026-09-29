@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.3 · 2026-09-29 · tickets SYS-00, SYS-04, SYS-05, SYS-06.** This is the source of truth for
+**Version 1.4 · 2026-09-29 · tickets SYS-00, SYS-04 to SYS-07.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -385,6 +385,27 @@ Every decision request carries the review ID, the item ID and the system
 ETag. The server never re-evaluates the candidate commit while applying (§1
 invariant 5).
 
+**Implementation rules (v1.4).**
+
+- A decision is checked when it is recorded and again when the review
+  applies, against the review's candidate interface (the cached artifact at
+  `to_commit`) and the item's stored `candidates`.
+- `bind_candidate` needs `payload.portKey` from the item's candidates, and
+  every affected row's pad must exist on it (409 otherwise). `remap` needs
+  `payload.pad` on the resolved port (422 otherwise); a remap that would
+  duplicate a row is 409.
+- Applying a review, in order: its `pending_changes` port updates and silent
+  audits, then each decision in item order, then the baseline moves to
+  `to_commit` (audited as `review_applied`). Items whose link was deleted
+  meanwhile are skipped.
+- Only an `open` `source_update` review takes decisions or `keep-pinned`;
+  anything else is 409.
+- `POST …/rebase` accepts a SHA or an unambiguous prefix. It returns 409 at
+  the current baseline and 202 while the commit's interface is extracted.
+  Otherwise it applies §6.2 immediately, audited as `baseline_rebased`: an
+  open `source_update` review is superseded, and an open
+  `baseline_unreachable` review is closed.
+
 ### 7.2 Structural validation
 
 Findings are computed on demand over the live state at the current
@@ -593,6 +614,17 @@ moves the workspace bootstrap version (migration 27).
 | `DELETE …/links/{lid}` | 204 | none |
 | `PUT …/links/{lid}/rows` | 200 | the link |
 | `PUT …/layout` | 200 | `{positions}`; no ETag |
+
+**Reviews.** `GET …/reviews?status=` returns, newest first,
+`{id, kind, status, instanceId, createdAt, decidedBy, decidedAt, redacted,
+fromCommit, toCommit, pendingChanges, items}`. Each item is
+`{id, ordinal, kind, linkId, end, rowIds, pins, expected, observed,
+candidates, decision, decisionPayload}`, where `pins` are the affected rows'
+pads on that end. A review of a restricted instance has `redacted: true`,
+and its commits, `pendingChanges` and `items` are `null`. A decision
+(`POST …/decision`, `{decision, payload?}`) and `keep-pinned` return the
+review with the new `ETag`. `POST …/rebase` returns
+`{outcome: "auto_advanced"|"review_opened", reviewId, instance}` or 202.
 
 `GET …/history?cursor=&limit=` returns `{events: [{seq, id, at, actor, kind,
 payload, redacted}], nextCursor}`; pass `nextCursor` back as `cursor`.
@@ -806,3 +838,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.1 | 2026-09-27 | SYS-04: response shapes and write rules (§8.4); deleted projects are unresolved, not restricted; restricted-board rules for system deletion, cascades and history (§8.2). No drift rule changed, so no fixture step needs re-running. |
 | 1.2 | 2026-09-29 | SYS-05: §6 fixes what the rules left open — the audit kind of each silent change, item order, unannotated parts never resolving a port, "bound" meaning resolved by key, and `netOverlap` 1.0 for an end with no rows. No rule changed; every §11 step re-ran and still matches. |
 | 1.3 | 2026-09-29 | SYS-06: detection implementation rules in §10.1 (outcome vocabulary, locking, `pending_changes` on reviews via migration 28, current and unreachable reviews, check now). No drift rule changed. |
+| 1.4 | 2026-09-29 | SYS-07: decision validation and application order (§7.1), rebase behaviour, and the review response shape (§8.4). No drift rule changed. |

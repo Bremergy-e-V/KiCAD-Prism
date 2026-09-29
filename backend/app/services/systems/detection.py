@@ -82,6 +82,44 @@ def _pending_changes(outcome: drift.Outcome) -> dict:
     }
 
 
+def apply_evaluation(
+    store: SystemStore, change: Any, instance: Mapping[str, Any], tip: str,
+    candidate: Mapping[str, Any], *, auto_kind: str,
+) -> tuple[str, Optional[str]]:
+    """Evaluate ``tip`` against the stored baselines and apply §6.2 inside ``change``.
+
+    Shared by detection (``baseline_auto_advanced``) and rebase
+    (``baseline_rebased``). An open ``source_update`` review is superseded
+    (§6.5) and an open ``baseline_unreachable`` review is closed, since a new
+    evaluation replaces both. Returns ``(outcome, review_id)``.
+    """
+
+    outcome = drift.evaluate(store.list_links(instance["system_id"]), instance["id"], candidate)
+    open_review = store.open_source_review(instance["id"])
+    if open_review is not None:
+        if open_review["kind"] == "baseline_unreachable":
+            store.set_review_status(change, open_review["id"], "closed")
+        else:
+            # Decisions taken on the older candidate are discarded.
+            store.set_review_status(change, open_review["id"], "superseded",
+                                    audit_kind="review_superseded", payload={"supersededBy": tip})
+    if outcome.auto_advance:
+        for (link_id, end), port in sorted(outcome.port_updates.items()):
+            store.set_link_port(change, link_id, end, port)
+        for silent in outcome.silent:
+            change.audit(silent.kind, {"instanceId": instance["id"], **_silent_row(silent)})
+        store.set_baseline(change, instance["id"], tip, kind=auto_kind,
+                           payload={"silentChanges": len(outcome.silent)})
+        return "auto_advanced", None
+    review = store.open_review(
+        change, instance_id=instance["id"], kind="source_update",
+        from_commit=instance["baseline_commit"], to_commit=tip,
+        items=[_item_row(item) for item in outcome.items],
+        pending_changes=_pending_changes(outcome),
+    )
+    return "review_opened", review["id"]
+
+
 class Detector:
     def __init__(
         self,
@@ -199,7 +237,6 @@ class Detector:
             return self._record(instance["id"], tip, tip, unchanged.outcome, unchanged.review_id)
 
     def _apply_locked(self, instance: dict, tip: str, candidate: Mapping[str, Any]) -> CheckResult:
-        review_id = None
         with self._connect() as conn:
             store = SystemStore(conn)
             with store.mutation(instance["system_id"], expected_version=None, actor=DETECTION_ACTOR) as change:
@@ -217,28 +254,9 @@ class Detector:
                     outcome_name = ("baseline_unreachable" if open_review["kind"] == "baseline_unreachable"
                                     else "review_current")
                     raise _Unchanged(outcome_name, open_review["id"])
-                outcome = drift.evaluate(store.list_links(instance["system_id"]), instance["id"], candidate)
-                if open_review is not None:
-                    # §6.5: decisions on the older candidate are discarded.
-                    store.set_review_status(change, open_review["id"], "superseded",
-                                            audit_kind="review_superseded", payload={"supersededBy": tip})
-                if outcome.auto_advance:
-                    for (link_id, end), port in sorted(outcome.port_updates.items()):
-                        store.set_link_port(change, link_id, end, port)
-                    for silent in outcome.silent:
-                        change.audit(silent.kind, {"instanceId": instance["id"], **_silent_row(silent)})
-                    store.set_baseline(change, instance["id"], tip, kind="baseline_auto_advanced",
-                                       payload={"silentChanges": len(outcome.silent)})
-                    result = "auto_advanced"
-                else:
-                    review = store.open_review(
-                        change, instance_id=instance["id"], kind="source_update",
-                        from_commit=current["baseline_commit"], to_commit=tip,
-                        items=[_item_row(item) for item in outcome.items],
-                        pending_changes=_pending_changes(outcome),
-                    )
-                    review_id = review["id"]
-                    result = "review_opened"
+                result, review_id = apply_evaluation(
+                    store, change, current, tip, candidate, auto_kind="baseline_auto_advanced"
+                )
             conn.commit()
         return self._record(instance["id"], tip, tip, result, review_id)
 
