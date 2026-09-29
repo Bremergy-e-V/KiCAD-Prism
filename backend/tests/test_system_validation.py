@@ -1,0 +1,183 @@
+"""SYS-08: structural validation (contract §7.2) against the goldens and per rule."""
+
+from __future__ import annotations
+
+import copy
+import unittest
+
+from system_builder_db import FixtureSystemCase
+from system_builder_fixtures import expected_steps
+
+from app.services.systems.jobs import extract_and_store
+from app.services.systems.service import Caller, SystemService
+from app.services.systems.validation import RULES, validate
+
+DESIGNER = Caller(role="designer", email="designer@example.com")
+
+
+class ValidationGoldenTest(FixtureSystemCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.service = SystemService(connect=self.connect, project_loader=self.projects.get,
+                                     enqueue=lambda *a, **k: {"job_id": "j", "status": "queued"})
+        for board, project_id in (("mini_obc", "prj_obc"), ("mini_payload", "prj_pay"),
+                                  ("mini_power", "prj_pwr")):
+            extract_and_store(self.projects[project_id], self.commits[board]["F0"], self.connect)
+        self.labels = {v: k for k, v in self.instances.items()}
+
+    def report(self) -> dict:
+        return self.service.validation_report(DESIGNER, self.sid).body
+
+    def test_f0_baseline_findings(self) -> None:
+        golden = expected_steps()["baselineFindings"]["F0"]
+        report = self.report()
+        errors = [f for f in report["findings"] if f["severity"] == "error"]
+        warnings = [f for f in report["findings"] if f["severity"] == "warning"]
+        self.assertEqual((errors, warnings), ([], []))
+        self.assertEqual(
+            [{"rule": n["rule"], "instance": self.labels[n["instanceId"]], "reason": n["reason"]}
+             for n in report["notEvaluated"]],
+            golden["notEvaluated"],
+        )
+        self.assertEqual(
+            [{"rule": e["rule"], "instance": self.labels[e["instanceId"]], "reference": e["reference"],
+              "pin": e["pin"]} for e in report["exempt"]],
+            [{k: v for k, v in e.items() if k != "reason"} for e in golden["exempt"]],
+        )
+        document = self.service.document(DESIGNER, self.sid).body
+        self.assertEqual(document["findingCounts"], report["counts"])
+
+    def test_f8_after_accept_warns_pcb_out_of_sync(self) -> None:
+        golden = expected_steps()["steps"]["F8"]["afterAccept"]["warnings"]
+        self.move_track("mini_obc", "F8")
+        result = self.detector.check_instance(self.instances["OBC-A"])
+        review = next(r for r in self.service.list_reviews(DESIGNER, self.sid, "open") if r["id"] == result.review_id)
+        self.assertEqual(self.report()["counts"]["info"], 1)  # SYS-V08 while the review is open
+        self.service.decide(DESIGNER, self.sid, self.version(), review["id"], review["items"][0]["id"],
+                            "accept", None)
+        warnings = [f for f in self.report()["findings"] if f["severity"] == "warning"]
+        self.assertEqual(
+            [{"rule": f["rule"], "instance": self.labels[f["instanceId"]], "reference": f["reference"],
+              "pin": f["pin"], "schematic": f["detail"]["schematic"], "pcb": f["detail"]["pcb"]}
+             for f in warnings],
+            golden,
+        )
+
+    def test_pending_interface_is_not_evaluated_never_passed(self) -> None:
+        self.conn.execute("DELETE FROM system_interface_artifacts WHERE project_id = 'prj_pwr'")
+        self.conn.commit()
+        not_evaluated = {(n["rule"], self.labels[n["instanceId"]]) for n in self.report()["notEvaluated"]}
+        for rule in ("SYS-V03", "SYS-V04", "SYS-V06", "SYS-V07"):
+            self.assertIn((rule, "PWR"), not_evaluated)
+
+    def test_failed_extraction_makes_the_source_unavailable(self) -> None:
+        from app.services.systems.jobs import EXTRACT_JOB_KIND, artifact_key
+
+        self.conn.execute("DELETE FROM system_interface_artifacts WHERE project_id = 'prj_pwr'")
+        self.conn.execute(
+            "INSERT INTO ws_jobs (id, kind, status, artifact_key, error_code) VALUES ('jf', %s, 'failed', %s,"
+            " 'source_unavailable')",
+            (EXTRACT_JOB_KIND, artifact_key("prj_pwr", self.commits["mini_power"]["F0"])),
+        )
+        self.conn.commit()
+        [finding] = [f for f in self.report()["findings"] if f["rule"] == "SYS-V05"]
+        self.assertEqual((self.labels[finding["instanceId"]], finding["detail"]),
+                         ("PWR", {"reason": "source_unavailable"}))
+
+
+def _instance(iid: str, resolution: str = "resolved") -> dict:
+    return {"id": iid, "resolution": resolution}
+
+
+def _component(key: str, reference: str, pads: dict, *, candidate: bool = True, pcb: dict | None = None) -> dict:
+    return {"portKey": key, "memberKeys": [key], "reference": reference, "libId": "L:X", "footprint": "F:X",
+            "candidate": candidate, "dnp": False,
+            "pins": [{"pad": pad, "nets": nets, "pcbNets": (pcb or {}).get(pad, nets)} for pad, nets in pads.items()]}
+
+
+def _port(key: str, reference: str) -> dict:
+    return {"portKey": key, "memberKeys": [key], "reference": reference, "libId": "L:X", "footprint": "F:X",
+            "pinCount": 2}
+
+
+def _link(lid: str, rows: list[tuple[str, str]], *, harness: str | None = None,
+          a: tuple[str, str, str] = ("i1", "/k1", "J1"), b: tuple[str, str, str] = ("i2", "/k2", "J2")) -> dict:
+    return {"id": lid, "harness": harness, "a_instance_id": a[0], "a_port": _port(a[1], a[2]),
+            "b_instance_id": b[0], "b_port": _port(b[1], b[2]),
+            "rows": [{"id": f"{lid}-{n}", "pin_a": pa, "pin_b": pb} for n, (pa, pb) in enumerate(rows)]}
+
+
+class ValidationRuleTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.instances = [_instance("i1"), _instance("i2")]
+        self.interfaces = {
+            "i1": {"hasPcb": True, "components": [_component("/k1", "J1", {"1": ["A"], "2": ["B"]})]},
+            "i2": {"hasPcb": True, "components": [_component("/k2", "J2", {"1": ["A"], "2": ["B"]})]},
+        }
+
+    def run_rules(self, links, *, overrides=None, reviews=(), interfaces=None, instances=None, unavailable=None):
+        return validate(instances or self.instances, links, interfaces or self.interfaces, overrides or {},
+                        reviews, unavailable=unavailable)
+
+    def rules(self, report) -> list[tuple[str, str | None]]:
+        return [(f["rule"], f["pin"]) for f in report["findings"]]
+
+    def test_clean_system(self) -> None:
+        report = self.run_rules([_link("L1", [("1", "1"), ("2", "2")])])
+        self.assertEqual(report["findings"], [])
+        self.assertEqual(report["counts"], {"error": 0, "warning": 0, "info": 0, "notEvaluated": 0})
+
+    def test_duplicate_rows(self) -> None:
+        report = self.run_rules([_link("L1", [("1", "1"), ("1", "1")])])
+        self.assertEqual([f["rule"] for f in report["findings"]], ["SYS-V01"])
+
+    def test_fanout_warns_unless_one_harness(self) -> None:
+        links = [_link("L1", [("1", "1")]), _link("L2", [("1", "2")])]
+        report = self.run_rules(links)
+        fanout = [f for f in report["findings"] if f["rule"] == "SYS-V02"]
+        self.assertEqual({(f["linkId"], f["end"]) for f in fanout}, {("L1", "a"), ("L2", "a")})
+        harnessed = [_link("L1", [("1", "1")], harness="WH"), _link("L2", [("1", "2")], harness="WH")]
+        report = self.run_rules(harnessed)
+        self.assertEqual(report["findings"], [])
+        self.assertEqual([(e["rule"], e["pin"], e["harness"]) for e in report["exempt"]], [("SYS-V02", "1", "WH")])
+        mixed = [_link("L1", [("1", "1")], harness="WH"), _link("L2", [("1", "2")])]
+        self.assertTrue(any(f["rule"] == "SYS-V02" for f in self.run_rules(mixed)["findings"]))
+
+    def test_hidden_or_missing_port_is_not_exposed(self) -> None:
+        report = self.run_rules([_link("L1", [("1", "1")])], overrides={"i1": {"/k1": "hidden"}})
+        self.assertEqual([(f["rule"], f["end"]) for f in report["findings"]], [("SYS-V03", "a")])
+        gone = copy.deepcopy(self.interfaces)
+        gone["i2"]["components"] = []
+        report = self.run_rules([_link("L1", [("1", "1")])], interfaces=gone)
+        self.assertEqual([(f["rule"], f["detail"]["present"]) for f in report["findings"]], [("SYS-V03", False)])
+
+    def test_absent_pin(self) -> None:
+        report = self.run_rules([_link("L1", [("3", "1")])])
+        self.assertEqual(self.rules(report), [("SYS-V04", "3")])
+
+    def test_unresolved_source(self) -> None:
+        report = self.run_rules([], instances=[_instance("i1", "unresolved"), _instance("i2")],
+                                unavailable={"i2": "source_unavailable"})
+        self.assertEqual([(f["rule"], f["instanceId"]) for f in report["findings"]],
+                         [("SYS-V05", "i1"), ("SYS-V05", "i2")])
+
+    def test_pcb_and_ambiguity_warnings(self) -> None:
+        interfaces = copy.deepcopy(self.interfaces)
+        interfaces["i1"]["components"] = [_component("/k1", "J1", {"1": ["A", "Z"], "2": ["B"]},
+                                                     pcb={"1": ["A", "Z"], "2": ["OLD"]})]
+        report = self.run_rules([_link("L1", [("1", "1"), ("2", "2")])], interfaces=interfaces)
+        self.assertEqual(self.rules(report), [("SYS-V06", "2"), ("SYS-V07", "1")])
+        interfaces["i1"]["hasPcb"] = False
+        report = self.run_rules([_link("L1", [("1", "1"), ("2", "2")])], interfaces=interfaces)
+        self.assertEqual(self.rules(report), [("SYS-V07", "1")])
+        self.assertEqual([(n["rule"], n["instanceId"]) for n in report["notEvaluated"]], [("SYS-V06", "i1")])
+
+    def test_open_review_is_info_and_order_is_severity_first(self) -> None:
+        report = self.run_rules([_link("L1", [("3", "1")])],
+                                reviews=[{"id": "r1", "instance_id": "i1", "kind": "source_update"}])
+        self.assertEqual([f["severity"] for f in report["findings"]], ["error", "info"])
+        self.assertEqual(set(RULES), {f"SYS-V0{n}" for n in range(1, 9)})
+
+
+if __name__ == "__main__":
+    unittest.main()

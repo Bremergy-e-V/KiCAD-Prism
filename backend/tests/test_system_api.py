@@ -268,7 +268,8 @@ class SystemApiTest(unittest.TestCase):
         self.assertEqual(document.status, 200)
         self.assertEqual(document.headers["etag"], etag)
         self.assertEqual(document.json["instances"], [])
-        self.assertIsNone(document.json["findingCounts"])
+        self.assertEqual(document.json["findingCounts"],
+                         {"error": 0, "warning": 0, "info": 0, "notEvaluated": 0})
 
     def test_mutations_need_designer_and_if_match(self) -> None:
         sid, etag = self.create_system()
@@ -468,6 +469,30 @@ class SystemApiTest(unittest.TestCase):
         self.assertEqual(self.call("POST", f"/{sid}/instances/{pay}/check").status, 409)
         self.hide_project("prj_obc", "fld_admins")
         self.assertEqual(self.call("POST", f"/{sid}/instances/{obc}/check").status, 404)
+
+    def test_validation_endpoint_redacts_restricted_boards(self) -> None:
+        sid, etag, obc, pay = self.two_boards()
+        created = self.link_j7_j4(sid, etag, obc, pay)
+        self.mutate("PUT", f"/{sid}/links/{created.json['id']}/rows", created.headers["etag"],
+                    body=[{"pinA": "3", "pinB": "3"}])
+        with self.connect() as conn:  # make PAY's row pad vanish from its baseline interface
+            payload = dict(self.interfaces["prj_pay"])
+            payload["components"] = [
+                {**c, "pins": [p for p in c["pins"] if p["pad"] != "3"]} if c["reference"] == "J4" else c
+                for c in payload["components"]
+            ]
+            conn.execute("UPDATE system_interface_artifacts SET payload = %s WHERE project_id = 'prj_pay'",
+                         (json.dumps(payload),))
+            conn.commit()
+        designer = self.call("GET", f"/{sid}/validation").json
+        [absent] = [f for f in designer["findings"] if f["rule"] == "SYS-V04"]
+        self.assertEqual((absent["reference"], absent["pin"], absent["redacted"]), ("J4", "3", False))
+        self.hide_project("prj_pay", "fld_designers")
+        viewer = self.call("GET", f"/{sid}/validation", user="viewer")
+        self.assertEqual(viewer.status, 200)
+        [redacted] = [f for f in viewer.json["findings"] if f["rule"] == "SYS-V04"]
+        self.assertEqual((redacted["reference"], redacted["pin"], redacted["redacted"]), (None, None, True))
+        self.assertEqual(self.call("GET", f"/{sid}").json["findingCounts"]["error"], 1)
 
     def test_port_overrides(self) -> None:
         sid, etag, obc, pay = self.two_boards()

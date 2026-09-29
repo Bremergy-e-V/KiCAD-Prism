@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import Any, Callable, ContextManager, Iterator, Mapping, Optional, Sequence
 
 from app.core.roles import Role
-from app.services.systems import drift, exposure, reconcile, sources, visibility
+from app.services.systems import drift, exposure, reconcile, sources, validation, visibility
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
 from app.services.systems.jobs import (
     EXTRACT_JOB_KIND,
@@ -233,14 +233,57 @@ class SystemService:
                 ],
                 "links": [self._link_doc(link, restricted, interfaces, overrides) for link in links],
                 "openReviewCount": system["openReviewCount"],
-                # Structural validation (§7.2) arrives with SYS-08; null is "not evaluated".
-                "findingCounts": None,
+                "findingCounts": self._validate(store, system_id, instances, links, interfaces,
+                                                job_state)["counts"],
             }
         for instance in pending:
             key = artifact_key(instance["project_id"], instance["baseline_commit"])
             if key not in job_state and instance["resolution"] == "resolved":
                 self._enqueue_quietly(instance["project_id"], instance["baseline_commit"], caller)
         return Result(body, system_id, system["version"])
+
+    def _validate(
+        self, store: SystemStore, system_id: str, instances: Sequence[dict], links: Sequence[dict],
+        interfaces: Mapping[str, dict], job_state: Mapping[str, dict],
+    ) -> dict:
+        """§7.2 over the live state; an instance's failed extraction makes its source unavailable."""
+
+        unavailable = {}
+        for instance in instances:
+            job = job_state.get(artifact_key(instance["project_id"], instance["baseline_commit"]))
+            if instance["id"] not in interfaces and job and job["status"] in ("failed", "cancelled"):
+                unavailable[instance["id"]] = job["error_code"] or "extraction_failed"
+        return validation.validate(
+            instances, links, {i["id"]: interfaces.get(i["id"]) for i in instances},
+            {i["id"]: store.list_overrides(i["id"]) for i in instances},
+            store.list_reviews(system_id, status="open"), unavailable=unavailable,
+        )
+
+    def validation_report(self, caller: Caller, system_id: str) -> Result:
+        """``GET …/validation`` (§7.2), redacted for restricted boards (§8.2)."""
+
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            instances = store.list_instances(system_id)
+            links = store.list_links(system_id)
+            interfaces = {}
+            for instance in instances:
+                found = store.get_interface(instance["project_id"], instance["baseline_commit"],
+                                            EXTRACTOR_VERSION)
+                if found is not None:
+                    interfaces[instance["id"]] = found
+            job_state = self._latest_jobs(store, [i for i in instances if i["id"] not in interfaces])
+            report = self._validate(store, system_id, instances, links, interfaces, job_state)
+            restricted = self._restricted_instances(store, system_id, caller)
+        for finding in report["findings"]:
+            if finding["instanceId"] in restricted:
+                finding.update(reference=None, pin=None, detail=None, redacted=True)
+            else:
+                finding["redacted"] = False
+        for entry in report["exempt"]:
+            if entry["instanceId"] in restricted:
+                entry.update(reference=None, pin=None, portKey=None, redacted=True)
+        return Result(report, system_id, system["version"])
 
     def _latest_jobs(self, store: SystemStore, instances: Sequence[dict]) -> dict[str, dict]:
         keys = sorted({artifact_key(i["project_id"], i["baseline_commit"]) for i in instances})
