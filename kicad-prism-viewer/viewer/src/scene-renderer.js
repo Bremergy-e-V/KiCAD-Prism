@@ -130,7 +130,7 @@ export class SceneRenderer {
         loadOp: "clear",
         storeOp: "store",
       }],
-      depthStencilAttachment: { view: host.depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
+      depthStencilAttachment: host.depthAttachment(),
     });
     setViewport(pass, panel.viewport, this.canvas);
     let triangles = 0;
@@ -161,7 +161,7 @@ export class SceneRenderer {
     const encoder = this.device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [{ view: host.pickTexture.createView(), clearValue: { r: 0, g: 0, b: 0, a: 0 }, loadOp: "clear", storeOp: "store" }],
-      depthStencilAttachment: { view: host.depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
+      depthStencilAttachment: host.depthAttachment(),
     });
     setViewport(pass, panel.viewport, this.canvas);
     for (const renderer of this.renderers) {

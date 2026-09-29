@@ -7,6 +7,7 @@ export function boardRole(primitive) {
   if (name.includes("_pad") || name.includes(".pad") || name.endsWith("pad")) return "pad";
   if (name.includes("silkscreen")) return "silkscreen";
   if (name.includes("soldermask")) return "soldermask";
+  if (name.includes("paste")) return "paste";
   return "substrate";
 }
 

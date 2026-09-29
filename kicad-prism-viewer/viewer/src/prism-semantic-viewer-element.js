@@ -404,6 +404,14 @@ export class PrismSemanticViewerElement extends HTMLElement {
     this.controller?.setShowComponents?.(visible);
   }
 
+  setShowPlaceholders(visible) {
+    this.controller?.setShowPlaceholders?.(visible);
+  }
+
+  setRealisticColors(enabled) {
+    this.controller?.setRealisticColors?.(enabled);
+  }
+
   setSeparation(value) {
     this.controller?.setSeparation?.(value);
   }

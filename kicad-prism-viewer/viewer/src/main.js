@@ -108,6 +108,8 @@ function initialState() {
     selectionAnchor: null,
     showBoard: true,
     showComponents: true,
+    showPlaceholders: true,
+    realisticColors: true,
     isolateNet: false,
     hiddenComponents: new Set(),
     /** User/view prefs restored after Esc; not overwritten by net-probe toggles. */
@@ -449,6 +451,8 @@ export async function mountStandaloneViewer(options = {}) {
     applyLayerPreset,
     setShowBoard,
     setShowComponents,
+    setShowPlaceholders,
+    setRealisticColors,
     setSeparation,
     showNetLayers,
     setNetIsolation,
@@ -483,6 +487,8 @@ function pcbViewState() {
     })),
     showBoard: state.showBoard,
     showComponents: state.showComponents,
+    showPlaceholders: state.showPlaceholders,
+    realisticColors: state.realisticColors,
     separation: state.separation,
     isolateNet: state.isolateNet,
     hasNet: Boolean(state.activeNetId) || emphasizedNetIds().size > 0,
@@ -671,6 +677,7 @@ async function boot(token, performanceTimings = {}, onPerformanceEvent = null) {
     return;
   }
   renderer.setBarrels(scene.manifest.barrels || []);
+  applyCopperColors();
   started = performance.now();
   const boardBounds = await loadBoard(token);
   performanceTimings.board_fetch_parse_upload_ms = performance.now() - started;
@@ -703,6 +710,7 @@ async function boot(token, performanceTimings = {}, onPerformanceEvent = null) {
     const componentsStarted = performance.now();
     void loadComponents(token).then(() => {
       if (!viewerSessionActive(token)) return;
+      addFootprintPlaceholders(boardBounds);
       onPerformanceEvent?.({
         schema: "prism.semantic_viewer_performance.a0",
         milestone: "components-loaded",
@@ -711,6 +719,8 @@ async function boot(token, performanceTimings = {}, onPerformanceEvent = null) {
         bytes_loaded: state.loadedBytes,
       });
     });
+  } else {
+    addFootprintPlaceholders(boardBounds);
   }
   scheduleTileResidency(performance.now(), { force: true });
   scheduleFrame(token);
@@ -845,7 +855,8 @@ async function loadTile(tile, token = activeViewerToken) {
           tileId: tile.id,
           layerId: Number(tile.layerId),
           innerCopper: isInnerCopperLayer(Number(tile.layerId)),
-          color: layerColor(layer),
+          color: copperColor(layer),
+          stencilMark: isOuterCopper(layer),
           baseZ: Number(layer?.z_mm || 0) / 1000,
           material: { baseColor: [1, 1, 1, 1], metallic: 0.78, roughness: 0.32 },
         });
@@ -1095,15 +1106,33 @@ function tileDistanceToFocus(tile) {
 async function loadBoard(token = activeViewerToken) {
   const path = semanticGeometry.assets?.base_board_glb;
   if (!path) return null;
-  const loaded = await loadGltf(new URL(path, location.href).toString(), { defaultFeatureId: 0, fetchBytes: assetFetcher() });
+  // The pipeline's own mask (with pad openings) replaces any the board export
+  // carries. Fetched alongside the board; a failed mask leaves the board bare.
+  const maskPath = semanticGeometry.assets?.soldermask_glb;
+  const [loaded, mask] = await Promise.all([
+    loadGltf(new URL(path, location.href).toString(), { defaultFeatureId: 0, fetchBytes: assetFetcher() }),
+    maskPath
+      ? loadGltf(new URL(maskPath, location.href).toString(), { defaultFeatureId: 0, fetchBytes: assetFetcher() }).catch((error) => {
+        console.warn("[prism-semantic-viewer] solder mask failed to load", error);
+        return null;
+      })
+      : null,
+  ]);
   if (!viewerSessionActive(token) || !renderer) return null;
   state.loadedBytes += loaded.byteLength;
-  const contextPrimitives = loaded.primitives.filter((primitive) => boardRole(primitive) !== "pad");
+  if (mask) state.loadedBytes += mask.byteLength;
+  const contextPrimitives = [
+    ...loaded.primitives.filter((primitive) => {
+      const role = boardRole(primitive);
+      return role !== "pad" && !(mask && role === "soldermask");
+    }),
+    ...(mask?.primitives || []),
+  ];
   for (const primitive of mergePrimitivesByMaterial(contextPrimitives, boardRole)) {
     renderer.addPrimitive(primitive, {
       kind: "board",
       boardRole: primitive.groupKey,
-      layerId: 0,
+      layerId: primitive.groupKey === "paste" ? pasteLayerId(primitive) : 0,
       material: primitive.material,
       color: primitive.material.baseColor,
     });
@@ -1209,6 +1238,14 @@ function applyOccurrences(matrices) {
 }
 
 
+function pasteLayerId(primitive) {
+  const bottom = String(primitive.material?.name || "").endsWith("_bottom");
+  const layers = scene.copperLayers;
+  const layer = layers.find((item) => item.name === (bottom ? "B.Cu" : "F.Cu"))
+    || (bottom ? layers[layers.length - 1] : layers[0]);
+  return Number(layer?.id || 0);
+}
+
 async function loadComponents(token = activeViewerToken) {
   const path = semanticGeometry.assets?.components_glb;
   if (!path || scene.componentTier !== "idle") return;
@@ -1283,6 +1320,90 @@ function manageTiers(now) {
   }
 }
 
+const PLACEHOLDER_HEIGHT_M = 0.0004;
+// Clear of the mask and silkscreen, so the box's base never shares their plane.
+const PLACEHOLDER_GAP_M = 0.00005;
+const PLACEHOLDER_MATERIAL = { baseColor: [0.62, 0.7, 0.8, 1], metallic: 0, roughness: 0.8, emissive: [0, 0, 0] };
+
+/**
+ * Footprints without a 3D model get a faint box over their pad extent, on their
+ * board side, tagged with the component's feature id. Picking, cross-probe
+ * highlight, framing and hiding then work as for a real model.
+ */
+function addFootprintPlaceholders(boardBounds) {
+  if (!renderer) return;
+  const bodies = new Map();
+  for (const item of topology.physical_objects || []) {
+    if (item.kind === "footprint_body" && item.designator && item.bbox_mm?.length === 4) {
+      bodies.set(item.designator, item);
+    }
+  }
+  const top = (boardBounds?.[5] ?? 0.0008) + PLACEHOLDER_GAP_M;
+  const bottom = (boardBounds?.[2] ?? -0.0008) - PLACEHOLDER_GAP_M;
+  const primitives = [];
+  for (const component of scene.componentFeatures.values()) {
+    const featureId = Number(component.featureId);
+    const feature = scene.features.get(featureId);
+    const body = bodies.get(component.designator);
+    if (!feature || feature.bounds || !body) continue;
+    const [x0, y0, x1, y1] = body.bbox_mm.map(Number);
+    const back = String(body.layer || "").startsWith("B.");
+    const bounds = [
+      x0 / 1000,
+      -y1 / 1000,
+      back ? bottom - PLACEHOLDER_HEIGHT_M : top,
+      x1 / 1000,
+      -y0 / 1000,
+      back ? bottom : top + PLACEHOLDER_HEIGHT_M,
+    ];
+    feature.bounds = bounds;
+    feature.placeholder = true;
+    primitives.push(boxPrimitive(bounds, featureId));
+  }
+  if (!primitives.length) return;
+  for (const primitive of mergePrimitivesByMaterial(primitives)) {
+    renderer.addPrimitive(primitive, {
+      kind: "component",
+      layerId: 0,
+      material: primitive.material,
+      color: primitive.material.baseColor,
+      opacityScale: 0.3,
+      translucent: true,
+      placeholder: true,
+    });
+  }
+}
+
+function boxPrimitive([x0, y0, z0, x1, y1, z1], featureId) {
+  const faces = [
+    [[0, 0, 1], [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]]],
+    [[0, 0, -1], [[x0, y1, z0], [x1, y1, z0], [x1, y0, z0], [x0, y0, z0]]],
+    [[1, 0, 0], [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]]],
+    [[-1, 0, 0], [[x0, y1, z0], [x0, y0, z0], [x0, y0, z1], [x0, y1, z1]]],
+    [[0, 1, 0], [[x1, y1, z0], [x0, y1, z0], [x0, y1, z1], [x1, y1, z1]]],
+    [[0, -1, 0], [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]]],
+  ];
+  const position = new Float32Array(24 * 3);
+  const normal = new Float32Array(24 * 3);
+  const indices = new Uint32Array(36);
+  faces.forEach(([faceNormal, corners], face) => {
+    corners.forEach((corner, index) => {
+      position.set(corner, (face * 4 + index) * 3);
+      normal.set(faceNormal, (face * 4 + index) * 3);
+    });
+    const first = face * 4;
+    indices.set([first, first + 1, first + 2, first, first + 2, first + 3], face * 6);
+  });
+  return {
+    position,
+    normal,
+    netId: new Uint32Array(24),
+    objectFeatureId: new Uint32Array(24).fill(featureId),
+    indices,
+    material: PLACEHOLDER_MATERIAL,
+    bounds: [x0, y0, z0, x1, y1, z1],
+  };
+}
 
 
 
@@ -1314,6 +1435,47 @@ function layerColor(layer) {
   return copperLayerColor(layer, scene.copperLayers);
 }
 
+const DEFAULT_BARREL_COLOR = [0.55, 0.35, 0.16, 0.78];
+const FINISH_COLORS = {
+  gold: [0.83, 0.69, 0.37, 1],
+  silver: [0.74, 0.75, 0.77, 1],
+  copper: [0.76, 0.47, 0.28, 1],
+};
+
+/** Exposed outer copper by surface finish; gold (ENIG, KiCad's default look) when unknown. */
+function finishColor() {
+  const finish = String(topology?.board?.stackup?.copper_finish || "").toLowerCase();
+  if (/hasl|hal\b|tin|silver|lead/.test(finish)) return FINISH_COLORS.silver;
+  if (/osp|bare|none/.test(finish)) return FINISH_COLORS.copper;
+  return FINISH_COLORS.gold;
+}
+
+function isOuterCopper(layer) {
+  const name = String(layer?.name || "");
+  const layers = scene.copperLayers;
+  return Boolean(name) && (name === layers[0]?.name || name === layers[layers.length - 1]?.name);
+}
+
+// Separation at which copper has fully turned to layer colours.
+const LAYER_COLOR_SEPARATION = 0.25;
+
+/**
+ * 1 for KiCad-like copper, 0 for layer colours. Opening the stackup blends to
+ * layer colours, so separated layers stay tell-apart; 2D always uses them.
+ */
+function copperRealism() {
+  if (!state.realisticColors || state.mode === "layer") return 0;
+  return 1 - clamp(state.separation / LAYER_COLOR_SEPARATION, 0, 1);
+}
+
+function copperColor(layer) {
+  const realistic = isOuterCopper(layer) ? finishColor() : FINISH_COLORS.copper;
+  return mixColor(layerColor(layer), realistic, copperRealism());
+}
+
+function mixColor(from, to, amount) {
+  return from.map((value, index) => value + (to[index] - value) * amount);
+}
 
 function frame(now, token = activeViewerToken) {
   if (token !== activeViewerToken || !renderer || !camera) return;
@@ -1337,6 +1499,7 @@ function frame(now, token = activeViewerToken) {
   camera.update(dt);
   renderer.resize();
   const layerZOffsets = stackupOffsets();
+  if (scene.copperRealism !== copperRealism()) applyCopperColors();
   for (const entry of renderer.entries) entry.layerOffset = layerZOffsets[entry.layerId] || 0;
   updateCompareTransition(now);
   compareOffsets = updateCompareLayout(now);
@@ -1362,6 +1525,8 @@ function frame(now, token = activeViewerToken) {
     visibleLayers,
     showBoard: state.showBoard,
     showComponents: state.showComponents,
+    // Paste is a fabrication layer: shown on the assembled board only.
+    showPaste: state.separation === 0,
     componentOpacity: clamp(1 - state.separation / 0.1, 0, 1),
     boardOpacity: emphasizedNetIds().size ? 0.34 : 1 - state.separation * 0.72,
     isolateNet: state.isolateNet,
@@ -2109,6 +2274,29 @@ function setShowComponents(visible) {
   state.showComponents = Boolean(visible);
   state.savedShowComponents = state.showComponents;
   syncNetIsolationControls();
+}
+
+function setShowPlaceholders(visible) {
+  state.showPlaceholders = Boolean(visible);
+  renderer?.setPlaceholdersVisible(state.showPlaceholders);
+  notifyViewStateChange();
+}
+
+/** KiCad-like copper (surface finish outside, bare copper inside) or per-layer colours. */
+function setRealisticColors(enabled) {
+  state.realisticColors = Boolean(enabled);
+  applyCopperColors();
+  notifyViewStateChange();
+}
+
+function applyCopperColors() {
+  if (!renderer) return;
+  const layers = new Map(scene.layers.map((layer) => [Number(layer.id), layer]));
+  for (const entry of renderer.entries) {
+    if (entry.kind === "copper") entry.color = copperColor(layers.get(Number(entry.layerId)));
+  }
+  renderer.setBarrelColor(mixColor(DEFAULT_BARREL_COLOR, [...finishColor().slice(0, 3), 0.78], copperRealism()));
+  scene.copperRealism = copperRealism();
 }
 
 function setSeparation(value) {
