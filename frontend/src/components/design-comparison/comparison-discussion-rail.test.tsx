@@ -63,6 +63,19 @@ afterEach(() => {
     cleanup();
 });
 
+describe("ComparisonDiscussionRail report", () => {
+    it("offers the discussion as a download once there is one", () => {
+        render(<ComparisonDiscussionRail {...baseProps} />);
+        const link = screen.getByRole("link", { name: /Download discussion/ });
+        expect(link.getAttribute("href")).toBe(
+            "/api/projects/p1/comparison-comments/report?base=aaa&compare=bbb&domain=PCB",
+        );
+        cleanup();
+        render(<ComparisonDiscussionRail {...baseProps} comments={[]} />);
+        expect(screen.queryByRole("link", { name: /Download discussion/ })).toBeNull();
+    });
+});
+
 describe("ComparisonDiscussionRail addReply", () => {
     it("re-enables the reply button after a network rejection", async () => {
         mockedFetch.mockRejectedValue(new Error("network down"));

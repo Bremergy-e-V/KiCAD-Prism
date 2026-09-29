@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { CheckCircle2, MessageSquare, Reply, Send, X } from "lucide-react";
+import { CheckCircle2, Download, MessageSquare, Reply, Send, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ReplyTrackerState } from "@/features/tracker-integration/reply-tracker-state";
 import { TrackerIssueAction } from "@/features/tracker-integration/tracker-issue-action";
@@ -14,6 +14,11 @@ import {
 } from "@/features/rich-comments/rich-composer";
 
 const EMPTY_DRAFT: RichComposerState = { markdown: "", uploading: false };
+
+export function discussionReportUrl(projectId: string, base: string, compare: string, domain: CommentContext): string {
+    const query = new URLSearchParams({ base, compare, domain });
+    return `/api/projects/${encodeURIComponent(projectId)}/comparison-comments/report?${query}`;
+}
 
 interface DiscussionAnchor {
     id: string;
@@ -174,6 +179,16 @@ export function ComparisonDiscussionRail({
             )}
 
             <div className="min-h-0 flex-1 space-y-3 overflow-auto p-3">
+                {comments.length > 0 && (
+                    <a
+                        href={discussionReportUrl(projectId, base, compare, domain)}
+                        download
+                        className="flex items-center justify-end gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                    >
+                        <Download className="h-3 w-3" />
+                        Download discussion (Markdown + snips)
+                    </a>
+                )}
                 {!comments.length && (
                     <p className="py-8 text-center text-xs text-muted-foreground">
                         No discussion threads for this comparison yet.
