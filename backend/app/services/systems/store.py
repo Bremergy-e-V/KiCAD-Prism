@@ -669,6 +669,50 @@ class SystemStore:
         if audit_kind:
             change.audit(audit_kind, {"reviewId": review_id, "status": status, **dict(payload or {})})
 
+    def set_item_decision(
+        self, change: Mutation, review_id: str, item_id: str, decision: str,
+        payload: Mapping[str, Any] | None,
+    ) -> None:
+        self.conn.execute(
+            """
+            UPDATE system_review_items SET decision = %s, decision_payload = %s
+            WHERE id = %s AND review_id = %s
+            """,
+            (decision, None if payload is None else Jsonb(dict(payload)), item_id, review_id),
+        )
+        change.audit(
+            "review_item_decided",
+            {"reviewId": review_id, "itemId": item_id, "decision": decision,
+             "payload": None if payload is None else dict(payload)},
+        )
+
+    def update_row_end(
+        self, change: Mutation, link_id: str, row_id: str, end: str, *,
+        pin: Optional[str] = None, nets: Sequence[str],
+    ) -> None:
+        """Set one end's accepted net set, and optionally its pin (§7.1)."""
+        if end not in ("a", "b"):
+            raise Invalid("end must be 'a' or 'b'")
+        try:
+            self.conn.execute(
+                f"""
+                UPDATE system_link_rows
+                SET pin_{end} = COALESCE(%s, pin_{end}), net_{end} = %s
+                WHERE id = %s AND link_id = %s
+                """,
+                (pin, Jsonb(_nets(nets)), row_id, link_id),
+            )
+        except Exception as error:
+            if getattr(error, "sqlstate", None) == "23505":
+                raise Conflict("the remapped row would duplicate another row") from None
+            raise
+
+    def delete_rows(self, change: Mutation, link_id: str, row_ids: Sequence[str]) -> None:
+        self.conn.execute(
+            "DELETE FROM system_link_rows WHERE link_id = %s AND id = ANY(%s)",
+            (link_id, list(row_ids)),
+        )
+
     def get_review(self, system_id: str, review_id: str) -> dict:
         row = self.conn.execute(
             "SELECT * FROM system_reviews WHERE system_id = %s AND id = %s", (system_id, review_id)
