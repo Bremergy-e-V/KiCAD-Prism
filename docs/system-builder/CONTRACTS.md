@@ -1,6 +1,6 @@
 # System Builder — frozen contracts
 
-**Version 1.1 · 2026-09-27 · tickets SYS-00, SYS-04.** This is the source of truth for
+**Version 1.2 · 2026-09-29 · tickets SYS-00, SYS-04, SYS-05.** This is the source of truth for
 System Builder P1
 ([issue #166](https://github.com/krishna-swaroop/KiCAD-Prism/issues/166)).
 Implementation tickets build against this version. Changing a rule here is a
@@ -784,3 +784,4 @@ F0 plus one change. The machine-readable expectations are in
 | 1.0 (pre-merge) | 2026-09-27 | §3: `digest` also omits `projectId` and `commit`; otherwise two commits could never share a digest as §3 requires (found in SYS-02). |
 | 1.0 (pre-merge) | 2026-09-27 | Review of #407: `connectedInterfaceDigest` removed from the §3 example (never stored); `#` references excluded; §4.1 field matching defined; a connector-level item suppresses row items on its end (§6.1); rebind listing criteria defined (§6.4); `accept` on `connector_changed` refreshes row net baselines and refuses vanished pads (§7.1). |
 | 1.1 | 2026-09-27 | SYS-04: response shapes and write rules (§8.4); deleted projects are unresolved, not restricted; restricted-board rules for system deletion, cascades and history (§8.2). No drift rule changed, so no fixture step needs re-running. |
+| 1.2 | 2026-09-29 | SYS-05: §6 fixes what the rules left open — the audit kind of each silent change, item order, unannotated parts never resolving a port, "bound" meaning resolved by key, and `netOverlap` 1.0 for an end with no rows. No rule changed; every §11 step re-ran and still matches. |
