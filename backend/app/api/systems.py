@@ -127,7 +127,10 @@ class DecisionRequest(BaseModel):
 
 
 class RebaseRequest(BaseModel):
-    commit: str = Field(min_length=7, max_length=40)
+    """A board takes ``commit``; an assembly takes ``revisionId`` (P2 §7.1)."""
+
+    commit: Optional[str] = Field(default=None, min_length=7, max_length=40)
+    revisionId: Optional[str] = Field(default=None, min_length=1, max_length=200)
 
 
 class SnapshotRequest(BaseModel):
@@ -538,6 +541,13 @@ async def rebase_instance(
     user: AuthenticatedUser = Depends(require_viewer),
 ):
     version = _expected_version(request, system_id)
+    if (body.commit is None) == (body.revisionId is None):
+        raise HTTPException(status_code=422, detail="give exactly one of commit or revisionId")
+    if body.revisionId is not None:
+        result = await _run(system_id, lambda: system_service.service.rebase_child(
+            _caller(user), system_id, version, instance_id, body.revisionId,
+        ))
+        return _respond(result, response)
     state, outcome = await _run(system_id, lambda: system_service.service.rebase(
         _caller(user), system_id, version, instance_id, body.commit,
     ))

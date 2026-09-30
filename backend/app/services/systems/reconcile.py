@@ -12,7 +12,7 @@ Every function here runs inside a caller's ``SystemStore.mutation``.
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from app.services.systems import csv_import, drift, exports, exposure
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
@@ -39,9 +39,13 @@ def _open_source_review(store: SystemStore, system_id: str, review_id: str) -> d
     review = store.get_review(system_id, review_id)
     if review["status"] != "open":
         raise Conflict(f"review is {review['status']}")
-    if review["kind"] != "source_update":
+    if review["kind"] not in ("source_update", "child_update"):
         raise Conflict(f"a {review['kind']} review has no item decisions")
     return review
+
+
+# child_update candidates come from the catalog, which the service reads: revision ID -> interface artifact.
+ChildLoader = Callable[[str], Optional[dict]]
 
 
 class StaleReview(Exception):
@@ -63,7 +67,13 @@ def is_stale(store: SystemStore, review: Mapping[str, Any]) -> bool:
     return drift.basis(store.list_links(review["system_id"]), review["instance_id"]) != recorded
 
 
-def candidate_interface(store: SystemStore, review: Mapping[str, Any]) -> dict:
+def candidate_interface(store: SystemStore, review: Mapping[str, Any],
+                        child_loader: Optional[ChildLoader] = None) -> dict:
+    if review["kind"] == "child_update":
+        found = child_loader(review["to_commit"]) if child_loader else None
+        if found is None:
+            raise Conflict("the review's candidate revision cannot be read from the catalog")
+        return found
     instance = store.get_instance(review["system_id"], review["instance_id"])
     found = store.get_interface(instance["project_id"], review["to_commit"], EXTRACTOR_VERSION)
     if found is None:  # detection extracted it before opening the review
@@ -127,7 +137,7 @@ def _validate(store: SystemStore, review: Mapping[str, Any], item: Mapping[str, 
 
 
 def decide(store: SystemStore, change: Mutation, review_id: str, item_id: str, decision: str,
-           payload: Optional[Mapping[str, Any]]) -> dict:
+           payload: Optional[Mapping[str, Any]], child_loader: Optional[ChildLoader] = None) -> dict:
     """Record a decision; apply the review if it was the last undecided item."""
 
     review = store.get_review(change.system_id, review_id)
@@ -139,7 +149,7 @@ def decide(store: SystemStore, change: Mutation, review_id: str, item_id: str, d
         raise NotFound("Review item not found")
     if is_stale(store, review):
         raise StaleReview(review)
-    candidate = candidate_interface(store, review)
+    candidate = candidate_interface(store, review, child_loader)
     _validate(store, review, item, decision, dict(payload or {}), candidate)
     store.set_item_decision(change, review_id, item_id, decision, payload)
     review = store.get_review(change.system_id, review_id)
@@ -192,6 +202,11 @@ def apply_review(store: SystemStore, change: Mutation, review: Mapping[str, Any]
             store.update_row_end(change, link["id"], row["id"], end,
                                  pin=pad if decision == "remap" else None, nets=pins.get(pad, []))
 
+    if review["kind"] == "child_update":
+        store.set_catalog_revision(change, review["instance_id"], review["to_commit"], kind="review_applied",
+                                   payload={"reviewId": review["id"]})
+        store.set_review_status(change, review["id"], "applied")
+        return
     exports.refresh_after_advance(store, change, review["instance_id"], candidate)
     store.set_baseline(change, review["instance_id"], review["to_commit"], kind="review_applied",
                        payload={"reviewId": review["id"]})
@@ -204,7 +219,10 @@ def keep_pinned(store: SystemStore, change: Mutation, review_id: str) -> dict:
     review = _open_source_review(store, change.system_id, review_id)
     store.set_review_status(change, review_id, "kept_pinned", audit_kind="review_kept_pinned",
                             payload={"instanceId": review["instance_id"], "to": review["to_commit"]})
-    store.update_instance(change, review["instance_id"], pinned=True)
+    if review["kind"] == "child_update":
+        store.set_follow(change, review["instance_id"], "pinned")
+    else:
+        store.update_instance(change, review["instance_id"], pinned=True)
     return store.get_review(change.system_id, review_id)
 
 

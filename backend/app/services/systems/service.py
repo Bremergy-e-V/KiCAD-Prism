@@ -25,8 +25,8 @@ from typing import Any, Callable, Collection, ContextManager, Iterator, Mapping,
 
 from app.core.roles import Role
 from app.services.systems import (
-    csv_import, drift, exports as exports_module, exposure, generators, hierarchy, icd, manifest as manifest_io,
-    reconcile, redaction, sources, validation, visibility,
+    child_drift, csv_import, drift, exports as exports_module, exposure, generators, hierarchy, icd,
+    manifest as manifest_io, reconcile, redaction, sources, validation, visibility,
 )
 from app.services.systems.manifest_schema import digests as manifest_digests
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
@@ -260,6 +260,13 @@ class SystemService:
         open_reviews = store.list_reviews(system_id, status="open")
         exports = store.list_exports(system_id)
         report = self._validate(store, system_id, instances, links, interfaces, job_state, open_reviews, exports)
+        catalog_docs = [self._catalog_instance_doc(i) for i in store.list_instances(system_id, kinds=("assembly", "module"))]
+        report = validation.with_findings(report, validation.child_findings([
+            {"instanceId": doc["id"], "releaseStatus": doc["catalog"]["releaseStatus"],
+             "openReviewCount": doc["catalog"]["openReviewCount"],
+             "blocked": (store.get_source_check(doc["id"]) or {}).get("last_outcome") == "advance_blocked"}
+            for doc in catalog_docs
+        ]))
         review_rows = sorted({rid for review in open_reviews for item in review["items"] for rid in item["row_ids"]})
         return {
             "system": dict(system),
@@ -268,7 +275,7 @@ class SystemService:
                                    overrides.get(i["id"], {}),
                                    job_state.get(artifact_key(i["project_id"], i["baseline_commit"])))
                 for i in instances
-            ] + [self._catalog_instance_doc(i) for i in store.list_instances(system_id, kinds=("assembly", "module"))],
+            ] + catalog_docs,
             "links": [self._link_doc(link, interfaces, overrides) for link in links],
             "exports": [self._export_doc(export, interfaces, overrides) for export in exports],
             "openReviewCount": system["openReviewCount"],
@@ -638,6 +645,73 @@ class SystemService:
             logger.exception("Could not read catalog revision %s", revision_id)
             return None
 
+    def _child_interface(self, revision_id: str) -> Optional[dict]:
+        """reconcile.ChildLoader: a catalog revision's exports as an interface artifact."""
+        revision = self._catalog_revision(revision_id)
+        return exports_module.as_interface(revision.get("interface")) if revision else None
+
+    def advance_child(
+        self, actor: str, system_id: str, instance_id: str, revision_id: str, *, auto_kind: str,
+        expected_version: Optional[int] = None,
+    ) -> dict:
+        """Evaluate one catalog revision for one assembly instance and apply §7.2.
+
+        Shared by the release trigger (``child_auto_advanced``) and a manual
+        rebase (``child_rebased``). Outcomes: ``at_revision``, ``auto_advanced``,
+        ``review_opened``, ``review_current`` or ``advance_blocked`` (§5.3
+        limits; reported as SYS-V15).
+        """
+
+        revision = self._catalog_revision(revision_id)
+        if revision is None:
+            raise NotFound("Catalog revision not found")
+        with self._tx() as store:
+            instance = store.get_instance(system_id, instance_id)
+            if instance.get("kind") != "assembly":
+                raise Invalid("only assembly instances take catalog revisions")
+            if revision["componentId"] != instance["catalog_component_id"]:
+                raise Invalid("the revision belongs to another component")
+            if instance["catalog_revision_id"] == revision_id:
+                return {"outcome": "at_revision", "reviewId": None}
+            open_review = store.open_source_review(instance_id)
+            if open_review and open_review["to_commit"] == revision_id:
+                return {"outcome": "review_current", "reviewId": open_review["id"]}
+            # A revision that would break the hierarchy limits is never advanced to (§5.3).
+            candidate = {**instance, "catalog_revision_id": revision_id}
+            others = [i for i in store.list_instances(system_id, kinds=SystemStore.ALL_KINDS) if i["id"] != instance_id]
+            try:
+                hierarchy.resolve(system_id, others + [candidate], self._child_loader(store))
+            except hierarchy.HierarchyError as error:
+                store.record_source_check(instance_id, tip_commit=None, checked_commit=None,
+                                          outcome="advance_blocked")
+                logger.info("Not advancing %s to %s: %s", instance_id, revision_id, error)
+                return {"outcome": "advance_blocked", "reviewId": None, "reason": error.code}
+        with self._tx() as store:
+            with store.mutation(system_id, expected_version=expected_version, actor=actor) as change:
+                current = store.get_instance(system_id, instance_id)
+                outcome, review_id = child_drift.apply_child_evaluation(store, change, current, revision,
+                                                                        auto_kind=auto_kind)
+            store.record_source_check(instance_id, tip_commit=None, checked_commit=None, outcome=outcome)
+        return {"outcome": outcome, "reviewId": review_id, "version": change.version}
+
+    def rebase_child(self, caller: Caller, system_id: str, version: int, instance_id: str,
+                     revision_id: str) -> Result:
+        """``POST …/rebase`` with ``revisionId`` for an assembly instance (§7.1)."""
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            self._open_instance(store, system_id, instance_id, caller)
+        body = self.advance_child(caller.actor, system_id, instance_id, revision_id, auto_kind="child_rebased",
+                                  expected_version=version)
+        if body["outcome"] == "at_revision":
+            raise Conflict("the instance already pins this revision")
+        if body["outcome"] == "advance_blocked":
+            raise Invalid(f"{body.get('reason')}: the revision would break the hierarchy limits")
+        with self._tx() as store:
+            row = store.get_instance(system_id, instance_id)
+            now = store.get_system(system_id)["version"]
+        return Result({"outcome": body["outcome"], "reviewId": body["reviewId"], "instance": self._instance_row(row)},
+                      system_id, int(now))
+
     def _catalog_refs(self, store: SystemStore, system_id: str) -> dict[str, dict]:
         """Pinned catalog revision per assembly/module instance, for the manifest."""
         refs = {}
@@ -674,6 +748,7 @@ class SystemService:
                 "latestReleasedRevisionId": latest,
                 "systemId": ((revision or {}).get("sourceRef") or {}).get("systemId"),
                 "snapshotName": ((revision or {}).get("sourceRef") or {}).get("snapshotName"),
+                "openReviewCount": int(((revision or {}).get("sourceRef") or {}).get("openReviewCount") or 0),
             },
         }
 
@@ -1130,6 +1205,13 @@ class SystemService:
                 if current["status"] != "open" or not reconcile.is_stale(store, current):
                     return  # someone else already re-evaluated it
                 instance = store.get_instance(review["system_id"], review["instance_id"])
+                if current["kind"] == "child_update":
+                    revision = self._catalog_revision(current["to_commit"])
+                    if revision is None:
+                        raise Conflict("the review's candidate revision cannot be read from the catalog")
+                    child_drift.apply_child_evaluation(store, change, instance, revision,
+                                                       auto_kind="child_auto_advanced")
+                    return
                 candidate = reconcile.candidate_interface(store, current)
                 apply_evaluation(store, change, instance, current["to_commit"], candidate,
                                  auto_kind="baseline_auto_advanced")
@@ -1143,7 +1225,8 @@ class SystemService:
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
                 self._open_review_instance(store, system_id, review_id, caller)
                 self._require_visible_import_item(store, system_id, review_id, item_id, caller)
-                review = reconcile.decide(store, change, review_id, item_id, decision, payload)
+                review = reconcile.decide(store, change, review_id, item_id, decision, payload,
+                                          child_loader=self._child_interface)
                 restricted = self._restricted_instances(store, system_id, caller)
                 body = self._review_doc(store, review, False, restricted)
         return Result(body, system_id, change.version)

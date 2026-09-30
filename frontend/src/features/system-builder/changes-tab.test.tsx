@@ -124,4 +124,27 @@ describe("ChangesTab", () => {
     render(<ChangesTab systemId="sys_1" document={systemDocument([obc])} etag="e" canEdit user={null} reload={vi.fn()} onNavigate={vi.fn()} />);
     expect(await screen.findByText(/Nothing needs review/)).toBeTruthy();
   });
+  it("shows a subsystem review by revision and offers the latest released revision", async () => {
+    const cndh = instance("CNDH", { kind: "assembly", projectId: null, baselineCommit: null, trackedRef: null, pinned: true,
+      updateAvailable: true, catalog: { componentId: "cmp", revisionId: "rev1", follow: "pinned", version: 1,
+        releaseStatus: "released", identity: "IPN", latestReleasedRevisionId: "rev2", systemId: "sys_c", snapshotName: "CDR" } });
+    const child: Review = { ...review, id: "rv2", kind: "child_update", instanceId: cndh.id, fromCommit: "rev1", toCommit: "rev2",
+      pendingChanges: { silent: [] }, items: [item({})] };
+    const calls: [string, RequestInit][] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
+      calls.push([url, init]);
+      const body = url.includes("/reviews") ? [child]
+        : url.includes("/history") ? { nextCursor: null, events: [] }
+          : { outcome: "auto_advanced", reviewId: null, instance: {} };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json", ETag: '"sys:sys_1:3"' } });
+    }));
+    render(<ChangesTab systemId="sys_1" document={systemDocument([cndh])} etag='"sys:sys_1:2"' canEdit user={null}
+      reload={vi.fn(async () => undefined)} onNavigate={vi.fn()} />);
+    expect(await screen.findByText(/revision v1/)).toBeTruthy();
+    expect(screen.queryByText(/rev1/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Take latest released" }));
+    await waitFor(() => expect(calls.some(([url]) => url.endsWith("/rebase"))).toBe(true));
+    const [, init] = calls.find(([url]) => url.endsWith("/rebase"))!;
+    expect(JSON.parse(String(init.body))).toEqual({ revisionId: "rev2" });
+  });
 });

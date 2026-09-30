@@ -244,6 +244,13 @@ export function getValidation(systemId: string) {
   return versioned<ValidationReport>(path(systemId, "validation"));
 }
 
+/** P2 §7.1: move an assembly instance to a catalog revision (auto-advance or a child review). */
+export function rebaseSubsystem(systemId: string, etag: string, instanceId: string, revisionId: string) {
+  return versioned<{ outcome: string; reviewId: string | null; instance: InstanceRow }>(
+    path(systemId, "instances", instanceId, "rebase"), { method: "POST", etag, body: json({ revisionId }) },
+    "Could not move the subsystem");
+}
+
 export async function rebaseInstance(systemId: string, etag: string, instanceId: string, commit: string) {
   const result = await send<
     QueuedJob | { outcome: "auto_advanced" | "review_opened" | string; reviewId: string | null; instance: InstanceRow }

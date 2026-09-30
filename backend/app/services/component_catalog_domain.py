@@ -1966,6 +1966,25 @@ class ComponentCatalogDomainService:
             conn.commit()
         return self.get_component(component_id) or {}
 
+    def _notify_system_release(self, component_id: str, release_status: str) -> None:
+        """A released module/assembly revision advances the parent systems following it (CONTRACTS_P2 §7.1).
+
+        After the commit, best effort: a queue problem never fails the release.
+        """
+        if release_status != "released":
+            return
+        try:
+            with self._connect() as conn:
+                row = conn.execute("SELECT kind, released_revision_id FROM components WHERE id = %s",
+                                   (component_id,)).fetchone()
+            if not row or str(row["kind"]) not in system_items.SYSTEM_KINDS or not row["released_revision_id"]:
+                return
+            from app.services.systems.child_drift import enqueue_child_check
+
+            enqueue_child_check(component_id, str(row["released_revision_id"]))
+        except Exception as error:  # noqa: BLE001 - best effort by contract; parents can rebase by hand
+            logger.warning("Could not queue the system child check for %s: %s", component_id, error)
+
     def set_release_status(
         self,
         component_id: str,
@@ -1993,6 +2012,7 @@ class ComponentCatalogDomainService:
                 expected_manifest_hash=expected_manifest_hash,
             )
             conn.commit()
+        self._notify_system_release(component_id, release_status)
         return self.get_component(component_id) or {}
 
     def deactivate_component(self, component_id: str, *, actor: str = "", reason: str = "") -> bool:
