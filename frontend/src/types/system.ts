@@ -135,10 +135,17 @@ export interface LinkRow {
   redactedEnds: ("a" | "b")[];
 }
 
+/** CONTRACTS_P2 §16: P1 links are `unspecified`. */
+export type LinkType = "unspecified" | "b2b";
+
 export interface SystemLink {
   id: string;
   name: string;
   harness: string | null;
+  /** Absent in documents frozen before link types existed. */
+  type?: LinkType;
+  /** `b2b` only: the mated pair's stack height from the datasheet (§16.2). */
+  stackHeightMm?: number | null;
   updatedAt: string;
   a: LinkEnd;
   b: LinkEnd;

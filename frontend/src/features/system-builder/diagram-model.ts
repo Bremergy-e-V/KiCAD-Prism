@@ -58,6 +58,8 @@ export interface DiagramEdgeData extends Record<string, unknown> {
   wire: Pick<Wire, "kind" | "lane" | "loopOffset">;
   label: string;
   harness: string | null;
+  /** CONTRACTS_P2 §16: mated connectors draw heavier. */
+  b2b: boolean;
 }
 
 export interface DiagramEdge {
@@ -205,6 +207,7 @@ export function buildDiagram(
         wire: { kind: wire.kind, lane: wire.lane, loopOffset: wire.loopOffset },
         label: edgeLabel(link),
         harness: link.harness,
+        b2b: link.type === "b2b",
       },
     };
   });
@@ -249,4 +252,14 @@ export function subsystemContents(occurrences: SystemOccurrence[], instanceId: s
   return occurrences.flatMap((o) => (o.path.startsWith(prefix)
     ? [{ path: o.path, label: o.labels[o.labels.length - 1], kind: o.kind, depth: o.depth, restricted: o.restricted }]
     : []));
+}
+
+/** The diagram's link mode (CONTRACTS_P2 §16.2): **B** arms the next drawn link as board-to-board, Esc disarms. */
+export type LinkMode = "b2b" | null;
+
+export function nextLinkMode(key: string, current: LinkMode, typing: boolean): LinkMode {
+  if (typing) return current;
+  if (key === "Escape") return null;
+  if (key === "b" || key === "B") return current === "b2b" ? null : "b2b";
+  return current;
 }

@@ -88,11 +88,15 @@ class CreateLinkRequest(BaseModel):
     b: LinkEnd
     name: str = Field(default="", max_length=200)
     harness: Optional[str] = Field(default=None, max_length=200)
+    type: Literal["unspecified", "b2b"] = "unspecified"
+    stackHeightMm: Optional[float] = Field(default=None, gt=0, lt=1000)
 
 
 class UpdateLinkRequest(BaseModel):
     name: Optional[str] = Field(default=None, max_length=200)
     harness: Optional[str] = Field(default=None, max_length=200)
+    type: Optional[Literal["unspecified", "b2b"]] = None
+    stackHeightMm: Optional[float] = Field(default=None, gt=0, lt=1000)
 
 
 class CreateExportRequest(BaseModel):
@@ -495,7 +499,7 @@ async def create_link(
         raise HTTPException(status_code=422, detail="both link ends are the same port")
     result = await _run(system_id, lambda: system_service.service.create_link(
         _caller(user), system_id, version, a=body.a.as_end(), b=body.b.as_end(),
-        name=body.name, harness=body.harness,
+        name=body.name, harness=body.harness, link_type=body.type, stack_height_mm=body.stackHeightMm,
     ))
     return _respond(result, response, 201)
 
@@ -509,6 +513,8 @@ async def update_link(
     fields = {key: getattr(body, key) for key in body.model_fields_set}
     if "name" in fields and fields["name"] is None:
         fields["name"] = ""
+    if fields.get("type", "") is None:
+        raise HTTPException(status_code=422, detail="type cannot be null")
     result = await _run(system_id, lambda: system_service.service.update_link(
         _caller(user), system_id, version, link_id, fields,
     ))

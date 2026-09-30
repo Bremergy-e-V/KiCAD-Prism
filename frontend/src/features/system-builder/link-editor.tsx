@@ -17,7 +17,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { deleteLink, getInstanceInterface, replaceRows, updateLink } from "@/lib/systems-api";
-import type { Finding, SystemDocument, SystemInstance, SystemLink } from "@/types/system";
+import type { Finding, LinkType, SystemDocument, SystemInstance, SystemLink } from "@/types/system";
 
 import { FindingsAlert } from "./findings-ui";
 import { GeneratorPanel } from "./generator-panel";
@@ -35,6 +35,7 @@ import {
   type PinFact,
 } from "./link-model";
 import { LinkRowsTable, type RowView } from "./link-rows-table";
+import { MatingPanel } from "./mating-panel";
 import { comparePads } from "./pads";
 import type { useSystemMutation } from "./use-system-mutation";
 
@@ -92,17 +93,29 @@ export function endLabel(document: SystemDocument, link: SystemLink, end: "a" | 
   return `${label} ${link[end].port?.reference ?? "restricted"}${physical ? ` → ${physical}` : ""}`;
 }
 
+interface DetailsFields {
+  name: string;
+  harness: string | null;
+  type: LinkType;
+  stackHeightMm: number | null;
+}
+
 interface DetailsDialogProps {
   link: SystemLink;
   busy: boolean;
   onClose: () => void;
-  onSave: (fields: { name: string; harness: string | null }) => Promise<boolean>;
+  onSave: (fields: DetailsFields) => Promise<boolean>;
 }
 
 function DetailsDialog({ link, busy, onClose, onSave }: DetailsDialogProps) {
   const [name, setName] = useState(link.name);
   const [harness, setHarness] = useState(link.harness ?? "");
-  const unchanged = name.trim() === link.name && (harness.trim() || null) === link.harness;
+  const [type, setType] = useState<LinkType>(link.type ?? "unspecified");
+  const [stack, setStack] = useState(link.stackHeightMm ? String(link.stackHeightMm) : "");
+  const stackValue = type === "b2b" && stack.trim() ? Number(stack) : null;
+  const stackInvalid = stackValue !== null && !(stackValue > 0 && stackValue < 1000);
+  const unchanged = name.trim() === link.name && (harness.trim() || null) === link.harness
+    && type === (link.type ?? "unspecified") && stackValue === (link.stackHeightMm ?? null);
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-md">
@@ -116,7 +129,7 @@ function DetailsDialog({ link, busy, onClose, onSave }: DetailsDialogProps) {
           className="grid gap-4"
           onSubmit={async (event) => {
             event.preventDefault();
-            if (await onSave({ name: name.trim(), harness: harness.trim() || null })) onClose();
+            if (await onSave({ name: name.trim(), harness: harness.trim() || null, type, stackHeightMm: stackValue })) onClose();
           }}
         >
           <div className="grid gap-2">
@@ -127,9 +140,27 @@ function DetailsDialog({ link, busy, onClose, onSave }: DetailsDialogProps) {
             <Label htmlFor="link-harness">Harness</Label>
             <Input id="link-harness" value={harness} maxLength={200} placeholder="None" onChange={(event) => setHarness(event.target.value)} />
           </div>
+          <div className="grid gap-2">
+            <Label htmlFor="link-type">Type</Label>
+            <Select value={type} onValueChange={(value) => setType(value as LinkType)}>
+              <SelectTrigger id="link-type" aria-label="Link type" className="h-9"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unspecified">Unspecified</SelectItem>
+                <SelectItem value="b2b">Board-to-board (mated connectors)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {type === "b2b" && (
+            <div className="grid gap-2">
+              <Label htmlFor="link-stack">Stack height (mm)</Label>
+              <Input id="link-stack" inputMode="decimal" value={stack} placeholder="From the datasheet; optional"
+                aria-invalid={stackInvalid} onChange={(event) => setStack(event.target.value)} />
+              {stackInvalid && <p className="text-xs text-destructive">Enter a height between 0 and 1000 mm.</p>}
+            </div>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
-            <Button type="submit" disabled={busy || unchanged}>{busy ? "Saving…" : "Save"}</Button>
+            <Button type="submit" disabled={busy || unchanged || stackInvalid}>{busy ? "Saving…" : "Save"}</Button>
           </DialogFooter>
         </form>
       </DialogContent>
@@ -274,6 +305,7 @@ export function LinkEditor({ systemId, document, link, etag, canEdit, findings, 
             <span aria-hidden>·</span>
             <span>{link.rows.length} {link.rows.length === 1 ? "pin" : "pins"}</span>
             {link.harness && <Badge variant="outline">Harness {link.harness}</Badge>}
+            {link.type === "b2b" && <Badge variant="secondary">Board-to-board</Badge>}
           </p>
         </div>
         {editable && (
@@ -302,6 +334,11 @@ export function LinkEditor({ systemId, document, link, etag, canEdit, findings, 
       </header>
 
       <FindingsAlert findings={linkIssues} />
+
+      {link.type === "b2b" && (
+        <MatingPanel systemId={systemId} etag={etag} document={document} link={link} editable={editable}
+          busy={busy !== null} run={run} />
+      )}
 
       {redacted && (
         <p className="text-sm text-muted-foreground">One end of this link is on a board you cannot see, so it cannot be edited here.</p>

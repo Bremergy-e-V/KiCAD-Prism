@@ -18,7 +18,11 @@ import type {
   ImportTarget,
   ImportUpload,
   InstanceInterface,
+  InstanceMating,
+  LinkType,
+  MatingAxis,
   OptionalRule,
+  PortMating,
   Review,
   ReviewStatus,
   RowSource,
@@ -192,13 +196,17 @@ export interface LinkEndInput {
 }
 
 export function createLink(
-  systemId: string, etag: string, input: { a: LinkEndInput; b: LinkEndInput; name?: string; harness?: string | null },
+  systemId: string, etag: string,
+  input: { a: LinkEndInput; b: LinkEndInput; name?: string; harness?: string | null; type?: LinkType },
 ) {
   return versioned<SystemLink>(path(systemId, "links"), { method: "POST", etag, body: json(input) },
     "Could not create the link");
 }
 
-export function updateLink(systemId: string, etag: string, linkId: string, fields: { name?: string; harness?: string | null }) {
+export function updateLink(
+  systemId: string, etag: string, linkId: string,
+  fields: { name?: string; harness?: string | null; type?: LinkType; stackHeightMm?: number | null },
+) {
   return versioned<SystemLink>(path(systemId, "links", linkId), { method: "PATCH", etag, body: json(fields) });
 }
 
@@ -369,4 +377,25 @@ export function previewImport(systemId: string, importId: string, maps: ImportMa
 export function commitImport(systemId: string, etag: string, importId: string, maps: ImportMaps) {
   return versioned<ImportCommitReport>(path(systemId, "imports", importId, "commit"),
     { method: "POST", etag, body: json(maps) }, "Could not commit the import");
+}
+
+// ---------------------------------------------------------------------------
+// Mating frames (CONTRACTS_P2 §15.3)
+
+export async function getMating(systemId: string, instanceId: string): Promise<InstanceMating> {
+  const { body } = await send<InstanceMating>(path(systemId, "instances", instanceId, "mating"), {}, "Could not load mating frames");
+  return body;
+}
+
+export function setMating(
+  systemId: string, etag: string, instanceId: string, portKey: string,
+  frame: { mode: "confirmed" } | { mode: "override"; axis: MatingAxis; quarterTurns: number },
+) {
+  return versioned<PortMating>(path(systemId, "instances", instanceId, "mating", portKey),
+    { method: "PUT", etag, body: json(frame) }, "Could not save the mating frame");
+}
+
+export function clearMating(systemId: string, etag: string, instanceId: string, portKey: string) {
+  return versioned<PortMating>(path(systemId, "instances", instanceId, "mating", portKey),
+    { method: "DELETE", etag }, "Could not clear the mating frame");
 }
