@@ -68,8 +68,17 @@ class OverrideRequest(BaseModel):
 
 
 class LinkEnd(BaseModel):
+    """A board port (``portKey``) or a subsystem export (``exportId``, P2 §6.1)."""
+
     instanceId: str = Field(min_length=1, max_length=200)
-    portKey: str = Field(min_length=1, max_length=2000)
+    portKey: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+    exportId: Optional[str] = Field(default=None, min_length=1, max_length=100)
+
+    def key(self) -> str:
+        return self.portKey or self.exportId or ""
+
+    def as_end(self) -> dict:
+        return {"instanceId": self.instanceId, "portKey": self.key()}
 
 
 class CreateLinkRequest(BaseModel):
@@ -415,10 +424,13 @@ async def create_link(
     user: AuthenticatedUser = Depends(require_viewer),
 ):
     version = _expected_version(request, system_id)
-    if body.a.instanceId == body.b.instanceId and body.a.portKey == body.b.portKey:
+    for end in (body.a, body.b):
+        if (end.portKey is None) == (end.exportId is None):
+            raise HTTPException(status_code=422, detail="each link end takes exactly one of portKey or exportId")
+    if body.a.instanceId == body.b.instanceId and body.a.key() == body.b.key():
         raise HTTPException(status_code=422, detail="both link ends are the same port")
     result = await _run(system_id, lambda: system_service.service.create_link(
-        _caller(user), system_id, version, a=body.a.model_dump(), b=body.b.model_dump(),
+        _caller(user), system_id, version, a=body.a.as_end(), b=body.b.as_end(),
         name=body.name, harness=body.harness,
     ))
     return _respond(result, response, 201)

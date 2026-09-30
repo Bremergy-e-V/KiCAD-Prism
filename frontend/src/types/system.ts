@@ -102,6 +102,8 @@ export interface LinkEnd {
   port: PortBaseline | null;
   resolved: boolean | null;
   exposed: boolean | null;
+  /** An end on a subsystem export: where it lands inside the child (CONTRACTS_P2 §6.1). */
+  export?: { name: string; reference: string | null; occurrence: string | null; description: string } | null;
 }
 
 export interface PinObservation {

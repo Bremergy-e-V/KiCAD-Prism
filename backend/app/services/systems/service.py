@@ -154,9 +154,18 @@ class SystemService:
             raise NotFound("Instance not found")
         return instance
 
+    def _instance_interface(self, store: SystemStore, instance: Mapping[str, Any]) -> Optional[dict]:
+        """A board's interface at its baseline, or an assembly's exports as one (P2 §6.1)."""
+        if instance.get("kind", "board") == "board":
+            return store.get_interface(instance["project_id"], instance["baseline_commit"], EXTRACTOR_VERSION)
+        revision = self._catalog_revision(instance["catalog_revision_id"])
+        return exports_module.as_interface((revision or {}).get("interface")) if revision else None
+
     def _interface(self, store: SystemStore, instance: dict) -> dict:
-        found = store.get_interface(instance["project_id"], instance["baseline_commit"], EXTRACTOR_VERSION)
+        found = self._instance_interface(store, instance)
         if found is None:
+            if instance.get("kind", "board") != "board":
+                raise Conflict("the subsystem's catalog revision cannot be read; try again")
             raise Conflict("interface_not_ready: the board interface at this baseline is still being extracted")
         return found
 
@@ -243,6 +252,10 @@ class SystemService:
                 interfaces[instance["id"]] = found
         pending = [i for i in instances if i["id"] not in interfaces]
         job_state = self._latest_jobs(store, pending)
+        for child in store.list_instances(system_id, kinds=("assembly", "module")):
+            synthetic = self._instance_interface(store, child)
+            if synthetic is not None:
+                interfaces[child["id"]] = synthetic
         overrides = {i["id"]: store.list_overrides(i["id"]) for i in instances if i["id"] in interfaces}
         open_reviews = store.list_reviews(system_id, status="open")
         exports = store.list_exports(system_id)
@@ -291,7 +304,8 @@ class SystemService:
             if instance["id"] not in interfaces and job and job["status"] in ("failed", "cancelled"):
                 unavailable[instance["id"]] = job["error_code"] or "extraction_failed"
         return validation.validate(
-            instances, links, {i["id"]: interfaces.get(i["id"]) for i in instances},
+            # The full map: board rules read boards only; re-export checks need assemblies (P2 §4).
+            instances, links, dict(interfaces),
             {i["id"]: store.list_overrides(i["id"]) for i in instances},
             open_reviews, unavailable=unavailable, exports=exports,
         )
@@ -380,6 +394,8 @@ class SystemService:
                 "instanceId": instance_id,
                 "redacted": False,
                 "port": port,
+                # An end on a subsystem's export: where it lands inside the child (P2 §6.1).
+                "export": dict(component["export"]) if component and component.get("export") else None,
                 "resolved": None if interface is None else component is not None,
                 "exposed": None if component is None else exposure.is_exposed(
                     component, overrides.get(instance_id, {}).get(component["portKey"])
@@ -415,9 +431,14 @@ class SystemService:
                     overrides: Mapping[str, Mapping[str, str]]) -> dict:
         port = export["target_port"]
         iid = export["target_instance_id"]
-        component = exports_module.resolve(interfaces.get(iid), port) if port else None
-        exposed = None if component is None else exposure.is_exposed(
-            component, overrides.get(iid, {}).get(component["portKey"]))
+        if port:
+            component = exports_module.resolve(interfaces.get(iid), port)
+            exposed = None if component is None else exposure.is_exposed(
+                component, overrides.get(iid, {}).get(component["portKey"]))
+        else:  # a re-export resolves when the pinned revision still exports it
+            component = exposure.component_by_key(interfaces[iid], export["target_export_id"] or "") \
+                if interfaces.get(iid) else None
+            exposed = component is not None
         return {
             "id": export["id"], "name": export["name"], "description": export["description"],
             "instanceId": iid, "portKey": port["portKey"] if port else None,
@@ -461,7 +482,11 @@ class SystemService:
                     row = store.create_export(change, name=name, description=description,
                                               instance_id=instance_id, port=port)
                 else:
-                    self._open_instance(store, system_id, instance_id, caller)
+                    instance = self._open_instance(store, system_id, instance_id, caller)
+                    if instance.get("kind") != "assembly":
+                        raise Invalid("a re-export needs an assembly instance")
+                    if exposure.component_by_key(self._interface(store, instance), child_export_id or "") is None:
+                        raise Invalid("childExportId is not an export of this subsystem's revision")
                     row = store.create_export(change, name=name, description=description,
                                               instance_id=instance_id, child_export_id=child_export_id)
                 body = self._export_body(store, system, row["id"])
@@ -511,6 +536,7 @@ class SystemService:
             self._system(store, system_id, caller)
             if snapshot_id is None:
                 instances = {i["id"]: i for i in store.list_instances(system_id)}
+                children = {i["id"]: i for i in store.list_instances(system_id, kinds=("assembly", "module"))}
                 exports = store.list_exports(system_id)
                 restricted = self._restricted_instances(store, system_id, caller)
             else:
@@ -521,6 +547,8 @@ class SystemService:
                 instances = {i["id"]: {"id": i["id"], "project_id": i["projectId"],
                                        "baseline_commit": i["baselineCommit"]}
                              for i in manifest["instances"] if i["kind"] == "board"}
+                children = {i["id"]: {"id": i["id"], "kind": i["kind"], "catalog_revision_id": i["catalog"]["revisionId"]}
+                            for i in manifest["instances"] if i["kind"] != "board"}
                 exports = [{"id": e["id"], "name": e["name"], "description": e["description"],
                             "target_instance_id": e["target"]["instanceId"],
                             "target_port": e["target"].get("port"),
@@ -528,6 +556,8 @@ class SystemService:
                 restricted = self._restricted_in(store, row["document"], caller)
             interfaces = {iid: store.get_interface(i["project_id"], i["baseline_commit"], EXTRACTOR_VERSION)
                           for iid, i in instances.items()}
+            for iid, child in children.items():
+                interfaces[iid] = self._instance_interface(store, child)
             overrides = ({iid: store.list_overrides(iid) for iid in instances} if snapshot_id is None else
                          {i["id"]: {o["portKey"]: o["state"] for o in i.get("portOverrides", [])}
                           for i in manifest["instances"] if i["kind"] == "board"})
@@ -813,6 +843,12 @@ class SystemService:
         with self._tx() as store:
             self._system(store, system_id, caller)
             instance = self._open_instance(store, system_id, instance_id, caller)
+            if instance.get("kind", "board") != "board":
+                if commit is not None:
+                    raise Invalid("a subsystem has no commits; it pins a catalog revision")
+                body = dict(self._interface(store, instance))
+                body["components"] = [{**c, "override": None, "exposed": True} for c in body["components"]]
+                return "ready", {**body, "instanceId": instance_id, "atBaseline": True}
             target = instance["baseline_commit"]
             if commit is not None:
                 target = commit.strip().lower()
@@ -861,6 +897,8 @@ class SystemService:
             self._system(store, system_id, caller)
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
                 instance = self._open_instance(store, system_id, instance_id, caller)
+                if instance.get("kind", "board") != "board":
+                    raise Invalid("a subsystem's exports are always ports; hide or promote them in the child system")
                 interface = self._interface(store, instance)
                 component = next(
                     (c for c in interface.get("components") or [] if c["portKey"] == port_key), None
@@ -889,15 +927,13 @@ class SystemService:
         return link
 
     def _link_body(self, store: SystemStore, system_id: str, link_id: str) -> dict:
-        instances = store.list_instances(system_id)
+        instances = store.list_instances(system_id, kinds=SystemStore.ALL_KINDS)
         link = store.get_link(system_id, link_id)
         interfaces: dict[str, dict] = {}
         overrides: dict[str, dict] = {}
         for instance in instances:
             if instance["id"] in (link["a_instance_id"], link["b_instance_id"]):
-                found = store.get_interface(
-                    instance["project_id"], instance["baseline_commit"], EXTRACTOR_VERSION
-                )
+                found = self._instance_interface(store, instance)
                 if found is not None:
                     interfaces[instance["id"]] = found
                     overrides[instance["id"]] = store.list_overrides(instance["id"])

@@ -67,12 +67,19 @@ def build(
             "trackedRef": instance["tracked_ref"], "pinned": bool(instance["pinned"]),
             "portOverrides": [{"portKey": key, "state": state} for key, state in sorted(overrides.items())],
         })
+    kinds = {i["id"]: i["kind"] for i in store.list_instances(system_id, kinds=SystemStore.ALL_KINDS)}
     links = []
     for link in sorted(store.list_links(system_id), key=lambda item: item["id"]):
         ends = {}
         for end in ("a", "b"):
             port = _port(link[f"{end}_port"])
-            ends[end] = {"instanceId": link[f"{end}_instance_id"], "portKey": port["portKey"], "port": port}
+            if kinds.get(link[f"{end}_instance_id"], "board") == "assembly":
+                ends[end] = {"instanceId": link[f"{end}_instance_id"], "exportId": port["portKey"],
+                             "export": {"exportId": port["portKey"], "name": port["reference"],
+                                        "reference": port["reference"], "libId": port["libId"],
+                                        "footprint": port["footprint"], "pinCount": port["pinCount"]}}
+            else:
+                ends[end] = {"instanceId": link[f"{end}_instance_id"], "portKey": port["portKey"], "port": port}
         links.append({
             "id": link["id"], "name": link["name"], "type": link.get("type") or "unspecified",
             "harnessLabel": link["harness"], **ends,
@@ -108,6 +115,15 @@ def build(
                                  for key, p in sorted(layout.items())}},
     }
     return Manifest.model_validate(body)
+
+
+def _end_baseline(end: Any) -> dict:
+    """The stored port baseline of a manifest link end; an export end stores its export as a port."""
+    if hasattr(end, "port"):
+        return end.port.model_dump()
+    export = end.export
+    return {"portKey": export.exportId, "memberKeys": [export.exportId], "reference": export.name,
+            "libId": export.libId, "footprint": export.footprint, "pinCount": export.pinCount}
 
 
 def import_manifest(
@@ -147,8 +163,8 @@ def import_manifest(
                 store.set_override(change, instance.id, override.portKey, override.state)
         for link in manifest.links:
             store.create_link(
-                change, a_instance_id=link.a.instanceId, a_port=link.a.port.model_dump(),
-                b_instance_id=link.b.instanceId, b_port=link.b.port.model_dump(),
+                change, a_instance_id=link.a.instanceId, a_port=_end_baseline(link.a),
+                b_instance_id=link.b.instanceId, b_port=_end_baseline(link.b),
                 name=link.name, harness=link.harnessLabel, link_id=link.id,
             )
             store.replace_rows(change, link.id, [{

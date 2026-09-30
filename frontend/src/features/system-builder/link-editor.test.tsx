@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { chooseOption } from "@/test/select";
 
-import { LinkEditor } from "./link-editor";
+import { LinkEditor, endLabel } from "./link-editor";
 import { instance, link, systemDocument } from "./test-fixtures";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -98,5 +98,10 @@ describe("LinkEditor", () => {
     expect(screen.queryByRole("button", { name: /Link actions/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Generate rows/ })).toBeNull();
     expect(screen.queryByLabelText(/Signal for/)).toBeNull();
+  });
+  it("names the physical connector behind a subsystem export", () => {
+    const withExport = { ...link("L9", a.id, "J7", b.id, "PWR_IN", 1) };
+    withExport.b = { ...withExport.b, export: { name: "PWR_IN", reference: "J6", occurrence: "/sin_x", description: "" } };
+    expect(endLabel(systemDocument([a, b], [withExport]), withExport, "b")).toBe("PAY PWR_IN → J6");
   });
 });
