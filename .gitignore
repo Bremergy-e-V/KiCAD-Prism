@@ -68,3 +68,6 @@ deploy/certs/*
 # ecad-parse snapshot index cache (a stray one can appear if the CLI is run
 # with a relative root; never commit it)
 *.index-cache.json
+
+# SB2-21: vendor 3D models are not redistributed (see the fixture README)
+backend/tests/fixtures/system_builder/p2/vendor/

@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.21 · 2026-10-01 · tickets SB2-00 to SB2-20.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.22 · 2026-10-01 · tickets SB2-00 to SB2-21.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -712,6 +712,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.22 | 2026-10-01 | SB2-21: geometry fixtures (plan §8, M1 set): `mezz_base`, `mezz_top` F0/F1, `edge_a`, `edge_b`, `ambiguous`, built through KiCad's IPC API (not SWIG) and clean on ERC, DRC with schematic parity and library checks, netlist, STEP and GLB with 10.0.6. Goldens: DF12(3.0) mated height 3.0 mm from Hirose EDC-390687-51-77, top pose (0, 0, 4.6) mm over the base, V11 shift 1.5 mm, frames per connector. Vendor models are not redistributed. No contract rule changes. |
 | P2-1.21 | 2026-10-01 | SB2-20: §8.2 as built for harness wires: edges through pin maps, splices, export ends, subsystem manifests' harnesses, unmated ends as internal nodes; wire hop shape; 3-end splice golden. |
 | P2-1.20 | 2026-10-01 | SB2-19: §17.4 as built. CSV wire rows and seven harness columns (`from_end_pin`/`to_end_pin` renamed from the plan's `from_pin`/`to_pin`, which collide with P1 pad columns); import of wire rows into existing or new harnesses with conflicts named; ICD Board-to-board mating and Harnesses sections; link documents gain end `mating`; renderer 3. |
 | P2-1.19 | 2026-09-30 | SB2-18: mating housings as parts. Migration 39 `part_pins` and `part_summary`; `PATCH …/ends/{eid} {part}` assigns or clears (404/422/409 refusals); end documents gain `matePads` and the part's name and MPN; manifest `HarnessEnd.partPins` and `PartRef` name/mpn/manufacturer; SYS-V19 lands; harness editor part picker, Make generic and a pin map over the connector's pads. |
