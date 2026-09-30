@@ -13,7 +13,10 @@ Sources, all from the pinned kicad-monkey:
   PCB overlay can leak in (the semantic index overwrites terminal nets with pad
   nets; this extractor does not use it);
 * DNP from the design-variant resolver's default assembly state;
-* ``pcbNets`` from board pad nets, matched by reference and pad number.
+* ``pcbNets`` from board pad nets, matched by reference and pad number;
+* v6 ``geometry`` (CONTRACTS_P2 §14.6) from the board footprint with that
+  reference: pose, pads and courtyard in the board frame (§14.2), and the
+  first 3D model reference, unresolved.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import math
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Mapping
@@ -29,7 +33,7 @@ from app.services import semantic_index_variants
 from app.services.systems import connector_detection
 
 SCHEMA = "prism.system_interface.v1"
-EXTRACTOR_VERSION = "5"
+EXTRACTOR_VERSION = "6"
 _UNCONNECTED_PREFIX = "unconnected-("
 
 
@@ -159,6 +163,103 @@ def _board_pad_nets(board: Any) -> dict[str, dict[str, set[str]]]:
     return result
 
 
+def _round(value: float) -> float:
+    """§14.6: 1e-4 mm, with -0.0 folded to 0.0 so digests are stable."""
+    return round(float(value), 4) + 0.0
+
+
+def _reference(footprint: Any) -> str:
+    for prop in getattr(footprint, "properties", ()) or ():
+        if _string(getattr(prop, "name", "")) == "Reference":
+            return _string(getattr(prop, "value", ""))
+    return ""
+
+
+def _courtyard_points(footprint: Any) -> list[tuple[float, float]]:
+    """Footprint-local points (KiCad y down) of the F/B.CrtYd graphics."""
+    points: list[tuple[float, float]] = []
+    for item in getattr(footprint, "iter_objects", lambda: ())():
+        if "CrtYd" not in _string(getattr(item, "layer", "")):
+            continue
+        kind = type(item).__name__
+        if kind in ("FpLine", "FpRect"):
+            points += [(item.start_x, item.start_y), (item.end_x, item.end_y)]
+        elif kind == "FpCircle":
+            radius = math.hypot(item.end_x - item.center_x, item.end_y - item.center_y)
+            points += [(item.center_x - radius, item.center_y - radius), (item.center_x + radius, item.center_y + radius)]
+        elif kind == "FpArc":
+            points += [(item.start_x, item.start_y), (item.mid_x, item.mid_y), (item.end_x, item.end_y)]
+        elif kind == "FpPoly":
+            points += [(x, y) for x, y in getattr(item, "points", ()) or ()]
+    return points
+
+
+def _model(footprint: Any) -> dict[str, Any] | None:
+    for model in getattr(footprint, "models", ()) or ():
+        sexp = model.to_sexp() if hasattr(model, "to_sexp") else []
+        if any(isinstance(part, list) and part[:1] == ["hide"] and part[1:2] != ["no"] for part in sexp):
+            continue
+        return {
+            "path": _string(model.path),
+            "offsetMm": [_round(v) for v in model.offset],
+            "rotationDeg": [_round(v) for v in model.rotate],
+            "scale": [_round(v) for v in model.scale],
+        }
+    return None
+
+
+def _footprint_geometry(footprint: Any) -> dict[str, Any]:
+    """§14.6 for one placed footprint; positions in the board frame (y up)."""
+
+    angle = float(getattr(footprint, "at_angle", 0.0) or 0.0)
+    cos_a, sin_a = math.cos(math.radians(angle)), math.sin(math.radians(angle))
+    fx, fy = float(footprint.at_x), float(footprint.at_y)
+
+    def board(lx: float, ly: float) -> list[float]:
+        # KiCad rotates counter-clockwise on screen with y down; the board frame flips y.
+        x = fx + lx * cos_a + ly * sin_a
+        y = fy - lx * sin_a + ly * cos_a
+        return [_round(x), _round(-y)]
+
+    pads = []
+    for pad in getattr(footprint, "pads", ()) or ():
+        pad_type = _string(getattr(getattr(pad, "pad_type", None), "name", getattr(pad, "pad_type", ""))).lower()
+        pads.append({
+            "pad": _string(getattr(pad, "number", "")),
+            "positionMm": board(float(pad.at_x), float(pad.at_y)),
+            "sizeMm": [_round(pad.size_x or 0.0), _round(pad.size_y or 0.0)],
+            "shape": _string(getattr(getattr(pad, "shape", None), "name", getattr(pad, "shape", ""))).lower(),
+            "tht": pad_type in ("thru_hole", "np_thru_hole"),
+        })
+    pads.sort(key=lambda item: _natural(item["pad"]))
+    points = _courtyard_points(footprint)
+    courtyard = None
+    if points:
+        xs = [x for x, _y in points]
+        ys = [-y for _x, y in points]  # footprint frame, y up
+        courtyard = {"minMm": [_round(min(xs)), _round(min(ys))], "maxMm": [_round(max(xs)), _round(max(ys))]}
+    layer = _string(getattr(footprint, "layer", ""))
+    return {
+        "side": "bottom" if layer.startswith("B.") else "top",
+        "positionMm": [_round(fx), _round(-fy)],
+        "rotationDeg": _round(angle),
+        "footprintName": _string(getattr(footprint, "library_link", "")).split(":")[-1],
+        "pads": pads,
+        "courtyard": courtyard,
+        "model": _model(footprint),
+    }
+
+
+def _board_geometry(board: Any) -> dict[str, dict[str, Any]]:
+    """``reference -> geometry`` for every placed footprint; the first wins on a repeated reference."""
+    result: dict[str, dict[str, Any]] = {}
+    for footprint in getattr(board, "footprints", ()) or ():
+        reference = _reference(footprint)
+        if reference and reference not in result:
+            result[reference] = _footprint_geometry(footprint)
+    return result
+
+
 def _power_net_names(design: Any) -> set[str]:
     """Names of nets set by power symbols (lib symbol ``power`` flag): the symbol's value is the net."""
 
@@ -210,6 +311,7 @@ def extract_interface(
     has_pcb = bool(pcb_path) and Path(pcb_path).is_file()
     board = design.pcb if has_pcb else None
     board_pads = _board_pad_nets(board) if board is not None else {}
+    geometry = _board_geometry(board) if board is not None else {}
 
     assembly = semantic_index_variants.build_assembly_state(design, project_file=project_file)
     default_components = (assembly.get("default") or {}).get("components") or {}
@@ -271,6 +373,7 @@ def extract_interface(
                 "candidate": candidate,
                 "candidateReason": reason,
                 "pins": pins,
+                "geometry": geometry.get(reference),
             }
         )
 
@@ -280,6 +383,7 @@ def extract_interface(
         "commit": commit,
         "extractor": {"version": EXTRACTOR_VERSION, "kicadMonkeyVersion": _kicad_monkey_version()},
         "hasPcb": board is not None,
+        "boardThicknessMm": _round(board.thickness) if board is not None and getattr(board, "thickness", None) else None,
         "components": components,
         "diagnostics": sorted(
             diagnostics, key=lambda d: (d["code"], d["portKey"] or "", d["pad"] or "")
