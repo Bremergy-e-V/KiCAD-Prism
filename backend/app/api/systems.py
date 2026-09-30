@@ -19,7 +19,7 @@ from app.core.security import AuthenticatedUser, require_designer, require_viewe
 from app.services.systems import csv_import
 from app.services.systems import service as system_service
 from app.services.systems.service import Caller, Result
-from app.services.systems.store import MAX_ROWS, Conflict, Invalid, NotFound, StaleVersion
+from app.services.systems.store import MAX_ROWS, Conflict, Forbidden, Invalid, NotFound, StaleVersion
 from app.services.systems.visibility import etag
 
 router = APIRouter(dependencies=[Depends(require_viewer)])
@@ -152,6 +152,8 @@ async def _run(system_id: Optional[str], call: Callable[[], T]) -> T:
         raise HTTPException(status_code=409, detail=str(error)) from None
     except Invalid as error:
         raise HTTPException(status_code=422, detail=str(error)) from None
+    except Forbidden as error:
+        raise HTTPException(status_code=403, detail=str(error)) from None
 
 
 def _respond(result: Result, response: Response, status_code: int = 200) -> Any:
@@ -469,6 +471,14 @@ async def list_snapshots(system_id: str, user: AuthenticatedUser = Depends(requi
 @router.get("/{system_id}/snapshots/{snapshot_id}")
 async def get_snapshot(system_id: str, snapshot_id: str, user: AuthenticatedUser = Depends(require_viewer)):
     return await _run(system_id, lambda: system_service.service.get_snapshot(_caller(user), system_id, snapshot_id))
+
+
+@router.get("/{system_id}/snapshots/{snapshot_id}/manifest")
+async def snapshot_manifest(system_id: str, snapshot_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    """P2 §11: the frozen ``prism.system_manifest.v1``, whole or 403."""
+    return await _run(system_id, lambda: system_service.service.snapshot_manifest(
+        _caller(user), system_id, snapshot_id,
+    ))
 
 
 @router.get("/{system_id}/snapshots/{snapshot_id}/diff")

@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.0 (draft, awaiting user sign-off) · 2026-09-30 · ticket SB2-00.**
+**Version P2-1.1 · 2026-09-30 · tickets SB2-00, SB2-01.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §14.
@@ -351,14 +351,24 @@ The canonical form is JSON with sorted keys, `(",", ":")` separators and `ensure
 
 Drift, publish identity and catalog `connectivityDigest` use **connectivity**. Snapshot identity uses **full**.
 
-### 9.4 Snapshots (changes P1 §9.1)
+### 9.4 Snapshots (changes P1 §9.1; implemented in SB2-01)
 
-From SB2-01, a snapshot stores:
-- `manifest`: v1, with `meta.snapshot` set;
-- `evidence`: the P1 validation report, `reviewRowIds` and `openReviewCount`;
-- both digests.
+A snapshot row (migration 30) stores:
 
-P1 snapshots (with a `document` and no `manifest`) remain readable. They are listed with `manifestSchema: null` and can't be published.
+- `document`: the P1 rendered document, unchanged (it includes `validation` and `reviewRowIds`). The ICD, diffs and redacted reads keep using it as the evidence of what the system showed.
+- `manifest`: v1, unredacted, built in the same transaction as the document. `meta.snapshot` is `{id, name, note}` and `meta.sourceVersion` is the frozen version.
+- `manifest_schema`: `"prism.system_manifest.v1"`.
+- `digest`: the manifest's **full** digest. P1 snapshots keep their document digest.
+- `connectivity_digest`: the manifest's connectivity digest.
+
+Reading rules:
+
+- Snapshot metadata gains `connectivityDigest` and `manifestSchema`. Both are null on P1 snapshots.
+- `GET …/snapshots/{sid}/manifest` returns the manifest **whole or not at all**. It gives 403 when the reader cannot see every board it names (a manifest is an exchange artifact; a partial one would be misleading), and 404 for a P1 snapshot without a manifest.
+- P1 snapshots stay readable everywhere else, but cannot be published.
+- Writers emit instances, links and rows sorted by ID, so an unchanged system snapshots to identical digests.
+
+**Import.** `manifest.import_manifest` recreates a system from a manifest, **keeping every ID** (system, instances, links, rows), and audits `system_imported`. A clash with an existing ID fails the transaction. Sections without tables yet (exports, harnesses, mating, placement, catalog instances) are refused with 422 until their tickets land. There is no HTTP route yet; M7 adds one.
 
 ### 9.5 Canvas layout (revises P1 invariant 6)
 
@@ -385,7 +395,7 @@ All routes are under `/api/systems/{id}` and follow P1 conventions (If-Match, 41
 | `GET …/exports`, `POST …/exports`, `PATCH …/exports/{xid}`, `DELETE …/exports/{xid}` | Export CRUD (§4) |
 | `GET …/export-interface?snapshot=` | The interface (§4.3), live or for a snapshot |
 | `POST …/snapshots/{sid}/publish` | §3.3 |
-| `GET …/snapshots/{sid}/manifest` | The frozen manifest, redacted for the reader |
+| `GET …/snapshots/{sid}/manifest` | The frozen manifest, whole or 403 (§9.4) |
 | `POST …/instances` (extended) | `kind: "assembly"\|"module"` (§5.1) |
 | `POST …/instances/{iid}/rebase` (extended) | `{revisionId}` for assembly and module instances |
 | `GET …/hierarchy` | Occurrence tree: `{occurrences: [{path, displayPath, kind, instanceId, systemId?, revision?, restricted}]}` |
@@ -403,14 +413,15 @@ All routes are under `/api/systems/{id}` and follow P1 conventions (If-Match, 41
 | 409 | `review_stale` | P1 v1.12, also for `child_update` |
 | 422 | `hierarchy_too_deep`, `hierarchy_too_large`, `hierarchy_cycle` | §5.3 |
 | 422 | `export_limit` | More than 200 exports |
-| 403 | — | Publish without catalog write role |
+| 403 | — | Publish without catalog write role; a manifest naming a board the reader cannot see |
 
 ## 13. Audit event kinds (additions)
 
-`export_created`, `export_updated`, `export_retargeted`, `export_deleted`, `snapshot_published`, `child_auto_advanced`, `child_rebased`, `link_type_changed`, `harness_created`, `harness_updated`, `harness_deleted`, `pose_updated`, `poses_reset`, `mating_updated`.
+`system_imported`, `export_created`, `export_updated`, `export_retargeted`, `export_deleted`, `snapshot_published`, `child_auto_advanced`, `child_rebased`, `link_type_changed`, `harness_created`, `harness_updated`, `harness_deleted`, `pose_updated`, `poses_reset`, `mating_updated`.
 
 ## 14. Revision log
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.1 | 2026-09-30 | SB2-01: snapshots store the manifest and both digests (`digest` = full); `GET …/manifest` is whole-or-403; `import_manifest` keeps IDs; migration 30. §0 signed off. |
 | P2-1.0 | 2026-09-30 | First draft for sign-off (SB2-00). Adds catalog kinds and publishing, exports, hierarchy, child drift, system nets V09–V15, manifest v1 with digests, API, errors and audit kinds. P1 changes: snapshots store a manifest (§9.4); instances gain `kind` (§5.1); extractor v5 adds `powerNet` (§8.4). S6 revised by the user: canvas layout is part of the manifest and snapshots (§9.5, revises P1 invariant 6). |

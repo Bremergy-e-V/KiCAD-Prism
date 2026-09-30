@@ -1791,6 +1791,7 @@ class ReleaseStudioPostgresSchemaTests(unittest.TestCase):
                 (27, "system_workspace_version"),
                 (28, "system_review_pending_changes"),
                 (29, "system_import_sessions"),
+                (30, "system_snapshot_manifest"),
             ],
         )
 

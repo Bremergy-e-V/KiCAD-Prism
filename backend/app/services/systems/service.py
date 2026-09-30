@@ -25,16 +25,18 @@ from typing import Any, Callable, Collection, ContextManager, Iterator, Mapping,
 
 from app.core.roles import Role
 from app.services.systems import (
-    csv_import, drift, exposure, generators, icd, reconcile, redaction, sources, validation, visibility,
+    csv_import, drift, exposure, generators, icd, manifest as manifest_io, reconcile, redaction, sources,
+    validation, visibility,
 )
-from app.services.systems.interface_extractor import EXTRACTOR_VERSION, canonical_digest
+from app.services.systems.manifest_schema import digests as manifest_digests
+from app.services.systems.interface_extractor import EXTRACTOR_VERSION
 from app.services.systems.jobs import (
     EXTRACT_JOB_KIND,
     artifact_key,
     enqueue_extraction,
     workspace_connection,
 )
-from app.services.systems.store import Conflict, Invalid, NotFound, SystemStore
+from app.services.systems.store import Conflict, Forbidden, Invalid, NotFound, SystemStore, new_id
 
 logger = logging.getLogger(__name__)
 
@@ -869,6 +871,8 @@ class SystemService:
     def _snapshot_meta(row: Mapping[str, Any]) -> dict:
         return {"id": row["id"], "name": row["name"], "note": row["note"], "createdBy": row["created_by"],
                 "createdAt": _iso(row["created_at"]), "digest": row["digest"],
+                "connectivityDigest": row.get("connectivity_digest"),
+                "manifestSchema": row.get("manifest_schema"),
                 "openReviewCount": int(row["open_review_count"]), "rendererVersion": row["renderer_version"]}
 
     @staticmethod
@@ -884,16 +888,30 @@ class SystemService:
         return {iid for iid, pid in projects.items() if not access[pid]["visible"]}
 
     def create_snapshot(self, caller: Caller, system_id: str, version: int, name: str, note: str) -> Result:
-        """Freeze the unredacted document at ``version`` (§9.1). The version is not bumped."""
+        """Freeze the unredacted document and manifest at ``version`` (§9.1, P2 §9.4).
+
+        The version is not bumped. ``digest`` is the manifest's full digest;
+        the rendered ``document`` stays beside it as the evidence the ICD and
+        diffs read.
+        """
 
         with self._tx() as store:
             system = self._system(store, system_id, caller)
             with store.mutation(system_id, expected_version=version, actor=caller.actor, bump=False) as change:
                 built, _instances, _jobs = self._build(store, system)
                 document = json.loads(json.dumps(built, default=_iso))
+                snapshot_id = new_id("ssn_")
+                manifest = manifest_io.build(
+                    store, system_id, created_by=caller.actor,
+                    created_at=datetime.now(timezone.utc).replace(microsecond=0),
+                    snapshot={"id": snapshot_id, "name": name.strip(), "note": note},
+                )
+                digests = manifest_digests(manifest)
                 row = store.create_snapshot(
-                    change, name=name, note=note, document=document, digest=canonical_digest(document),
+                    change, name=name, note=note, document=document, digest=digests["full"],
                     open_review_count=document["openReviewCount"], renderer_version=icd.RENDERER_VERSION,
+                    snapshot_id=snapshot_id, manifest=manifest.model_dump(mode="json", by_alias=True),
+                    connectivity_digest=digests["connectivity"],
                 )
         return Result(self._snapshot_meta(row), system_id, change.version)
 
@@ -908,6 +926,22 @@ class SystemService:
         row = store.get_snapshot(system_id, snapshot_id)
         restricted = self._restricted_in(store, row["document"], caller)
         return self._snapshot_meta(row), redaction.redact_document(row["document"], restricted)
+
+    def snapshot_manifest(self, caller: Caller, system_id: str, snapshot_id: str) -> dict:
+        """``GET …/snapshots/{sid}/manifest`` (P2 §11).
+
+        A manifest is an exchange artifact, so it is served whole or not at
+        all: a reader who cannot see every board in it gets 403.
+        """
+
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            row = store.get_snapshot(system_id, snapshot_id)
+            if row["manifest"] is None:
+                raise NotFound("This snapshot predates manifests")
+            if self._restricted_in(store, row["document"], caller):
+                raise Forbidden("the manifest contains boards you cannot see")
+            return row["manifest"]
 
     def get_snapshot(self, caller: Caller, system_id: str, snapshot_id: str) -> dict:
         with self._tx() as store:
