@@ -7,7 +7,14 @@ advances, ``refresh_after_advance`` moves each export's stored port baseline to
 the component it now resolves to. An export that no longer resolves, or whose
 port is no longer exposed, is the ``SYS-V16 export_unresolved`` error.
 
-Re-exports (a child assembly's export passed up) arrive with SB2-05.
+A **re-export** passes a child assembly's export up: it targets
+``(assembly instance, child export ID)`` and resolves through that
+instance's pinned revision interface (SB2-06).
+
+``as_interface`` presents a revision's export interface in the shape of a
+board interface artifact (one "component" per export, ``portKey`` = export
+ID), so links, rows, generators and observed values treat an assembly's
+exports exactly like a board's connectors.
 """
 
 from __future__ import annotations
@@ -17,6 +24,26 @@ from typing import Any, Mapping, Optional, Sequence
 from app.services.systems import exposure
 
 INTERFACE_SCHEMA = "prism.system_export_interface.v1"
+
+
+def as_interface(revision_interface: Optional[Mapping[str, Any]]) -> Optional[dict]:
+    """A revision's ``prism.system_export_interface.v1`` as an interface artifact (§6.1)."""
+
+    if revision_interface is None:
+        return None
+    components = []
+    for entry in revision_interface.get("exports") or []:
+        if not entry.get("resolved", True):
+            continue  # publish refuses these; an old revision may still carry one
+        components.append({
+            "portKey": entry["id"], "memberKeys": [entry["id"]], "reference": entry["name"],
+            "value": entry.get("reference"), "libId": entry.get("libId"), "footprint": entry.get("footprint"),
+            "candidate": True, "candidateReason": "export", "dnp": False,
+            "pins": [dict(pin) for pin in entry.get("pins") or []],
+            "export": {"name": entry["name"], "reference": entry.get("reference"),
+                       "occurrence": entry.get("occurrence"), "description": entry.get("description", "")},
+        })
+    return {"components": components, "hasPcb": False, "kind": "export_interface"}
 
 
 def resolve(interface: Optional[Mapping[str, Any]], port: Mapping[str, Any]) -> Optional[dict]:
@@ -80,7 +107,21 @@ def interface(
         entry: dict[str, Any] = {"id": export["id"], "name": export["name"], "description": export["description"],
                                  "occurrence": "/" + export["target_instance_id"]}
         port = export["target_port"]
-        component = resolve(interfaces.get(export["target_instance_id"]), port) if port else None
+        if not port:
+            # A re-export: the child's export, one level further down (§4.1).
+            child = _child_export(interfaces.get(export["target_instance_id"]), export["target_export_id"])
+            if child is None:
+                entry.update({"resolved": False, "reference": None, "libId": None, "footprint": None,
+                              "pinCount": 0, "pins": []})
+            else:
+                inner = child["export"].get("occurrence") or ""
+                entry.update({"resolved": True, "occurrence": "/" + export["target_instance_id"] + inner,
+                              "reference": child["export"].get("reference"), "libId": child.get("libId"),
+                              "footprint": child.get("footprint"), "pinCount": len(child["pins"]),
+                              "pins": _pins(child)})
+            out.append(entry)
+            continue
+        component = resolve(interfaces.get(export["target_instance_id"]), port)
         exposed = component is not None and exposure.is_exposed(
             component, overrides.get(export["target_instance_id"], {}).get(component["portKey"])
         )
@@ -94,6 +135,12 @@ def interface(
                           "pins": _pins(component)})
         out.append(entry)
     return {"schema": INTERFACE_SCHEMA, "exports": out}
+
+
+def _child_export(interface: Optional[Mapping[str, Any]], export_id: Optional[str]) -> Optional[dict]:
+    if interface is None or not export_id:
+        return None
+    return next((dict(c) for c in interface.get("components") or [] if c["portKey"] == export_id), None)
 
 
 def findings(
@@ -110,7 +157,12 @@ def findings(
     for export in exports:
         port = export["target_port"]
         iid = export["target_instance_id"]
-        if not port or iid in unevaluated or interfaces.get(iid) is None:
+        if not port:
+            if interfaces.get(iid) is not None and _child_export(interfaces[iid], export["target_export_id"]) is None:
+                out.append({"exportId": export["id"], "instanceId": iid, "reference": None,
+                            "reason": "child_export_missing", "name": export["name"]})
+            continue
+        if iid in unevaluated or interfaces.get(iid) is None:
             continue
         component = resolve(interfaces[iid], port)
         if component is None:

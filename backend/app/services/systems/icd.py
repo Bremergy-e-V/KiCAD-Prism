@@ -47,6 +47,16 @@ def _row_status(row: Mapping[str, Any], link: Mapping[str, Any], validation: Map
     return "review" if row["id"] in review_rows else "ok"
 
 
+def _end_label(labels: Mapping[str, str], end: Mapping[str, Any]) -> str:
+    """"OBC-1 J7", or for a subsystem export "CNDH-A ▸ PWR_IN → J1" (the physical connector, P2 §10)."""
+    reference = (end.get("port") or {}).get("reference") or "restricted"
+    label = labels.get(end["instanceId"], "?")
+    export = end.get("export")
+    if export:
+        return f"{label} ▸ {reference}" + (f" → {export['reference']}" if export.get("reference") else "")
+    return f"{label} {reference}"
+
+
 def csv_records(document: Mapping[str, Any]) -> list[dict[str, str]]:
     """The §9.2 export rows, in order."""
 
@@ -245,7 +255,7 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str) 
     out.append("<h2>Connections</h2>")
     ordered = sorted(document["links"], key=lambda l: (l["name"], l["id"]))
     for index, link in enumerate(ordered, start=1):
-        ends = [f"{labels[link[e]['instanceId']]} {(link[e]['port'] or {}).get('reference') or 'restricted'}" for e in ("a", "b")]
+        ends = [_end_label(labels, link[e]) for e in ("a", "b")]
         rows = [r for r in records if r["link_id"] == link["id"]]
         statuses = {status: sum(1 for r in rows if r["status"] == status) for status in ("error", "review")}
         colour = _PALETTE[(index - 1) % len(_PALETTE)]

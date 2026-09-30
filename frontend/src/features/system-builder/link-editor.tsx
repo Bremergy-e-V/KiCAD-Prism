@@ -88,7 +88,8 @@ function useEndPins(systemId: string, link: SystemLink, instances: SystemInstanc
 /** "OBC-1 J14": the board label and connector of one link end. */
 export function endLabel(document: SystemDocument, link: SystemLink, end: "a" | "b"): string {
   const label = document.instances.find((instance) => instance.id === link[end].instanceId)?.label ?? "?";
-  return `${label} ${link[end].port?.reference ?? "restricted"}`;
+  const physical = link[end].export?.reference;
+  return `${label} ${link[end].port?.reference ?? "restricted"}${physical ? ` → ${physical}` : ""}`;
 }
 
 interface DetailsDialogProps {

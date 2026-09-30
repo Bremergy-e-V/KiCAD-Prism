@@ -18,8 +18,8 @@ from app.services.systems.manifest_schema import digests
 from app.services.systems.store import Conflict, Invalid
 
 
-class AssemblyTest(PublishCase):
-    """The fixture system (OBC-A, OBC-B, PAY, PWR) is published as the child assembly "CNDH"."""
+class AssemblyCase(PublishCase):
+    """The fixture system (OBC-A, OBC-B, PAY, PWR) is published as the child assembly "CNDH". No tests."""
 
     def release(self, component_id: str) -> None:
         for stage, actor, role in (("in_progress", "designer@example.com", "designer"),
@@ -49,6 +49,9 @@ class AssemblyTest(PublishCase):
             conn.commit()
         super().tearDown()
 
+
+
+class AssemblyTest(AssemblyCase):
     def test_a_parent_holds_two_copies_of_a_released_assembly(self) -> None:
         publication = self.child()
         bus, version = self.parent()

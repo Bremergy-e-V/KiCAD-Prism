@@ -637,10 +637,12 @@ class SystemStore:
         return dict(row)
 
     def exported_port(self, system_id: str, instance_id: str, port_key: str) -> Optional[dict]:
-        """The export whose target is this board port (by portKey), if any."""
+        """The export whose target is this port: a board port by portKey, or a child export (re-export)."""
         for export in self.list_exports(system_id):
+            if export["target_instance_id"] != instance_id:
+                continue
             port = export["target_port"]
-            if export["target_instance_id"] == instance_id and port and port["portKey"] == port_key:
+            if (port and port["portKey"] == port_key) or export["target_export_id"] == port_key:
                 return export
         return None
 
@@ -685,8 +687,13 @@ class SystemStore:
                 raise Conflict("export_port_linked: this port is an end of a link in this system")
             if self.exported_port(change.system_id, instance_id, baseline["portKey"]):
                 raise Conflict("this port is already exported")
-        elif instance.get("kind", "board") != "assembly":
-            raise Invalid("a re-export needs an assembly instance")
+        else:
+            if instance.get("kind", "board") != "assembly":
+                raise Invalid("a re-export needs an assembly instance")
+            if self.linked_port(change.system_id, instance_id, child_export_id):
+                raise Conflict("export_port_linked: this subsystem export is an end of a link in this system")
+            if self.exported_port(change.system_id, instance_id, child_export_id):
+                raise Conflict("this subsystem export is already re-exported")
         export_id = _given_id("sxp_", export_id)
         self.conn.execute(
             """
