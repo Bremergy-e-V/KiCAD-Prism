@@ -11,7 +11,7 @@ passing.
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Collection, Mapping, Optional, Sequence
 
 from app.services.systems import exposure
 from app.services.systems.drift import pad_sort_key
@@ -32,6 +32,8 @@ RULES = {
     "SYS-V15": ("child_advance_blocked", "warning"),
     "SYS-V16": ("export_unresolved", "error"),
 }
+# Opt-in per system (``system_projects.optional_rules``, CONTRACTS_P2 §8.4): off unless enabled.
+OPTIONAL_RULES = frozenset({"SYS-V09"})
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 # Rules that need an instance's baseline interface.
 _INTERFACE_RULES = ("SYS-V03", "SYS-V04", "SYS-V06", "SYS-V07")
@@ -61,9 +63,12 @@ def validate(
     *,
     unavailable: Mapping[str, str] | None = None,
     exports: Sequence[Mapping[str, Any]] = (),
+    optional_rules: Collection[str] = (),
 ) -> dict:
     """Findings for one system.
 
+    ``optional_rules`` names the opt-in rules (``OPTIONAL_RULES``) this system
+    enabled; the others in that set do not run.
     ``interfaces[instance_id]`` is the artifact at that instance's baseline or
     ``None``; ``unavailable[instance_id]`` gives a reason the source cannot be
     read (unresolved project, failed extraction). Pending extraction is
@@ -180,7 +185,7 @@ def validate(
             pins[end] = exposure.pins_by_pad(component) if component else None
         for row in link.get("rows") or []:
             net_a, net_b = list(row.get("net_a") or []), list(row.get("net_b") or [])
-            if system_nets.name_mismatch(net_a, net_b):
+            if "SYS-V09" in optional_rules and system_nets.name_mismatch(net_a, net_b):
                 findings.append(_finding("SYS-V09", link_id=link["id"], row_id=row["id"],
                                          detail={"netA": net_a, "netB": net_b}))
             if pins["a"] is None or pins["b"] is None:

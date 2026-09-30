@@ -136,18 +136,18 @@ class SystemStore:
 
     def create_system(
         self, *, name: str, description: str = "", folder_id: Optional[str], actor: str,
-        system_id: Optional[str] = None,
+        system_id: Optional[str] = None, optional_rules: Sequence[str] = (),
     ) -> dict:
         if not name.strip():
             raise Invalid("name is required")
         system_id = _given_id("sys_", system_id)
         row = self.conn.execute(
             """
-            INSERT INTO system_projects (id, name, description, folder_id, created_by)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO system_projects (id, name, description, folder_id, created_by, optional_rules)
+            VALUES (%s, %s, %s, %s, %s, %s)
             RETURNING *
             """,
-            (system_id, name.strip(), description, folder_id, actor),
+            (system_id, name.strip(), description, folder_id, actor, sorted(set(optional_rules))),
         ).fetchone()
         Mutation(self, system_id, actor, row["version"]).audit(
             "system_created", {"name": row["name"], "folderId": folder_id}
@@ -220,18 +220,23 @@ class SystemStore:
     def update_system(
         self, change: Mutation, *, name: Optional[str] = None,
         description: Optional[str] = None, folder_id: Any = ...,
+        optional_rules: Optional[Sequence[str]] = None,
     ) -> dict:
         before = self.get_system(change.system_id)
         values = {
             "name": before["name"] if name is None else name.strip(),
             "description": before["description"] if description is None else description,
             "folder_id": before["folder_id"] if folder_id is ... else folder_id,
+            "optional_rules": list(before["optional_rules"] or []) if optional_rules is None
+            else sorted(set(optional_rules)),
         }
         if not values["name"]:
             raise Invalid("name is required")
         self.conn.execute(
-            "UPDATE system_projects SET name = %s, description = %s, folder_id = %s WHERE id = %s",
-            (values["name"], values["description"], values["folder_id"], change.system_id),
+            "UPDATE system_projects SET name = %s, description = %s, folder_id = %s, optional_rules = %s"
+            " WHERE id = %s",
+            (values["name"], values["description"], values["folder_id"], values["optional_rules"],
+             change.system_id),
         )
         changed = {k: {"before": before[k], "after": v} for k, v in values.items() if before[k] != v}
         if changed:

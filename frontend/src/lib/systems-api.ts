@@ -18,6 +18,7 @@ import type {
   ImportTarget,
   ImportUpload,
   InstanceInterface,
+  OptionalRule,
   Review,
   ReviewStatus,
   RowSource,
@@ -101,6 +102,14 @@ export interface QueuedJob {
 
 export function createSystem(input: { name: string; description?: string; folderId?: string | null }) {
   return versioned<SystemSummary>(BASE, { method: "POST", body: json(input) }, "Could not create the system");
+}
+
+/** `PATCH /systems/{id}`; `optionalRules` replaces the stored list (CONTRACTS_P2 §8.4). */
+export function updateSystem(
+  systemId: string, etag: string,
+  fields: { name?: string; description?: string; folderId?: string | null; optionalRules?: OptionalRule[] },
+) {
+  return versioned<SystemSummary>(path(systemId), { method: "PATCH", etag, body: json(fields) }, "Could not update the system");
 }
 
 export function getSystem(systemId: string, init?: RequestInit) {

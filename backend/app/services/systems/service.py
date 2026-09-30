@@ -213,9 +213,12 @@ class SystemService:
             ):
                 raise Invalid("folderId does not name a folder")
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                rules = fields.get("optionalRules")
+                if rules is not None and not set(rules) <= validation.OPTIONAL_RULES:
+                    raise Invalid(f"optionalRules may only name {', '.join(sorted(validation.OPTIONAL_RULES))}")
                 store.update_system(
                     change, name=fields.get("name"), description=fields.get("description"),
-                    folder_id=folder_id,
+                    folder_id=folder_id, optional_rules=rules,
                 )
             body = self._system(store, system_id, caller)
         return Result(body, system_id, change.version)
@@ -259,7 +262,8 @@ class SystemService:
         overrides = {i["id"]: store.list_overrides(i["id"]) for i in instances if i["id"] in interfaces}
         open_reviews = store.list_reviews(system_id, status="open")
         exports = store.list_exports(system_id)
-        report = self._validate(store, system_id, instances, links, interfaces, job_state, open_reviews, exports)
+        report = self._validate(store, system_id, instances, links, interfaces, job_state, open_reviews, exports,
+                                system.get("optionalRules") or ())
         catalog_docs = [self._catalog_instance_doc(i) for i in store.list_instances(system_id, kinds=("assembly", "module"))]
         report = validation.with_findings(report, validation.child_findings([
             {"instanceId": doc["id"], "releaseStatus": doc["catalog"]["releaseStatus"],
@@ -301,7 +305,7 @@ class SystemService:
     def _validate(
         self, store: SystemStore, system_id: str, instances: Sequence[dict], links: Sequence[dict],
         interfaces: Mapping[str, dict], job_state: Mapping[str, dict], open_reviews: Sequence[dict],
-        exports: Sequence[dict] = (),
+        exports: Sequence[dict] = (), optional_rules: Sequence[str] = (),
     ) -> dict:
         """§7.2 over the live state; an instance's failed extraction makes its source unavailable."""
 
@@ -314,7 +318,7 @@ class SystemService:
             # The full map: board rules read boards only; re-export checks need assemblies (P2 §4).
             instances, links, dict(interfaces),
             {i["id"]: store.list_overrides(i["id"]) for i in instances},
-            open_reviews, unavailable=unavailable, exports=exports,
+            open_reviews, unavailable=unavailable, exports=exports, optional_rules=optional_rules,
         )
 
     def validation_report(self, caller: Caller, system_id: str) -> Result:

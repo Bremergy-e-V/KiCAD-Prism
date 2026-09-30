@@ -52,6 +52,22 @@ class ManifestSchemaTest(unittest.TestCase):
         rewired["harnesses"][0]["wires"][0]["to"]["pin"] = "3"
         self.assertNotEqual(digests(Manifest.model_validate(rewired))["connectivity"], before["connectivity"])
 
+    def test_optional_rules_change_only_the_full_digest(self) -> None:
+        raw = load("manifest-child-cndh.json")
+        self.assertEqual(raw["system"]["optionalRules"], [])
+        before = digests(Manifest.model_validate(raw))
+        legacy = copy.deepcopy(raw)
+        del legacy["system"]["optionalRules"]  # a manifest written before P2-1.10
+        self.assertEqual(digests(Manifest.model_validate(legacy)), before)
+        enabled = copy.deepcopy(raw)
+        enabled["system"]["optionalRules"] = ["SYS-V09"]
+        after = digests(Manifest.model_validate(enabled))
+        self.assertEqual(after["connectivity"], before["connectivity"])
+        self.assertNotEqual(after["full"], before["full"])
+        enabled["system"]["optionalRules"] = ["SYS-V10"]
+        with self.assertRaises(ValidationError):
+            Manifest.model_validate(enabled)
+
     def test_meta_never_changes_a_digest(self) -> None:
         raw = load("manifest-child-cndh.json")
         other = copy.deepcopy(raw)

@@ -40,6 +40,8 @@ class UpdateSystemRequest(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=200)
     description: Optional[str] = Field(default=None, max_length=4000)
     folderId: Optional[str] = None
+    # Opt-in validation rules (CONTRACTS_P2 §8.4); the full list replaces the stored one.
+    optionalRules: Optional[list[str]] = Field(default=None, max_length=8)
 
 
 class CreateInstanceRequest(BaseModel):
@@ -244,6 +246,8 @@ async def update_system(
         raise HTTPException(status_code=422, detail="name cannot be null")
     if "description" in fields and fields["description"] is None:
         fields["description"] = ""
+    if "optionalRules" in fields and fields["optionalRules"] is None:
+        fields["optionalRules"] = []
     result = await _run(system_id, lambda: system_service.service.update_system(
         _caller(user), system_id, version, fields,
     ))

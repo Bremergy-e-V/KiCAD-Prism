@@ -3,7 +3,10 @@
   "system": {
     "id": "sys_d20f83ee6933aa1ea047fe5cbd9c1fd5",
     "name": "Satellite Bus",
-    "description": ""
+    "description": "",
+    "optionalRules": [
+      "SYS-V09"
+    ]
   },
   "meta": {
     "createdAt": "2026-09-30T13:00:00+00:00",

@@ -3,7 +3,8 @@
   "system": {
     "id": "sys_d74040e3b72a9ef9ea537f776f322f79",
     "name": "CNDH Stack",
-    "description": "2x OBC on CMBD"
+    "description": "2x OBC on CMBD",
+    "optionalRules": []
   },
   "meta": {
     "createdAt": "2026-09-30T12:00:00+00:00",

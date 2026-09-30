@@ -209,6 +209,8 @@ they concern:
 | SYS-V06 | warning | The PCB carries a different net from the schematic on a connected pin |
 | SYS-V07 | warning | A connected pin carries more than one net |
 | SYS-V08 | info | The board has an open review |
+| SYS-V09 | warning | The two nets a row joins have no related name. **Off by default**: turn it on under **Checks** on the Overview |
+| SYS-V10 | error | A power net meets a named signal net across a link |
 
 A rule that cannot run (for example SYS-V06 on a board with no PCB) is listed
 as *not evaluated*; it never counts as a pass. The schematic is the source of

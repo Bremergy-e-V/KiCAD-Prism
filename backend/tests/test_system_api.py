@@ -290,6 +290,15 @@ class SystemApiTest(unittest.TestCase):
         self.assertEqual(other_system.status, 412)
         self.assertEqual(self.call("GET", f"/{sid}").json["system"]["name"], "Renamed")
 
+    def test_optional_rules_are_set_through_patch(self) -> None:
+        sid, etag = self.create_system()
+        self.assertEqual(self.call("GET", f"/{sid}").json["system"]["optionalRules"], [])
+        enabled = self.mutate("PATCH", f"/{sid}", etag, body={"optionalRules": ["SYS-V09"]})
+        self.assertEqual(enabled.json["optionalRules"], ["SYS-V09"])
+        self.mutate("PATCH", f"/{sid}", enabled.headers["etag"], body={"optionalRules": ["SYS-V01"]}, expect=422)
+        cleared = self.mutate("PATCH", f"/{sid}", enabled.headers["etag"], body={"optionalRules": None})
+        self.assertEqual(cleared.json["optionalRules"], [])
+
     def test_folder_visibility_hides_systems(self) -> None:
         hidden, _ = self.create_system("Secret", folder="fld_designers")
         open_sid, _ = self.create_system("Open", folder="fld_open")

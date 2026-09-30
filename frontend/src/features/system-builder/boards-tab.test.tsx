@@ -152,6 +152,25 @@ describe("OverviewTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /L1/ }));
     expect(onNavigate).toHaveBeenLastCalledWith("connectivity", { link: "L1" });
   });
+  it("opts the system into the net-name check", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { ETag: '"sys:sys_1:2"', "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const reload = vi.fn(async () => undefined);
+    render(<OverviewTab systemId="sys_1" document={doc} etag='"sys:sys_1:1"' canEdit user={null} reload={reload} onNavigate={vi.fn()} />);
+    const check = screen.getByRole("checkbox", { name: /Check net names across links/ });
+    expect(check.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(check);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect([url, init.method, JSON.parse(String(init.body))]).toEqual(["/api/systems/sys_1", "PATCH", { optionalRules: ["SYS-V09"] }]);
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+  it("shows the check read-only without edit rights", () => {
+    const enabled = { ...doc, system: { ...doc.system, optionalRules: ["SYS-V09" as const] } };
+    render(<OverviewTab systemId="sys_1" document={enabled} etag="e" canEdit={false} user={null} reload={vi.fn()} onNavigate={vi.fn()} />);
+    const check = screen.getByRole("checkbox", { name: /Check net names across links/ }) as HTMLButtonElement;
+    expect([check.getAttribute("aria-checked"), check.disabled]).toEqual(["true", true]);
+  });
   it("exports a free port and marks it so it cannot be hidden", async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 201, headers: { ETag: '"sys:sys_1:2"', "Content-Type": "application/json" } }));
     vi.stubGlobal("fetch", fetchMock);

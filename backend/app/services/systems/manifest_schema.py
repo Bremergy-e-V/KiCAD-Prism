@@ -332,6 +332,8 @@ class SystemHeader(_Model):
     id: SystemId
     name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=4000)
+    optionalRules: list[Literal["SYS-V09"]] = Field(
+        default_factory=list, description="opt-in validation rules this system runs (P2 §8.4)")
 
 
 class SnapshotHeader(_Model):
@@ -455,6 +457,8 @@ def _sha(value: Any) -> str:
 def full_view(manifest: Manifest) -> dict:
     body = manifest.model_dump(mode="json", by_alias=True, exclude_none=False)
     body.pop("meta")
+    if not body["system"]["optionalRules"]:
+        body["system"].pop("optionalRules")  # manifests from before P2-1.10 keep their digests
     return body
 
 
@@ -462,6 +466,7 @@ def connectivity_view(manifest: Manifest) -> dict:
     """``full_view`` without placement-only facts."""
 
     body = full_view(manifest)
+    body["system"].pop("optionalRules", None)  # a check setting, not connectivity
     body.pop("layout")
     body.pop("mating")
     body.pop("placement")

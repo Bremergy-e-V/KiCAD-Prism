@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.9 · 2026-09-30 · tickets SB2-00 to SB2-09.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
+**Version P2-1.10 · 2026-09-30 · tickets SB2-00 to SB2-09, and the V09 opt-in.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §14.
@@ -331,7 +331,7 @@ A net's **tokens** are the last path segment, uppercased, with KiCad markup (`~{
 
 | Rule | Name | Severity | Definition |
 |---|---|---|---|
-| SYS-V09 | `net_name_mismatch` | warning | At a join (row or wire), no token on one side is **related** to a token on the other (P2-1.8). Related: equal; one a prefix or suffix of the other (2+ characters, digits kept, so `GPIO4`/`IO4` match and `GPIO4`/`IO5` do not); an in-order abbreviation with the same first letter (`RST`/`RESET`); an acronym of the other side's tokens (`PG`/`PWR_GOOD`); or a crossed pair (`TX`/`RX`, `TXD`/`RXD`, `SDO`/`SDI`, `DOUT`/`DIN`, `CTS`/`RTS`). It is reported once per join, with both names. Unnamed auto-nets and unconnected pins never trigger it. |
+| SYS-V09 | `net_name_mismatch` | warning, **opt-in** | Runs only when the system lists it in `optionalRules` (P2-1.10; off by default). At a join (row or wire), no token on one side is **related** to a token on the other (P2-1.8). Related: equal; one a prefix or suffix of the other (2+ characters, digits kept, so `GPIO4`/`IO4` match and `GPIO4`/`IO5` do not); an in-order abbreviation with the same first letter (`RST`/`RESET`); an acronym of the other side's tokens (`PG`/`PWR_GOOD`); or a crossed pair (`TX`/`RX`, `TXD`/`RXD`, `SDO`/`SDI`, `DOUT`/`DIN`, `CTS`/`RTS`). It is reported once per join, with both names. Unnamed auto-nets and unconnected pins never trigger it. |
 | SYS-V10 | `power_meets_signal` | error | At a join, exactly one side's pin has `powerNet: true` and the other side's net is a named, non-power net. |
 | SYS-V11 | `mate_mismatch` | warning | Reserved for M4 (PLAN §5.3). |
 | SYS-V12 | `harness_collision` | warning | Reserved for M5. |
@@ -339,6 +339,8 @@ A net's **tokens** are the last path segment, uppercased, with KiCad markup (`~{
 | SYS-V14 | `child_revision_unreleased` | warning | An assembly or module instance pins a revision that is not `released`, or whose snapshot had open reviews. |
 | SYS-V15 | `child_advance_blocked` | warning | A released revision exists but advancing would break §5.3 limits. |
 | SYS-V16 | `export_unresolved` | error | An export's connector no longer resolves at its board's baseline, or is no longer exposed (§4.2 rule 7). Not evaluated while the board's interface is missing. |
+
+**Optional rules (P2-1.10, user decision 2026-09-30).** `system_projects.optional_rules` (migration 35) lists the opt-in rules a system runs; today the only one is `SYS-V09`, because real boards rename nets across connectors far more often than they miswire them (108 warnings on the JTYU C&DH set). It is set with `PATCH /systems/{id}` `{"optionalRules": ["SYS-V09"]}` (the list replaces the stored one; `null` clears it; any other rule is 422), bumps the system version, is audited as `system_updated`, and is shown in the system summary and the manifest header. The Overview tab has a **Checks** section with the switch. `SYS-V10` always runs.
 
 **`powerNet` (extractor v5 [S4]).** A pin's net is a power net when any schematic symbol on that net is a power symbol: KiCad `power` flag set on its lib symbol, or a reference starting with `#PWR`/`#FLG`. The extractor records `powerNet: bool` per pin. `EXTRACTOR_VERSION` goes to 5, and every board re-extracts once.
 
@@ -351,7 +353,7 @@ The models in `manifest_schema.py` are normative. Top-level keys:
 | Key | Content |
 |---|---|
 | `schema` | `"prism.system_manifest.v1"` |
-| `system` | `{id, name, description}` |
+| `system` | `{id, name, description, optionalRules}`: `optionalRules` defaults to `[]`, is part of the full digest only, and is left out of the full digest when empty so manifests from before P2-1.10 keep their digests |
 | `meta` | `{createdAt, createdBy, sourceVersion, snapshot?: {id, name, note}}` |
 | `instances` | board `{id, label, kind: "board", projectId, baselineCommit, trackedRef, pinned, portOverrides}` or catalog `{id, label, kind: "assembly"\|"module", catalog: {componentId, revisionId, revisionVersion, identity}, follow}` |
 | `exports` | §4.1. A port target is `{instanceId, portKey, port: PortBaseline}` (P2-1.3); a re-export target is `{instanceId, exportId}` |
@@ -470,6 +472,7 @@ Everything else stays on reader or writer roles, including inventory export, hea
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.10 | 2026-09-30 | SYS-V09 becomes opt-in per system (user decision after M0: 108 warnings on JTYU). Migration 35 `optional_rules`; `PATCH /systems/{id}` `optionalRules`; manifest `system.optionalRules` (full digest only, omitted when empty); Overview **Checks** section. SYS-V10 stays an error. |
 | P2-1.9 | 2026-09-30 | SB2-09: parent ICD Subsystems table and unreleased banner; `?depth=all` on live and snapshot ICDs (CSV `occurrence` column, HTML "Inside subsystems"), with recursive redaction; diagram subsystem node and its contents list; History "All levels" link. Backfills rows P2-1.5 to P2-1.8, whose document edits were missing from their tickets. |
 | P2-1.8 | 2026-09-30 | SB2-08: system nets (§8.1–§8.2) following export ends and re-exports; extractor v5 `powerNet`; V09 refined from "share no token" to "no related token" (§8.4) after the literal rule flagged 11 intentional renames in the fixtures; V10; `GET …/nets`, `…/nets/{groupId}`. The F8 golden gains one V09 (`PAYLOAD_INT#`/`IRQ_OUT#`). |
 | P2-1.7 | 2026-09-30 | SB2-07: child drift (§7). Migration 34 `child_update` reviews; `system_child_check` on catalog release; rebase by `{revisionId}`; SYS-V14, SYS-V15. |
