@@ -31,6 +31,7 @@ RULES = {
     "SYS-V14": ("child_revision_unreleased", "warning"),
     "SYS-V15": ("child_advance_blocked", "warning"),
     "SYS-V16": ("export_unresolved", "error"),
+    "SYS-V17": ("mating_stale", "info"),
 }
 # Opt-in per system (``system_projects.optional_rules``, CONTRACTS_P2 §8.4): off unless enabled.
 OPTIONAL_RULES = frozenset({"SYS-V09"})
@@ -248,3 +249,9 @@ def with_findings(report: Mapping[str, Any], extra: Sequence[Mapping[str, Any]])
         counts[finding["severity"]] += 1
     counts["notEvaluated"] = report["counts"]["notEvaluated"]
     return {**report, "findings": findings, "counts": counts}
+
+
+def mating_findings(stale: Sequence[Mapping[str, Any]]) -> list[dict]:
+    """SYS-V17 (CONTRACTS_P2 §15.2): a stored frame whose port geometry changed since it was confirmed."""
+    return [_finding("SYS-V17", instance_id=item["instanceId"], reference=item["reference"],
+                     detail={"portKey": item["portKey"], "mode": item["mode"]}) for item in stale]

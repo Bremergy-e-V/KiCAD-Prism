@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.12 · 2026-09-30 · tickets SB2-00 to SB2-11.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.13 · 2026-09-30 · tickets SB2-00 to SB2-12.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -421,7 +421,7 @@ Reading rules:
 - P1 snapshots stay readable everywhere else, but cannot be published.
 - Writers emit instances, links and rows sorted by ID, so an unchanged system snapshots to identical digests.
 
-**Import.** `manifest.import_manifest` recreates a system from a manifest, **keeping every ID** (system, instances, links, rows), and audits `system_imported`. A clash with an existing ID fails the transaction. Sections without tables yet (exports, harnesses, mating, placement, catalog instances) are refused with 422 until their tickets land. There is no HTTP route yet; M7 adds one.
+**Import.** `manifest.import_manifest` recreates a system from a manifest, **keeping every ID** (system, instances, links, rows), and audits `system_imported`. A clash with an existing ID fails the transaction. Sections without tables yet (harnesses, placement) are refused with 422 until their tickets land; mating records import as stored (SB2-12). There is no HTTP route yet; M7 adds one.
 
 ### 9.5 Canvas layout (revises P1 invariant 6)
 
@@ -589,11 +589,11 @@ The right-angle axis is kept in the footprint frame, so rotating the footprint (
 
 | Method and path | Purpose |
 |---|---|
-| `GET …/instances/{iid}/mating` | Every candidate port: `{portKey, reference, inferred: {axis, confidence, reasons} \| null, stored: {mode, axis, quarterTurns, stale} \| null}` |
-| `PUT …/instances/{iid}/mating/{portKey}` | `{mode: "confirmed"}` or `{mode: "override", axis, quarterTurns}`; If-Match; audits `mating_updated`; bumps the system version |
+| `GET …/instances/{iid}/mating` | `{instanceId, boardThicknessMm, ports}`: every **exposed** port as `{portKey, reference, footprint, hasGeometry, inferred: {axis, confidence, reasons}, stored: {mode, axis, quarterTurns, stale} \| null}` |
+| `PUT …/instances/{iid}/mating/{portKey}` | `{mode: "confirmed"}` (takes the inference as is; an axis or turns with it is 422) or `{mode: "override", axis, quarterTurns}`; If-Match; audits `mating_updated` with before/after; bumps the system version; returns the port row |
 | `DELETE …/instances/{iid}/mating/{portKey}` | Back to inferred; If-Match; audits `mating_updated` |
 
-Errors: 409 `mating_not_inferable` when confirming a `low` inference (use override), 422 for an axis/turns outside the enum, 409 `interface_not_ready` while the v6 artifact is missing.
+Errors: 409 `mating_not_inferable` when confirming a `low` inference (use override), 422 for an axis/turns outside the enum or a port that is not a component at the baseline, 422 on a subsystem instance (its frames are frozen in its snapshot), 409 `interface_not_ready` while the v6 artifact is missing. Manifests carry the stored records (`mating[]`) and import them as stored.
 
 ## 16. Link types (SB2-13)
 
@@ -670,6 +670,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.13 | 2026-09-30 | SB2-12: placement library `frames` pair (Python `systems/placement/frames.py`, TypeScript `placement/frames.ts`) with shared goldens `placement_cases.json` (14 cases from KiCad stock footprints); migration 36 `system_port_mating`; mating API (§15.3, response shape fixed); `SYS-V17 mating_stale`; manifest mating import and export. |
 | P2-1.12 | 2026-09-30 | SB2-11: extractor v6 implemented as §14.6 (`EXTRACTOR_VERSION` 6, every board re-extracts once). Goldens compare pad centres and footprint poses with `kicad-cli` 10.0.6 IPC-D-356 and position-file exports (`fixtures/system_builder/p2/evidence/geometry`). |
 | P2-1.11 | 2026-09-30 | SB2-10 M1 packet: §0.1 choices T1–T7 (signed off by the user 2026-09-30); §14 frames and conventions, extractor v6 geometry; §15 mating inference, storage and API; §16 link type conversions and B2B rules; §17 harness tables, behaviour, API, ICD/CSV; §18 mates with; findings V17–V19; errors and audit additions. Manifest: `mating[]` stores only confirmed/override with `geometryDigest`; `stackHeightMm` moves to `links[]` (b2b only, full digest only, omitted when unset). The revision log becomes §19. |
 | P2-1.10 | 2026-09-30 | SYS-V09 becomes opt-in per system (user decision after M0: 108 warnings on JTYU). Migration 35 `optional_rules`; `PATCH /systems/{id}` `optionalRules`; manifest `system.optionalRules` (full digest only, omitted when empty); Overview **Checks** section. SYS-V10 stays an error. |

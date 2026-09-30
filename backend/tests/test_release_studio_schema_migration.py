@@ -1797,6 +1797,7 @@ class ReleaseStudioPostgresSchemaTests(unittest.TestCase):
                 (33, "system_catalog_instances"),
                 (34, "system_child_reviews"),
                 (35, "system_optional_rules"),
+                (36, "system_port_mating"),
             ],
         )
 
