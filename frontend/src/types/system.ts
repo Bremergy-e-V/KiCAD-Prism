@@ -257,6 +257,9 @@ export interface SnapshotMeta {
   createdBy: string;
   createdAt: string;
   digest: string;
+  /** Manifest connectivity digest; null for snapshots taken before manifests (P2 §9.4). */
+  connectivityDigest?: string | null;
+  manifestSchema?: string | null;
   openReviewCount: number;
   rendererVersion: string;
 }

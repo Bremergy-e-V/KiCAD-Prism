@@ -35,6 +35,7 @@ from app.services.workspace_migrations import m026_system_builder
 from app.services.workspace_migrations import m027_system_workspace_version
 from app.services.workspace_migrations import m028_system_review_pending_changes
 from app.services.workspace_migrations import m029_system_import_sessions
+from app.services.workspace_migrations import m030_system_snapshot_manifest
 from app.services.trackers import migrations as tracker_migrations
 
 
@@ -68,6 +69,7 @@ MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (27, "system_workspace_version", m027_system_workspace_version.migrate),
     (28, "system_review_pending_changes", m028_system_review_pending_changes.migrate),
     (29, "system_import_sessions", m029_system_import_sessions.migrate),
+    (30, "system_snapshot_manifest", m030_system_snapshot_manifest.migrate),
 )
 
 

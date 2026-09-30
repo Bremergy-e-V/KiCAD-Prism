@@ -80,4 +80,19 @@ describe("HistoryTab", () => {
     expect(await screen.findByText("No snapshots yet.")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Take snapshot/ })).toBeNull();
   });
+  it("offers the manifest only for snapshots that have one", async () => {
+    const meta = { note: "", createdBy: "user:a@x", createdAt: "2026-09-30T10:00:00Z", digest: "sha256:abcdef0123456789abcdef",
+      openReviewCount: 0, rendererVersion: "2" };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      const body = url.includes("/history") ? { events: [], nextCursor: null }
+        : [{ ...meta, id: "ssn_new", name: "CDR", manifestSchema: "prism.system_manifest.v1", connectivityDigest: "sha256:c" },
+          { ...meta, id: "ssn_old", name: "PDR", manifestSchema: null, connectivityDigest: null }];
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    render(<HistoryTab systemId="sys_1" document={doc} etag="e" canEdit={false} user={null} reload={vi.fn()} onNavigate={vi.fn()} />);
+    const link = await screen.findByRole("link", { name: "Manifest of CDR" });
+    expect(link.getAttribute("href")).toBe("/api/systems/sys_1/snapshots/ssn_new/manifest");
+    expect(link.getAttribute("download")).toBe("CDR.manifest.json");
+    expect(screen.queryByRole("link", { name: "Manifest of PDR" })).toBeNull();
+  });
 });

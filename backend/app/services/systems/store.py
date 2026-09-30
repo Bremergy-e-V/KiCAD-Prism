@@ -62,6 +62,10 @@ class Invalid(SystemStoreError):
     """422: schema or limit violation."""
 
 
+class Forbidden(SystemStoreError):
+    """403: the caller may see the system but not this whole artifact."""
+
+
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -74,6 +78,15 @@ def _require_commit(commit: str) -> str:
 def new_id(prefix: str) -> str:
     """§2.1: a prefix plus 32 lowercase hex characters from a UUID4."""
     return f"{prefix}{uuid.uuid4().hex}"
+
+
+def _given_id(prefix: str, value: Optional[str]) -> str:
+    """A caller-supplied ID (manifest import keeps IDs), or a new one."""
+    if value is None:
+        return new_id(prefix)
+    if not re.fullmatch(rf"{prefix}[0-9a-f]{{32}}", value):
+        raise Invalid(f"{value!r} is not a {prefix} id")
+    return value
 
 
 def _port_baseline(port: Mapping[str, Any]) -> dict[str, Any]:
@@ -121,11 +134,12 @@ class SystemStore:
     # Systems
 
     def create_system(
-        self, *, name: str, description: str = "", folder_id: Optional[str], actor: str
+        self, *, name: str, description: str = "", folder_id: Optional[str], actor: str,
+        system_id: Optional[str] = None,
     ) -> dict:
         if not name.strip():
             raise Invalid("name is required")
-        system_id = new_id("sys_")
+        system_id = _given_id("sys_", system_id)
         row = self.conn.execute(
             """
             INSERT INTO system_projects (id, name, description, folder_id, created_by)
@@ -238,7 +252,7 @@ class SystemStore:
 
     def add_instance(
         self, change: Mutation, *, project_id: str, label: str, baseline_commit: str,
-        tracked_ref: Optional[str], pinned: bool,
+        tracked_ref: Optional[str], pinned: bool, instance_id: Optional[str] = None,
     ) -> dict:
         count = self.conn.execute(
             "SELECT count(*) AS n FROM system_instances WHERE system_id = %s", (change.system_id,)
@@ -247,7 +261,7 @@ class SystemStore:
             raise Invalid(f"limit instances_per_system ({MAX_INSTANCES})")
         _require_commit(baseline_commit)
         self._require_free_label(change.system_id, label)
-        instance_id = new_id("sin_")
+        instance_id = _given_id("sin_", instance_id)
         row = self.conn.execute(
             """
             INSERT INTO system_instances
@@ -488,7 +502,7 @@ class SystemStore:
     def create_link(
         self, change: Mutation, *, a_instance_id: str, a_port: Mapping[str, Any],
         b_instance_id: str, b_port: Mapping[str, Any], name: str = "",
-        harness: Optional[str] = None,
+        harness: Optional[str] = None, link_id: Optional[str] = None,
     ) -> dict:
         a_baseline, b_baseline = _port_baseline(a_port), _port_baseline(b_port)
         if a_instance_id == b_instance_id and a_baseline["portKey"] == b_baseline["portKey"]:
@@ -500,7 +514,7 @@ class SystemStore:
         ).fetchone()["n"]
         if count >= MAX_LINKS:
             raise Invalid(f"limit links_per_system ({MAX_LINKS})")
-        link_id = new_id("slk_")
+        link_id = _given_id("slk_", link_id)
         self.conn.execute(
             """
             INSERT INTO system_links
@@ -555,7 +569,8 @@ class SystemStore:
         )
 
     def replace_rows(
-        self, change: Mutation, link_id: str, rows: Sequence[Mapping[str, Any]]
+        self, change: Mutation, link_id: str, rows: Sequence[Mapping[str, Any]],
+        *, keep_new_ids: bool = False,
     ) -> list[dict]:
         """§8.1 ``PUT …/rows``: replace a link's rows atomically.
 
@@ -582,7 +597,9 @@ class SystemStore:
                 raise Invalid(f"unknown row source {source!r}")
             row_id = row.get("id")
             if row_id is not None and row_id not in existing:
-                raise Conflict(f"row {row_id} does not belong to this link")
+                if not keep_new_ids:
+                    raise Conflict(f"row {row_id} does not belong to this link")
+                _given_id("srw_", row_id)  # manifest import: a new row keeps its ID
             if row_id is not None and row_id in ids:
                 raise Invalid(f"row {row_id} appears twice")
             if row_id is not None:
@@ -771,25 +788,30 @@ class SystemStore:
     # ------------------------------------------------------------------
     # Snapshots (§9.1): immutable, stored unredacted
 
-    _SNAPSHOT_META = "id, system_id, name, note, created_by, created_at, digest, open_review_count, renderer_version"
+    _SNAPSHOT_META = ("id, system_id, name, note, created_by, created_at, digest, open_review_count, "
+                      "renderer_version, manifest_schema, connectivity_digest")
 
     def create_snapshot(
         self, change: Mutation, *, name: str, note: str, document: Mapping[str, Any], digest: str,
-        open_review_count: int, renderer_version: str,
+        open_review_count: int, renderer_version: str, snapshot_id: Optional[str] = None,
+        manifest: Optional[Mapping[str, Any]] = None, connectivity_digest: Optional[str] = None,
     ) -> dict:
         if not name.strip():
             raise Invalid("name is required")
-        snapshot_id = new_id("ssn_")
+        snapshot_id = _given_id("ssn_", snapshot_id)
         row = self.conn.execute(
             f"""
             INSERT INTO system_snapshots
-                (id, system_id, name, note, created_by, document, digest, open_review_count, renderer_version)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (id, system_id, name, note, created_by, document, digest, open_review_count, renderer_version,
+                 manifest, manifest_schema, connectivity_digest)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT ON CONSTRAINT system_snapshots_name_key DO NOTHING
             RETURNING {self._SNAPSHOT_META}
             """,
             (snapshot_id, change.system_id, name.strip(), note, change.actor, Jsonb(dict(document)),
-             digest, int(open_review_count), renderer_version),
+             digest, int(open_review_count), renderer_version,
+             Jsonb(dict(manifest)) if manifest is not None else None,
+             manifest.get("schema") if manifest is not None else None, connectivity_digest),
         ).fetchone()
         if row is None:
             raise Conflict(f"a snapshot named {name.strip()!r} already exists")
@@ -805,7 +827,7 @@ class SystemStore:
 
     def get_snapshot(self, system_id: str, snapshot_id: str) -> dict:
         row = self.conn.execute(
-            f"SELECT {self._SNAPSHOT_META}, document FROM system_snapshots WHERE system_id = %s AND id = %s",
+            f"SELECT {self._SNAPSHOT_META}, document, manifest FROM system_snapshots WHERE system_id = %s AND id = %s",
             (system_id, snapshot_id),
         ).fetchone()
         if row is None:

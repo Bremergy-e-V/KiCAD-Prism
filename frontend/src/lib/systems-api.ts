@@ -269,6 +269,10 @@ export function diffSnapshot(systemId: string, snapshotId: string, against: "liv
 }
 
 /** Where the browser opens an ICD: live, or a snapshot's. */
+export function manifestUrl(systemId: string, snapshotId: string): string {
+  return `${path(systemId, "snapshots", snapshotId)}/manifest`;
+}
+
 export function icdUrl(systemId: string, format: "csv" | "html", snapshotId?: string): string {
   return snapshotId
     ? `${path(systemId, "snapshots", snapshotId)}/icd.${format}`

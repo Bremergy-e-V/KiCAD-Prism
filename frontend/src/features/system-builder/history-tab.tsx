@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Camera, FileSpreadsheet, FileText, GitCompare } from "lucide-react";
+import { Camera, FileJson, FileSpreadsheet, FileText, GitCompare } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { createSnapshot, diffSnapshot, getHistory, icdUrl, listSnapshots } from "@/lib/systems-api";
+import { createSnapshot, diffSnapshot, getHistory, icdUrl, listSnapshots, manifestUrl } from "@/lib/systems-api";
 import type { AuditEvent, RowFields, SnapshotDiff, SnapshotMeta, SystemDocument } from "@/types/system";
 
 import type { SystemTabProps } from "./system-tab-content";
@@ -209,6 +209,14 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, 
                       <FileSpreadsheet className="h-4 w-4" />
                     </a>
                   </Button>
+                  {snapshot.manifestSchema && (
+                    <Button asChild variant="ghost" size="sm">
+                      <a href={manifestUrl(systemId, snapshot.id)} download={`${snapshot.name}.manifest.json`}
+                        aria-label={`Manifest of ${snapshot.name}`} title="Download the system manifest (JSON)">
+                        <FileJson className="h-4 w-4" />
+                      </a>
+                    </Button>
+                  )}
                   <Button variant="ghost" size="sm" aria-label={`Compare ${snapshot.name}`}
                     onClick={() => setCompare({ snapshotId: snapshot.id, against: LIVE })}>
                     <GitCompare className="h-4 w-4" />

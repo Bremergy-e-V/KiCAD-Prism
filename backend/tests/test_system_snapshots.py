@@ -15,7 +15,7 @@ from test_system_api import _request
 from app.api import systems as systems_api
 from app.services.systems import icd
 from app.services.systems import service as service_module
-from app.services.systems.interface_extractor import canonical_digest
+from app.services.systems.manifest_schema import Manifest, digests
 from app.services.systems.jobs import extract_and_store
 from app.services.systems.service import Caller, SystemService
 from app.services.systems.store import Conflict, NotFound, StaleVersion
@@ -66,7 +66,7 @@ class SnapshotTest(SnapshotCase):
         self.assertEqual((meta["name"], meta["note"], meta["openReviewCount"], meta["rendererVersion"]),
                          ("CDR", "critical design review", 0, icd.RENDERER_VERSION))
         stored = self.store.get_snapshot(self.sid, meta["id"])
-        self.assertEqual(meta["digest"], canonical_digest(stored["document"]))
+        self.assertEqual(meta["digest"], digests(Manifest.model_validate(stored["manifest"]))["full"])
         [event] = self.events("snapshot_created")
         self.assertEqual(event["payload"], {"snapshotId": meta["id"], "name": "CDR", "digest": meta["digest"]})
         self.assertEqual([s["id"] for s in self.service.list_snapshots(DESIGNER, self.sid)], [meta["id"]])
