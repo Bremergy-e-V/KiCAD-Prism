@@ -100,7 +100,8 @@ def build(
     layout = store.get_layout(system_id)
     body = {
         "schema": SCHEMA,
-        "system": {"id": system["id"], "name": system["name"], "description": system["description"]},
+        "system": {"id": system["id"], "name": system["name"], "description": system["description"],
+                   "optionalRules": sorted(system.get("optional_rules") or [])},
         "meta": {
             "createdAt": _iso(created_at), "createdBy": created_by, "sourceVersion": int(system["version"]),
             "snapshot": dict(snapshot) if snapshot else None,
@@ -144,7 +145,7 @@ def import_manifest(
 
     row = store.create_system(
         name=manifest.system.name, description=manifest.system.description, folder_id=folder_id,
-        actor=actor, system_id=manifest.system.id,
+        actor=actor, system_id=manifest.system.id, optional_rules=manifest.system.optionalRules,
     )
     with store.mutation(row["id"], expected_version=None, actor=actor) as change:
         for instance in manifest.instances:

@@ -50,6 +50,7 @@ def summary(row: dict) -> dict[str, Any]:
         "subsystemCount": int(row.get("subsystem_count") or 0),
         "openReviewCount": int(row.get("open_review_count") or 0),
         "catalogComponentId": row.get("catalog_component_id"),
+        "optionalRules": sorted(row.get("optional_rules") or []),
         "createdBy": row["created_by"],
         "createdAt": _iso(row["created_at"]),
         "updatedAt": _iso(row["updated_at"]),

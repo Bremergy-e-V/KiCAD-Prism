@@ -5,6 +5,9 @@
  * nullable here.
  */
 
+/** Rules that run only when a system opts in (CONTRACTS_P2 §8.4). */
+export type OptionalRule = "SYS-V09";
+
 export interface SystemSummary {
   id: string;
   kind: "system";
@@ -19,6 +22,8 @@ export interface SystemSummary {
   openReviewCount: number;
   /** The catalog `assembly` this system publishes to, bound on first publish (CONTRACTS_P2 §3.3). */
   catalogComponentId?: string | null;
+  /** Opt-in validation rules this system runs (CONTRACTS_P2 §8.4); absent before P2-1.10. */
+  optionalRules?: OptionalRule[];
   createdBy: string;
   createdAt: string;
   updatedAt: string;

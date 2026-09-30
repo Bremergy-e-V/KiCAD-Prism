@@ -286,6 +286,7 @@ class ReplayTest(unittest.TestCase):
         created = self.call("POST", "", body={"name": "Replay"})
         self.assertEqual(created.status, 201, created.text)
         self.sid, self.etag = created.json["id"], created.headers["etag"]
+        self.mutate("PATCH", "", body={"optionalRules": ["SYS-V09"]})  # the goldens include the opt-in V09
         self.instances, self.link_ids = {}, {}
         for label, board in spec["instances"].items():
             added = self.mutate("POST", "/instances", expect=201, body={

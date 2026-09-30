@@ -39,8 +39,11 @@ class JoinRuleTest(unittest.TestCase):
         port = {"portKey": "k", "memberKeys": ["k"], "reference": "J1"}
         links = [{"id": "L", "a_instance_id": "a", "b_instance_id": "b", "a_port": port, "b_port": port, "harness": None,
                   "rows": [{"id": "r", "pin_a": "1", "pin_b": "1", "net_a": ["GND_3"], "net_b": ["/TM_MON_1"]}]}]
-        report = validation.validate(instances, links, {"a": interface(True, "GND_3"), "b": interface(False, "/TM_MON_1")},
-                                     {"a": {}, "b": {}})
+        interfaces = {"a": interface(True, "GND_3"), "b": interface(False, "/TM_MON_1")}
+        report = validation.validate(instances, links, interfaces, {"a": {}, "b": {}})
+        self.assertEqual([(f["rule"], f["severity"]) for f in report["findings"]], [("SYS-V10", "error")],
+                         "V09 is opt-in; V10 always runs")
+        report = validation.validate(instances, links, interfaces, {"a": {}, "b": {}}, optional_rules={"SYS-V09"})
         rules = sorted((f["rule"], f["severity"]) for f in report["findings"])
         self.assertEqual(rules, [("SYS-V09", "warning"), ("SYS-V10", "error")])
         [v10] = [f for f in report["findings"] if f["rule"] == "SYS-V10"]

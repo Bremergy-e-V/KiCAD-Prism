@@ -46,8 +46,11 @@ class ManifestTest(SnapshotCase):
 
     def test_round_trip_db_manifest_db_keeps_ids_and_digests(self) -> None:
         self.store.put_layout(self.sid, {self.instances["OBC-A"]: {"x": 1.5, "y": 2.5}})
+        with self.store.mutation(self.sid, expected_version=None, actor="user:t") as change:
+            self.store.update_system(change, optional_rules=["SYS-V09"])
         self.conn.commit()
         before = self.build()
+        self.assertEqual(before.system.optionalRules, ["SYS-V09"])
         self.store.delete_system(self.sid)
         self.conn.commit()
         imported = manifest_io.import_manifest(self.store, before, actor="user:importer")

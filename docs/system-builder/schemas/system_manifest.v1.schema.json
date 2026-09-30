@@ -1102,6 +1102,15 @@
           "minLength": 1,
           "title": "Name",
           "type": "string"
+        },
+        "optionalRules": {
+          "description": "opt-in validation rules this system runs (P2 \u00a78.4)",
+          "items": {
+            "const": "SYS-V09",
+            "type": "string"
+          },
+          "title": "Optionalrules",
+          "type": "array"
         }
       },
       "required": [
