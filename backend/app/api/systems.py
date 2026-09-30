@@ -379,6 +379,46 @@ async def set_port_override(
 
 
 # ---------------------------------------------------------------------------
+# Mating frames (CONTRACTS_P2 §15.3)
+
+
+class MatingRequest(BaseModel):
+    mode: Literal["confirmed", "override"]
+    axis: Optional[Literal["top", "bottom", "+x", "-x", "+y", "-y"]] = None
+    quarterTurns: Optional[int] = Field(default=None, ge=0, le=3)
+
+
+@router.get("/{system_id}/instances/{instance_id}/mating")
+async def get_mating(system_id: str, instance_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    return await _run(system_id, lambda: system_service.service.mating(_caller(user), system_id, instance_id))
+
+
+@router.put("/{system_id}/instances/{instance_id}/mating/{port_key:path}", dependencies=[Depends(require_designer)])
+async def set_mating(
+    system_id: str, instance_id: str, port_key: str, body: MatingRequest, request: Request, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    fields = body.model_dump()
+    result = await _run(system_id, lambda: system_service.service.set_mating(
+        _caller(user), system_id, version, instance_id, port_key, fields,
+    ))
+    return _respond(result, response)
+
+
+@router.delete("/{system_id}/instances/{instance_id}/mating/{port_key:path}", dependencies=[Depends(require_designer)])
+async def clear_mating(
+    system_id: str, instance_id: str, port_key: str, request: Request, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.set_mating(
+        _caller(user), system_id, version, instance_id, port_key, None,
+    ))
+    return _respond(result, response)
+
+
+# ---------------------------------------------------------------------------
 # Exports (CONTRACTS_P2 §4)
 
 

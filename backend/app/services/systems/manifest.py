@@ -5,7 +5,7 @@
 ``import_manifest`` recreates a system from a manifest, keeping its IDs, so a
 manifest round-trips DB → manifest → DB (and, in M7, Git → DB).
 
-P2 objects that have no tables yet (harnesses, mating, poses) are emitted
+P2 objects that have no tables yet (harnesses, poses) are emitted
 empty; their tickets extend both directions.
 """
 
@@ -97,6 +97,13 @@ def build(
             target = {"instanceId": export["target_instance_id"], "exportId": export["target_export_id"]}
         exports.append({"id": export["id"], "name": export["name"], "description": export["description"],
                         "target": target})
+    mating = [
+        {"instanceId": instance["id"], "portKey": port_key, "mode": record["mode"],
+         "frame": {"axis": record["axis"], "quarterTurns": record["quarterTurns"]},
+         "geometryDigest": record["geometryDigest"]}
+        for instance in sorted(store.list_instances(system_id), key=lambda i: i["id"])
+        for port_key, record in sorted(store.list_mating(instance["id"]).items())
+    ]
     layout = store.get_layout(system_id)
     body = {
         "schema": SCHEMA,
@@ -110,7 +117,7 @@ def build(
         "exports": exports,
         "links": links,
         "harnesses": [],
-        "mating": [],
+        "mating": mating,
         "placement": {"poses": [], "drivingMates": []},
         "layout": {"positions": {key: {"x": float(p["x"]), "y": float(p["y"])}
                                  for key, p in sorted(layout.items())}},
@@ -137,7 +144,7 @@ def import_manifest(
     Runs inside the caller's transaction; a clash with an existing ID fails it.
     """
 
-    unsupported = [name for name in ("harnesses", "mating") if getattr(manifest, name)]
+    unsupported = [name for name in ("harnesses",) if getattr(manifest, name)]
     if manifest.placement.poses or manifest.placement.drivingMates:
         unsupported.append("placement")
     if unsupported:
@@ -182,6 +189,10 @@ def import_manifest(
                 store.create_export(change, name=export.name, description=export.description,
                                     instance_id=target.instanceId, child_export_id=target.exportId,
                                     export_id=export.id)
+        for record in manifest.mating:
+            store.set_mating(change, record.instanceId, record.portKey, {
+                "mode": record.mode, "axis": record.frame.axis, "quarterTurns": record.frame.quarterTurns,
+                "geometryDigest": record.geometryDigest})
         change.audit("system_imported", {"schema": SCHEMA, "sourceVersion": manifest.meta.sourceVersion,
                                          "snapshot": manifest.meta.snapshot.id if manifest.meta.snapshot else None})
     if manifest.layout.positions:

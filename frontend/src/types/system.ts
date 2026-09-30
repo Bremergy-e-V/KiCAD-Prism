@@ -451,3 +451,21 @@ export interface SystemHierarchy {
   occurrences: SystemOccurrence[];
   boardCount: number;
 }
+
+/** `GET …/instances/{iid}/mating` (CONTRACTS_P2 §15.3). */
+export type MatingAxis = "top" | "bottom" | "+x" | "-x" | "+y" | "-y";
+
+export interface PortMating {
+  portKey: string;
+  reference: string;
+  footprint: string;
+  hasGeometry: boolean;
+  inferred: { axis: MatingAxis | null; confidence: "high" | "medium" | "low"; reasons: string[] };
+  stored: { mode: "confirmed" | "override"; axis: MatingAxis; quarterTurns: number; stale: boolean } | null;
+}
+
+export interface InstanceMating {
+  instanceId: string;
+  boardThicknessMm: number | null;
+  ports: PortMating[];
+}

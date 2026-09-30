@@ -41,6 +41,7 @@ from app.services.workspace_migrations import m032_system_catalog_binding
 from app.services.workspace_migrations import m033_system_catalog_instances
 from app.services.workspace_migrations import m034_system_child_reviews
 from app.services.workspace_migrations import m035_system_optional_rules
+from app.services.workspace_migrations import m036_system_port_mating
 from app.services.trackers import migrations as tracker_migrations
 
 
@@ -80,6 +81,7 @@ MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (33, "system_catalog_instances", m033_system_catalog_instances.migrate),
     (34, "system_child_reviews", m034_system_child_reviews.migrate),
     (35, "system_optional_rules", m035_system_optional_rules.migrate),
+    (36, "system_port_mating", m036_system_port_mating.migrate),
 )
 
 

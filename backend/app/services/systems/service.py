@@ -26,7 +26,8 @@ from typing import Any, Callable, Collection, ContextManager, Iterator, Mapping,
 from app.core.roles import Role
 from app.services.systems import (
     child_drift, csv_import, drift, exports as exports_module, exposure, generators, hierarchy, icd,
-    manifest as manifest_io, reconcile, redaction, sources, system_nets, validation, visibility,
+    manifest as manifest_io, mating as mating_module, reconcile, redaction, sources, system_nets, validation,
+    visibility,
 )
 from app.services.systems.manifest_schema import digests as manifest_digests
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
@@ -271,6 +272,17 @@ class SystemService:
              "blocked": (store.get_source_check(doc["id"]) or {}).get("last_outcome") == "advance_blocked"}
             for doc in catalog_docs
         ]))
+        stale = []
+        for instance in instances:
+            stored = store.list_mating(instance["id"])
+            if not stored or instance["id"] not in interfaces:
+                continue
+            for port_key, record in sorted(stored.items()):
+                component = exposure.component_by_key(interfaces[instance["id"]], port_key)
+                if mating_module.is_stale(component, record):
+                    stale.append({"instanceId": instance["id"], "portKey": port_key, "mode": record["mode"],
+                                  "reference": (component or {}).get("reference")})
+        report = validation.with_findings(report, validation.mating_findings(stale))
         review_rows = sorted({rid for review in open_reviews for item in review["items"] for rid in item["row_ids"]})
         return {
             "system": dict(system),
@@ -1063,6 +1075,45 @@ class SystemService:
                 store.set_override(change, instance_id, port_key, state)
                 summary = exposure.port_summary(component, state)
         return Result(summary, system_id, change.version)
+
+    # ------------------------------------------------------------------
+    # Mating frames (CONTRACTS_P2 §15)
+
+    def _mating_board(self, store: SystemStore, system_id: str, instance_id: str, caller: Caller) -> tuple[dict, dict]:
+        instance = self._open_instance(store, system_id, instance_id, caller)
+        if instance.get("kind", "board") != "board":
+            raise Invalid("a subsystem's connector frames are frozen in its snapshot; change them in the child system")
+        return instance, self._interface(store, instance)
+
+    def mating(self, caller: Caller, system_id: str, instance_id: str) -> dict:
+        """``GET …/instances/{iid}/mating``: every exposed port's inference and stored frame."""
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            _instance, interface = self._mating_board(store, system_id, instance_id, caller)
+            stored = store.list_mating(instance_id)
+            overrides = store.list_overrides(instance_id)
+        exposed = {p["portKey"] for p in exposure.resolve_ports(interface, overrides) if p["exposed"]}
+        ports = [mating_module.port_state(component, stored.get(component["portKey"]))
+                 for component in interface.get("components") or [] if component["portKey"] in exposed]
+        return {"instanceId": instance_id, "boardThicknessMm": interface.get("boardThicknessMm"), "ports": ports}
+
+    def set_mating(
+        self, caller: Caller, system_id: str, version: int, instance_id: str, port_key: str,
+        fields: Optional[Mapping[str, Any]],
+    ) -> Result:
+        """``PUT`` (``fields``) or ``DELETE`` (``None``) one port's stored frame."""
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                _instance, interface = self._mating_board(store, system_id, instance_id, caller)
+                component = exposure.component_by_key(interface, port_key)
+                if component is None or component["portKey"] != port_key:
+                    raise Invalid("portKey is not a component of this board at its baseline")
+                record = None if fields is None else mating_module.record_for(
+                    component, fields.get("mode"), fields.get("axis"), fields.get("quarterTurns"))
+                store.set_mating(change, instance_id, port_key, record)
+                body = mating_module.port_state(component, store.list_mating(instance_id).get(port_key))
+        return Result(body, system_id, change.version)
 
     # ------------------------------------------------------------------
     # Links and rows

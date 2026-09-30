@@ -506,6 +506,44 @@ class SystemStore:
         ).fetchall()
         return {row["port_key"]: row["state"] for row in rows}
 
+    def list_mating(self, instance_id: str) -> dict[str, dict]:
+        """CONTRACTS_P2 §15.2: ``port_key -> {mode, axis, quarterTurns, geometryDigest}``."""
+        rows = self.conn.execute(
+            "SELECT port_key, mode, axis, quarter_turns, geometry_digest FROM system_port_mating"
+            " WHERE instance_id = %s",
+            (instance_id,),
+        ).fetchall()
+        return {row["port_key"]: {"mode": row["mode"], "axis": row["axis"], "quarterTurns": int(row["quarter_turns"]),
+                                  "geometryDigest": row["geometry_digest"]} for row in rows}
+
+    def set_mating(
+        self, change: Mutation, instance_id: str, port_key: str, record: Optional[Mapping[str, Any]]
+    ) -> None:
+        """Store a confirmed/override frame, or clear it (``None``) back to inferred."""
+        self.get_instance(change.system_id, instance_id)
+        before = self.list_mating(instance_id).get(port_key)
+        if record is None:
+            self.conn.execute(
+                "DELETE FROM system_port_mating WHERE instance_id = %s AND port_key = %s", (instance_id, port_key)
+            )
+        else:
+            self.conn.execute(
+                """
+                INSERT INTO system_port_mating (instance_id, port_key, mode, axis, quarter_turns, geometry_digest,
+                                                updated_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (instance_id, port_key) DO UPDATE SET
+                    mode = EXCLUDED.mode, axis = EXCLUDED.axis, quarter_turns = EXCLUDED.quarter_turns,
+                    geometry_digest = EXCLUDED.geometry_digest, updated_by = EXCLUDED.updated_by, updated_at = NOW()
+                """,
+                (instance_id, port_key, record["mode"], record["axis"], int(record.get("quarterTurns") or 0),
+                 record.get("geometryDigest"), change.actor),
+            )
+        after = self.list_mating(instance_id).get(port_key)
+        if before != after:
+            change.audit("mating_updated", {"instanceId": instance_id, "portKey": port_key,
+                                            "before": before, "after": after})
+
     def set_override(
         self, change: Mutation, instance_id: str, port_key: str, state: Optional[str]
     ) -> None:
