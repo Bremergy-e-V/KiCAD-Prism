@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from app.services.catalog import mates as catalog_mates, system_items
+from app.services.catalog import mates as catalog_mates, models as catalog_models, system_items
 from app.services.catalog.collaborators import build_catalog_collaborators
 from app.services.catalog.component_history import CatalogComponentHistoryReads
 from app.services.catalog.component_read_models import (
@@ -1161,6 +1161,87 @@ class ComponentCatalogDomainService:
         self.initialize()
         with self._connect() as conn:
             return catalog_mates.pairs_among(conn, component_ids)
+
+    # Models and alignment (CONTRACTS_P2 §18.2) --------------------------------------
+
+    def _models_root(self) -> Path:
+        return Path(self._runtime_for_compat().store_root) / "models"
+
+    def list_models(self, component_id: str) -> list[dict[str, Any]]:
+        """The part's STEP models with their cached GLB (or None) and alignment."""
+        self.initialize()
+        converter = catalog_models.converter_id()
+        with self._connect() as conn:
+            catalog_mates.require_part(conn, component_id)
+            assets = catalog_models.step_assets(conn, component_id)
+            keys = {a["id"]: catalog_models.glb_key(a["sha256"], converter) for a in assets}
+            glbs = catalog_models.cached(conn, keys.values())
+            aligned = catalog_models.alignments(conn, component_id)
+        return [catalog_models.model_doc(a, glbs.get(keys[a["id"]]), aligned.get(a["id"])) for a in assets]
+
+    def convert_models(self, component_id: str) -> list[dict[str, Any]]:
+        """Convert every STEP model of the part that has no GLB for the current converter yet."""
+        self.initialize()
+        converter = catalog_models.converter_id()
+        with self._connect() as conn:
+            catalog_mates.require_part(conn, component_id)
+            for asset in catalog_models.step_assets(conn, component_id):
+                key = catalog_models.glb_key(asset["sha256"], converter)
+                if catalog_models.cached(conn, [key]):
+                    continue
+                converted = catalog_models.convert(Path(str(asset["canonical_path"])).read_bytes())
+                catalog_models.store_glb(conn, self._models_root(), key=key, step_sha256=str(asset["sha256"]),
+                                         converter=converter, converted=converted, now=_utc_now_iso())
+            conn.commit()
+        return self.list_models(component_id)
+
+    def model_glb_path(self, key: str) -> Path | None:
+        self.initialize()
+        with self._connect() as conn:
+            found = catalog_models.cached(conn, [key]).get(key)
+        return Path(found["glb_path"]) if found else None
+
+    def _step_asset(self, conn: Any, component_id: str, asset_id: str) -> dict[str, Any]:
+        asset = next((a for a in catalog_models.step_assets(conn, component_id) if str(a["id"]) == asset_id), None)
+        if asset is None:
+            raise LookupError("Model not found on this part")
+        return asset
+
+    def set_model_alignment(self, component_id: str, asset_id: str, alignment: dict[str, Any], *,
+                            actor: str = "") -> list[dict[str, Any]]:
+        self.initialize()
+        value = catalog_models.normalized_alignment(alignment)
+        with self._connect() as conn:
+            catalog_mates.require_part(conn, component_id)
+            self._step_asset(conn, component_id, asset_id)
+            catalog_models.set_alignment(conn, component_id, asset_id, value, actor=actor, now=_utc_now_iso())
+            _component, revision = self._active_revision_row(conn, component_id)
+            self._append_audit_event(conn, component_id=component_id, revision_id=str((revision or {}).get("id") or ""),
+                                     event_type="component.model_aligned", actor=actor,
+                                     details={"assetId": asset_id, **value})
+            conn.commit()
+        return self.list_models(component_id)
+
+    def model_preview(self, component_id: str, asset_id: str, *, view: str, alignment: dict[str, Any] | None,
+                      partner_id: str | None) -> str:
+        """An SVG view of the model under ``alignment`` (the saved one when None), mated to ``partner_id``'s
+        first model when given."""
+        self.initialize()
+        with self._connect() as conn:
+            catalog_mates.require_part(conn, component_id)
+            asset = self._step_asset(conn, component_id, asset_id)
+            value = catalog_models.normalized_alignment(
+                alignment if alignment is not None else catalog_models.alignments(conn, component_id).get(asset_id))
+            partner = None
+            if partner_id:
+                catalog_mates.require_part(conn, partner_id)
+                partner_assets = catalog_models.step_assets(conn, partner_id)
+                if not partner_assets:
+                    raise ValueError("the mating part has no STEP model")
+                first = partner_assets[0]
+                partner = (Path(str(first["canonical_path"])).read_bytes(), catalog_models.normalized_alignment(
+                    catalog_models.alignments(conn, partner_id).get(str(first["id"]))))
+        return catalog_models.preview_svg(Path(str(asset["canonical_path"])).read_bytes(), value, view, partner)
 
     def released_system_revision(self, component_id: str) -> dict[str, Any] | None:
         """The component's current released revision (for ``follow = latest_released``), or None."""

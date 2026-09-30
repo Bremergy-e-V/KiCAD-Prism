@@ -101,6 +101,7 @@ import {
   WhereUsedPanel,
 } from "./library-component-evidence-panels";
 import { MatesWithPanel } from "./library-component-mates";
+import { ModelsPanel } from "./library-component-models";
 import { LibraryPreviewPair } from "./library-preview-inspector";
 import {
   ASSET_LABELS,
@@ -328,6 +329,7 @@ function OverviewPanel({ component, canMutate, onEdit }: { component: CatalogCom
       ) : null}
 
       <MatesWithPanel componentId={component.id} canMutate={canMutate} />
+      <ModelsPanel componentId={component.id} canMutate={canMutate} />
     </div>
   );
 }
