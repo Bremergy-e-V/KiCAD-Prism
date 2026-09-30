@@ -893,12 +893,12 @@ class SystemStore:
     # Reviews (§5, §6.2, §6.5, §10.1)
 
     def open_source_review(self, instance_id: str) -> Optional[dict]:
-        """The instance's open ``source_update`` or ``baseline_unreachable`` review."""
+        """The instance's open ``source_update``, ``baseline_unreachable`` or ``child_update`` review."""
         row = self.conn.execute(
             """
             SELECT * FROM system_reviews
             WHERE instance_id = %s AND status = 'open'
-              AND kind IN ('source_update', 'baseline_unreachable')
+              AND kind IN ('source_update', 'baseline_unreachable', 'child_update')
             """,
             (instance_id,),
         ).fetchone()

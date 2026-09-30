@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ArrowRight, CheckCircle2, GitCommitHorizontal, Pin, Wand2 } from "lucide-react";
+import { ArrowRight, CheckCircle2, GitCommitHorizontal, Layers, Pin, Wand2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,6 +12,7 @@ import {
   keepPinned,
   listReviews,
   rebaseInstance,
+  rebaseSubsystem,
 } from "@/lib/systems-api";
 import { cn } from "@/lib/utils";
 import type { AuditEvent, Decision, Review, ReviewItem, SystemDocument, SystemInstance } from "@/types/system";
@@ -168,14 +169,20 @@ function ReviewCard({ systemId, document, review, instance, etag, canEdit, busy,
       <header className="flex flex-wrap items-center gap-2">
         <h2 className="text-base font-semibold">{title}</h2>
         <Badge variant="outline">{review.kind.replace(/_/g, " ")}</Badge>
-        {review.fromCommit && (
+        {review.kind === "child_update" && (
+          <span className="flex items-center gap-1 text-xs text-muted-foreground">
+            <Layers className="h-3.5 w-3.5" /> revision {instance?.catalog?.version ? `v${instance.catalog.version}` : "pinned"}
+            <ArrowRight className="h-3 w-3" /> a newer revision
+          </span>
+        )}
+        {review.kind !== "child_update" && review.fromCommit && (
           <span className="flex items-center gap-1 font-mono text-xs text-muted-foreground">
             <GitCommitHorizontal className="h-3.5 w-3.5" /> {shortSha(review.fromCommit)}
             <ArrowRight className="h-3 w-3" /> {shortSha(review.toCommit)}
           </span>
         )}
         {total > 0 && <span className="text-xs text-muted-foreground">{decided} of {total} decided</span>}
-        {editable && review.kind === "source_update" && (
+        {editable && (review.kind === "source_update" || review.kind === "child_update") && (
           <Button variant="outline" size="sm" className="ml-auto" disabled={busy !== null}
             title="Close this review, keep the current baseline and pin the board"
             onClick={() => void run("pin", () => keepPinned(systemId, etag, review.id), `${title} kept pinned`)}>
@@ -391,6 +398,26 @@ function RebaseForm({ systemId, instance, etag, busy, run }: RebaseProps) {
 }
 
 function UpdateRow({ systemId, instance, etag, canEdit, busy, run }: RebaseProps & { canEdit: boolean }) {
+  const latest = instance.catalog?.latestReleasedRevisionId;
+  if (instance.kind === "assembly") {
+    return (
+      <div className="flex flex-wrap items-center gap-3 rounded-md border p-3 text-sm">
+        <span className="font-medium">{instance.label}</span>
+        <span className="text-xs text-muted-foreground">
+          {instance.catalog?.version ? `v${instance.catalog.version}` : "pinned revision"} <ArrowRight className="inline h-3 w-3" /> latest released
+        </span>
+        {canEdit && latest && (
+          <Button size="sm" variant="outline" className="ml-auto" disabled={busy !== null}
+            onClick={() => void run("rebase", () => rebaseSubsystem(systemId, etag, instance.id, latest)).then((result) => {
+              if (result?.body.outcome === "review_opened") toast.warning(`${instance.label}: some connections need review.`);
+              else if (result) toast.success(`${instance.label} moved to the latest released revision.`);
+            })}>
+            Take latest released
+          </Button>
+        )}
+      </div>
+    );
+  }
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-md border p-3 text-sm">
       <span className="font-medium">{instance.label}</span>

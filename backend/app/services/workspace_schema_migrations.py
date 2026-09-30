@@ -39,6 +39,7 @@ from app.services.workspace_migrations import m030_system_snapshot_manifest
 from app.services.workspace_migrations import m031_system_exports
 from app.services.workspace_migrations import m032_system_catalog_binding
 from app.services.workspace_migrations import m033_system_catalog_instances
+from app.services.workspace_migrations import m034_system_child_reviews
 from app.services.trackers import migrations as tracker_migrations
 
 
@@ -76,6 +77,7 @@ MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (31, "system_exports", m031_system_exports.migrate),
     (32, "system_catalog_binding", m032_system_catalog_binding.migrate),
     (33, "system_catalog_instances", m033_system_catalog_instances.migrate),
+    (34, "system_child_reviews", m034_system_child_reviews.migrate),
 )
 
 

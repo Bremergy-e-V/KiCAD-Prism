@@ -225,7 +225,7 @@ export interface ValidationReport {
 
 // Reviews (§7.1, §8.4)
 
-export type ReviewKind = "source_update" | "baseline_unreachable" | "import";
+export type ReviewKind = "source_update" | "baseline_unreachable" | "import" | "child_update";
 export type ReviewStatus = "open" | "applied" | "kept_pinned" | "superseded" | "closed";
 export type Decision = "accept" | "remap" | "bind_candidate" | "remove_rows";
 export type ReviewItemKind = "connector_missing" | "connector_changed" | "pin_missing" | "net_changed" | "signal_mismatch";

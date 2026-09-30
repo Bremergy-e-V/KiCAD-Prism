@@ -26,6 +26,8 @@ RULES = {
     "SYS-V07": ("pin_net_ambiguous", "warning"),
     "SYS-V08": ("open_review", "info"),
     # CONTRACTS_P2 §8.4. V09-V15 arrive with their tickets.
+    "SYS-V14": ("child_revision_unreleased", "warning"),
+    "SYS-V15": ("child_advance_blocked", "warning"),
     "SYS-V16": ("export_unresolved", "error"),
 }
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
@@ -188,3 +190,31 @@ def validate(
     counts["notEvaluated"] = len(not_evaluated)
     return {"findings": findings, "notEvaluated": not_evaluated, "exempt": exempt, "counts": counts}
 
+
+def child_findings(children: Sequence[Mapping[str, Any]]) -> list[dict]:
+    """SYS-V14 and V15 for assembly/module instances (CONTRACTS_P2 §8.4).
+
+    Each child is ``{instanceId, releaseStatus, openReviewCount, blocked}``.
+    """
+
+    out = []
+    for child in children:
+        if child.get("releaseStatus") not in (None, "released"):
+            out.append(_finding("SYS-V14", instance_id=child["instanceId"],
+                                detail={"reason": "unreleased", "releaseStatus": child["releaseStatus"]}))
+        elif int(child.get("openReviewCount") or 0) > 0:
+            out.append(_finding("SYS-V14", instance_id=child["instanceId"],
+                                detail={"reason": "open_reviews", "openReviewCount": child["openReviewCount"]}))
+        if child.get("blocked"):
+            out.append(_finding("SYS-V15", instance_id=child["instanceId"], detail={}))
+    return out
+
+
+def with_findings(report: Mapping[str, Any], extra: Sequence[Mapping[str, Any]]) -> dict:
+    """``report`` with ``extra`` findings merged, sorted and counted."""
+    findings = sorted([*report["findings"], *extra], key=_sort_key)
+    counts = {"error": 0, "warning": 0, "info": 0}
+    for finding in findings:
+        counts[finding["severity"]] += 1
+    counts["notEvaluated"] = report["counts"]["notEvaluated"]
+    return {**report, "findings": findings, "counts": counts}

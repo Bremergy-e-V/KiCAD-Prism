@@ -68,6 +68,9 @@ def load_builtin_job_handlers() -> None:
     from app.services.systems.detection import SOURCE_CHECK_JOB_KIND, run_source_check_job
 
     register_job_handler(SOURCE_CHECK_JOB_KIND, run_source_check_job)
+    from app.services.systems.child_drift import CHILD_CHECK_JOB_KIND, run_child_check_job
+
+    register_job_handler(CHILD_CHECK_JOB_KIND, run_child_check_job)
     from app.services.trackers.jobs import register_tracker_job_handlers
 
     register_tracker_job_handlers(register_job_handler)
