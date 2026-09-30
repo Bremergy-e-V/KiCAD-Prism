@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Camera, FileJson, FileSpreadsheet, FileText, GitCompare, PackageCheck } from "lucide-react";
+import { Camera, FileJson, FileSpreadsheet, FileText, GitCompare, Layers, PackageCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -153,6 +153,14 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, canPubli
           <Button asChild variant="outline" size="sm">
             <a href={icdUrl(systemId, "html")} target="_blank" rel="noreferrer"><FileText className="mr-1 h-4 w-4" /> Live ICD</a>
           </Button>
+          {document.instances.some((instance) => instance.kind === "assembly") && (
+            <Button asChild variant="outline" size="sm">
+              <a href={icdUrl(systemId, "html", undefined, "all")} target="_blank" rel="noreferrer"
+                title="This system's links and every subsystem's own links">
+                <Layers className="mr-1 h-4 w-4" /> All levels
+              </a>
+            </Button>
+          )}
           <Button asChild variant="outline" size="sm">
             <a href={icdUrl(systemId, "csv")} download><FileSpreadsheet className="mr-1 h-4 w-4" /> CSV</a>
           </Button>

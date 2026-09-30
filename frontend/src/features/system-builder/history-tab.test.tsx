@@ -130,4 +130,15 @@ describe("HistoryTab", () => {
     await screen.findByText("CDR");
     expect(screen.queryByRole("button", { name: "Publish CDR" })).toBeNull();
   });
+  it("links the all-levels ICD only when the system has subsystems", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("/history") ? { events: [], nextCursor: null } : []),
+      { status: 200, headers: { "Content-Type": "application/json" } })));
+    const withChild = systemDocument([obc, instance("CNDH", { kind: "assembly" })]);
+    const { unmount } = render(<HistoryTab systemId="sys_1" document={withChild} etag="e" canEdit={false} user={null} reload={vi.fn()} onNavigate={vi.fn()} />);
+    expect((await screen.findByRole("link", { name: /All levels/ })).getAttribute("href")).toBe("/api/systems/sys_1/icd.html?depth=all");
+    unmount();
+    render(<HistoryTab systemId="sys_1" document={doc} etag="e" canEdit={false} user={null} reload={vi.fn()} onNavigate={vi.fn()} />);
+    await screen.findByText("No snapshots yet.");
+    expect(screen.queryByRole("link", { name: /All levels/ })).toBeNull();
+  });
 });

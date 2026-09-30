@@ -6,7 +6,7 @@
  */
 
 import type { LayoutPositions } from "@/lib/systems-api";
-import type { SystemDocument, SystemInstance, SystemLink } from "@/types/system";
+import type { SystemDocument, SystemInstance, SystemLink, SystemOccurrence } from "@/types/system";
 
 import {
   BOARD_WIDTH,
@@ -232,4 +232,21 @@ export function connectionToLink(
     return { error: "A link needs two different ports." };
   }
   return { a: { instanceId: source, portKey: sourceKey }, b: { instanceId: target, portKey: targetKey } };
+}
+
+/** What a subsystem holds, for its in-place contents panel (from `GET …/hierarchy`). */
+export interface InsideEntry {
+  path: string;
+  label: string;
+  kind: string;
+  depth: number;
+  restricted: boolean;
+}
+
+/** The occurrences under subsystem instance `instanceId` of the root, in hierarchy order. */
+export function subsystemContents(occurrences: SystemOccurrence[], instanceId: string): InsideEntry[] {
+  const prefix = `/${instanceId}/`;
+  return occurrences.flatMap((o) => (o.path.startsWith(prefix)
+    ? [{ path: o.path, label: o.labels[o.labels.length - 1], kind: o.kind, depth: o.depth, restricted: o.restricted }]
+    : []));
 }

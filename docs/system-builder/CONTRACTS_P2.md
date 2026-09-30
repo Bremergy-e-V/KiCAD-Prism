@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.4 · 2026-09-30 · tickets SB2-00 to SB2-04.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
+**Version P2-1.9 · 2026-09-30 · tickets SB2-00 to SB2-09.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §14.
@@ -331,7 +331,7 @@ A net's **tokens** are the last path segment, uppercased, with KiCad markup (`~{
 
 | Rule | Name | Severity | Definition |
 |---|---|---|---|
-| SYS-V09 | `net_name_mismatch` | warning | At a join (row or wire), the two sides' named nets share **no token**. It is reported once per join, with both names. Unnamed auto-nets and unconnected pins never trigger it. |
+| SYS-V09 | `net_name_mismatch` | warning | At a join (row or wire), no token on one side is **related** to a token on the other (P2-1.8). Related: equal; one a prefix or suffix of the other (2+ characters, digits kept, so `GPIO4`/`IO4` match and `GPIO4`/`IO5` do not); an in-order abbreviation with the same first letter (`RST`/`RESET`); an acronym of the other side's tokens (`PG`/`PWR_GOOD`); or a crossed pair (`TX`/`RX`, `TXD`/`RXD`, `SDO`/`SDI`, `DOUT`/`DIN`, `CTS`/`RTS`). It is reported once per join, with both names. Unnamed auto-nets and unconnected pins never trigger it. |
 | SYS-V10 | `power_meets_signal` | error | At a join, exactly one side's pin has `powerNet: true` and the other side's net is a named, non-power net. |
 | SYS-V11 | `mate_mismatch` | warning | Reserved for M4 (PLAN §5.3). |
 | SYS-V12 | `harness_collision` | warning | Reserved for M5. |
@@ -420,6 +420,10 @@ Reading rules:
   - Link and harness ends on exports print as `CNDH-A ▸ PWR_IN → CMBD J20 pin 3 · /PWR/VBUS_28V`.
   - The printed banner also warns about SYS-V14.
 - **`?depth=all`:** every link and harness at every level, grouped by occurrence path, in both CSV and HTML. CSV gains an `occurrence` column.
+  - The occurrence column is the display path (`CNDH-A`, `CNDH-A ▸ PAY-SUB`) and comes first; the root system's own links have an empty occurrence.
+  - Redaction follows §5.4: hidden boards keep their rows with connector and net blanked; a hidden child system's level is omitted entirely.
+  - Without `depth`, or with `depth=own`, the CSV columns are exactly P1's.
+- **Diagram (SB2-09):** a subsystem node has a double border, the revision (`vN`) and stage, and an **inside** toggle listing its boards and nested subsystems from `GET …/hierarchy`. The History tab offers an **All levels** ICD link whenever the system has a subsystem.
 - **Renderer** version 3.
 
 ## 11. API additions
@@ -466,6 +470,11 @@ Everything else stays on reader or writer roles, including inventory export, hea
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.9 | 2026-09-30 | SB2-09: parent ICD Subsystems table and unreleased banner; `?depth=all` on live and snapshot ICDs (CSV `occurrence` column, HTML "Inside subsystems"), with recursive redaction; diagram subsystem node and its contents list; History "All levels" link. Backfills rows P2-1.5 to P2-1.8, whose document edits were missing from their tickets. |
+| P2-1.8 | 2026-09-30 | SB2-08: system nets (§8.1–§8.2) following export ends and re-exports; extractor v5 `powerNet`; V09 refined from "share no token" to "no related token" (§8.4) after the literal rule flagged 11 intentional renames in the fixtures; V10; `GET …/nets`, `…/nets/{groupId}`. The F8 golden gains one V09 (`PAYLOAD_INT#`/`IRQ_OUT#`). |
+| P2-1.7 | 2026-09-30 | SB2-07: child drift (§7). Migration 34 `child_update` reviews; `system_child_check` on catalog release; rebase by `{revisionId}`; SYS-V14, SYS-V15. |
+| P2-1.6 | 2026-09-30 | SB2-06: export ends (§6.1); re-exports; SYS-V16 also covers a missing child export; ICD export ends print through to the child connector. |
+| P2-1.5 | 2026-09-30 | SB2-05: assembly/module instances (migration 33); `hierarchy.resolve` limits and cycles; `GET …/hierarchy` with recursive redaction; publish records children and `hierarchyValid`. |
 | P2-1.4 | 2026-09-30 | SB2-04: publishing. Migration 32 binding; write order and orphan adoption; refusals; 201/200; assembly metadata defaults; snapshot `publication`; summary `catalogComponentId`; `source_ref.snapshotName`. |
 | P2-1.3 | 2026-09-30 | SB2-03: exports. Migration 31; rules 6–8; SYS-V16; refresh on baseline advance; document `exports`; export interface `resolved`, 409 `interface_not_ready`, snapshot variant, redaction; manifest export port targets carry their baseline. |
 | P2-1.2 | 2026-09-30 | SB2-02: catalog kinds (migration 3); IPN via `provisional_ipn` + source `prism` instead of a new identity kind; `source_ref` carries the gate facts; assembly gates; integrity guards v5; hash stability; `?kind=`; viewer browse routes. |

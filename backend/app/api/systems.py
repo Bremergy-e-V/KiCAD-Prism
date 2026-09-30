@@ -649,18 +649,23 @@ async def diff_snapshot(
 
 
 @router.get("/{system_id}/icd.{fmt}")
-async def live_icd(system_id: str, fmt: Literal["csv", "html"], user: AuthenticatedUser = Depends(require_viewer)):
-    content, name, version = await _run(system_id, lambda: system_service.service.icd(_caller(user), system_id, fmt))
+async def live_icd(
+    system_id: str, fmt: Literal["csv", "html"], depth: Literal["own", "all"] = Query(default="own"),
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    content, name, version = await _run(system_id, lambda: system_service.service.icd(
+        _caller(user), system_id, fmt, None, depth,
+    ))
     return _icd_response(content, name, fmt, "live", version, system_id)
 
 
 @router.get("/{system_id}/snapshots/{snapshot_id}/icd.{fmt}")
 async def snapshot_icd(
     system_id: str, snapshot_id: str, fmt: Literal["csv", "html"],
-    user: AuthenticatedUser = Depends(require_viewer),
+    depth: Literal["own", "all"] = Query(default="own"), user: AuthenticatedUser = Depends(require_viewer),
 ):
     content, name, _version = await _run(system_id, lambda: system_service.service.icd(
-        _caller(user), system_id, fmt, snapshot_id,
+        _caller(user), system_id, fmt, snapshot_id, depth,
     ))
     return _icd_response(content, name, fmt, snapshot_id, None, system_id)
 

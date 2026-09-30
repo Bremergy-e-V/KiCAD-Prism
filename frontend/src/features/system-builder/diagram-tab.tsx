@@ -17,11 +17,12 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { toast } from "sonner";
-import { ChevronDown, LayoutGrid, Lock, Share2 } from "lucide-react";
+import { ChevronDown, Layers, LayoutGrid, Lock, Share2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { createLink, getLayout, putLayout, type LayoutPositions } from "@/lib/systems-api";
+import { createLink, getHierarchy, getLayout, putLayout, type LayoutPositions } from "@/lib/systems-api";
+import type { SystemHierarchy } from "@/types/system";
 import { cn } from "@/lib/utils";
 
 import {
@@ -31,32 +32,68 @@ import {
   buildDiagram,
   connectionToLink,
   handleId,
+  subsystemContents,
   type DiagramEdgeData,
   type DiagramNodeData,
+  type InsideEntry,
 } from "./diagram-model";
 import { wirePoints } from "./system-layout";
 import type { SystemTabProps } from "./system-tab-content";
 import { TONE_BADGE, boardStatus } from "./system-format";
 import { useSystemMutation } from "./use-system-mutation";
 
-type BoardNode = Node<DiagramNodeData & { height: number; onToggle: (id: string) => void }, "board">;
+type BoardNode = Node<DiagramNodeData & { height: number; onToggle: (id: string) => void; inside?: InsideEntry[] }, "board">;
 type WireEdge = Edge<DiagramEdgeData & { hovered: boolean }, "wire">;
 
 const HANDLE_CLASS = "!h-2 !w-2 !min-h-0 !min-w-0 !border !border-background !bg-primary";
 
-function BoardNodeView({ id, data, isConnectable, selected }: NodeProps<BoardNode>) {
-  const { instance, rows, hiddenCount, expanded, height, onToggle } = data;
-  const status = boardStatus(instance);
+function SubsystemContents({ inside, top }: { inside: InsideEntry[]; top: number }) {
   return (
-    <div className={cn("relative border bg-card text-card-foreground shadow-sm", selected ? "border-primary" : "border-border")}
-      style={{ width: NODE_WIDTH, height }}>
+    <div className="nodrag absolute inset-x-0 z-10 border border-dashed bg-muted/80 p-2 text-[11px] text-muted-foreground shadow-sm"
+      style={{ top }} aria-label="Subsystem contents">
+      {inside.length === 0 ? <p>Nothing you can see.</p> : inside.map((entry) => (
+        <p key={entry.path} className="flex items-center gap-1 truncate" style={{ paddingLeft: `${(entry.depth - 2) * 10}px` }}>
+          {entry.kind === "assembly" ? <Layers className="h-3 w-3 shrink-0" aria-hidden /> : <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" />}
+          {entry.restricted && <Lock className="h-3 w-3 shrink-0" aria-label="restricted" />}
+          {entry.label}
+        </p>
+      ))}
+    </div>
+  );
+}
+
+function BoardNodeView({ id, data, isConnectable, selected }: NodeProps<BoardNode>) {
+  const { instance, rows, hiddenCount, expanded, height, onToggle, inside } = data;
+  const status = boardStatus(instance);
+  const subsystem = instance.kind === "assembly";
+  const [open, setOpen] = useState(false);
+  const subtitle = subsystem
+    ? [instance.projectName, instance.catalog?.version ? `v${instance.catalog.version}` : null].filter(Boolean).join(" · ")
+    : instance.projectName ?? status.label;
+  return (
+    <div className={cn("relative bg-card text-card-foreground shadow-sm",
+      subsystem ? "border-4 border-double" : "border", selected ? "border-primary" : "border-border")}
+      style={{ width: NODE_WIDTH, height }} data-kind={subsystem ? "subsystem" : "board"}>
       <div className="flex items-center gap-2 border-b bg-muted/40 px-3" style={{ height: HEADER_HEIGHT }}>
         <div className="min-w-0 flex-1">
           <p className="flex items-center gap-1 truncate text-sm font-semibold">
+            {subsystem && <Layers className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-label="subsystem" />}
             {instance.restricted && <Lock className="h-3 w-3" aria-label="restricted" />}
             {instance.label}
           </p>
-          <p className="truncate text-[11px] text-muted-foreground">{instance.projectName ?? status.label}</p>
+          <p className="flex items-center gap-1 text-[11px] text-muted-foreground">
+            <span className="min-w-0 truncate">{subtitle || status.label}</span>
+            {subsystem && (
+              <button type="button" className="nodrag nopan shrink-0 hover:text-foreground"
+                aria-expanded={open} aria-label={`What is inside ${instance.label}`}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setOpen((value) => !value);
+                }}>
+                · inside <ChevronDown className={cn("inline h-3 w-3", open && "rotate-180")} />
+              </button>
+            )}
+          </p>
         </div>
         {status.tone !== "ok" && (
           <Badge variant={TONE_BADGE[status.tone]} className="h-5 shrink-0 px-1.5 text-[10px]" title={status.detail}>{status.label}</Badge>
@@ -109,6 +146,7 @@ function BoardNodeView({ id, data, isConnectable, selected }: NodeProps<BoardNod
           <ChevronDown className={cn("h-3 w-3", expanded && "rotate-180")} />
         </button>
       )}
+      {subsystem && open && <SubsystemContents inside={inside ?? []} top={height + 4} />}
     </div>
   );
 }
@@ -172,7 +210,20 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
   const [overrides, setOverrides] = useState<Record<string, NodeOverride>>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [hovered, setHovered] = useState<string | null>(null);
+  const [tree, setTree] = useState<{ key: string; body: SystemHierarchy } | null>(null);
   const { run } = useSystemMutation(reload);
+  const hasSubsystems = document.instances.some((instance) => instance.kind === "assembly");
+  const treeKey = `${systemId}:${etag}`;
+
+  // Subsystem contents come from the hierarchy, re-read when the system moves on.
+  useEffect(() => {
+    if (!hasSubsystems) return;
+    let cancelled = false;
+    getHierarchy(systemId).then((body) => !cancelled && setTree({ key: treeKey, body })).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [systemId, treeKey, hasSubsystems]);
 
   // The saved layout is a separate, unversioned read (§1 invariant 6).
   useEffect(() => {
@@ -200,13 +251,15 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
     if (next.has(id)) next.delete(id); else next.add(id);
     return next;
   });
+  const occurrences = tree?.key === treeKey ? tree.body.occurrences : [];
   const nodes: BoardNode[] = diagram.nodes.map((node) => {
     const extra = overrides[node.id] ?? {};
+    const inside = node.data.instance.kind === "assembly" ? subsystemContents(occurrences, node.id) : undefined;
     return {
       id: node.id,
       type: "board",
       position: node.position,
-      data: { ...node.data, height: node.height, onToggle: toggle },
+      data: { ...node.data, height: node.height, onToggle: toggle, inside },
       measured: extra.measured,
       selected: extra.selected,
       dragging: extra.dragging,

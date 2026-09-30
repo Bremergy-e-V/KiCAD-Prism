@@ -1561,17 +1561,55 @@ class SystemService:
         return redaction.redact_document(built, restricted), "live", system["version"]
 
     def icd(
-        self, caller: Caller, system_id: str, fmt: str, snapshot_id: Optional[str] = None
+        self, caller: Caller, system_id: str, fmt: str, snapshot_id: Optional[str] = None, depth: str = "own",
     ) -> tuple[str, str, Optional[int]]:
-        """``(content, system name, live version or None)``; ``fmt`` is ``csv`` or ``html`` (§9.4, §9.5)."""
+        """``(content, system name, live version or None)``; ``fmt`` is ``csv`` or ``html`` (§9.4, §9.5).
+
+        ``depth="all"`` (P2 §10) adds every subsystem level's own links, from its pinned snapshot.
+        """
 
         document, source, version = self._icd_source(caller, system_id, snapshot_id)
+        levels = self._icd_levels(caller, system_id, snapshot_id) if depth == "all" else None
         if fmt == "csv":
-            content = icd.render_csv(document)
+            content = icd.render_csv(document, levels)
         else:
             generated = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
-            content = icd.render_html(document, source=source, generated_at=generated)
+            content = icd.render_html(document, source=source, generated_at=generated, levels=levels)
         return content, document["system"]["name"], version
+
+    def _icd_levels(self, caller: Caller, system_id: str, snapshot_id: Optional[str]) -> list[dict]:
+        """Each visible subsystem level, redacted for the reader (§5.4), in tree order."""
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            if snapshot_id is None:
+                tree = self._tree(store, system_id)
+            else:
+                manifest = store.get_snapshot(system_id, snapshot_id).get("manifest")
+                if not manifest:
+                    return []
+                try:
+                    tree = hierarchy.resolve(system_id, manifest["instances"], self._child_loader(store))
+                except hierarchy.HierarchyError as error:
+                    raise Invalid(str(error)) from None
+            projects = {o.project_id for o in tree.boards if o.project_id}
+            access = visibility.project_access(store.conn, projects, caller.role)
+            hidden_systems = {o.child_system_id for o in tree.occurrences if o.child_system_id and not
+                              visibility.visible_systems(store.conn, caller.role, system_id=o.child_system_id)}
+        restricted_paths = {o.path for o in tree.boards if not access.get(o.project_id, {}).get("visible", False)}
+        levels, hidden_prefixes = [], []
+        for occurrence in sorted(tree.occurrences, key=lambda o: (o.depth, o.path)):
+            if occurrence.child is None or any(occurrence.path.startswith(p + "/") for p in hidden_prefixes):
+                continue
+            if occurrence.child_system_id in hidden_systems:
+                hidden_prefixes.append(occurrence.path)
+                continue
+            child = occurrence.child
+            levels.append({
+                "displayPath": occurrence.display_path, "snapshotName": child.name,
+                "links": child.links, "labels": {i["id"]: i["label"] for i in child.instances},
+                "restricted": {i["id"] for i in child.instances if f"{occurrence.path}/{i['id']}" in restricted_paths},
+            })
+        return levels
 
     def diff_snapshot(self, caller: Caller, system_id: str, snapshot_id: str, against: str) -> dict:
         """``GET …/snapshots/{sid}/diff?against=live|<sid>``: what changed since the snapshot.
