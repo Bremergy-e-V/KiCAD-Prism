@@ -1,0 +1,41 @@
+{
+ "_comment": "SB2-21 goldens, written by hand. Stack and body heights come from Hirose's drawings (sources below); the frames from the stock footprints' own geometry (README, 'Expected frames'); board thickness and positions are fixture choices. Nothing here is computed by Prism.",
+ "sources": {
+  "matedHeight": "Hirose EDC-390687-51-77 sheet 1 (DF12NC(3.0)-*DP-0.5V(51)), mated section with DF12N#(3.0)-*DS-0.5V: 3.0 mm, +0.2/-0",
+  "headerBodyHeight": "Hirose EDC-390687-51-77 sheet 1: 2.3 +/- 0.2 mm",
+  "receptacleBodyHeight": "Hirose EDC-390688-51-77 sheet 1 (DF12NC(3.0)-*DS-0.5V(51)): 2.2 +/- 0.2 mm",
+  "successors": "Hirose lists DF12NC(3.0)-20DS-0.5V(51) and DF12NC(3.0)-20DP-0.5V(51) as the replacements for DF12C(3.0)-20DS-0.5V(81) and DF12E(3.0)-20DP-0.5V(81) (KiCad's footprints), compatible in mounting, mating and specification"
+ },
+ "boardThicknessMm": 1.6,
+ "mezzanine": {
+  "base": "mezz_base/F0",
+  "top": "mezz_top/F0",
+  "pairs": [["J1", "J1"], ["J2", "J2"]],
+  "matedHeightMm": 3.0,
+  "topPoseInBaseFrame": {
+   "_comment": "Board frames of CONTRACTS_P2 §14 (z = 0 at the mid-plane). The top board sits directly over the base, unflipped (its receptacles are on its bottom side): 0.8 (half the base) + 3.0 (mated height) + 0.8 (half the top).",
+   "translationMm": [0.0, 0.0, 4.6],
+   "rotation": [0.0, 0.0, 0.0, 1.0]
+  },
+  "residualMm": {"J1": 0.0, "J2": 0.0}
+ },
+ "mezzanineShifted": {
+  "top": "mezz_top/F1",
+  "_comment": "The next commit of mezz_top moves J2 +1.5 mm in X. Posed from J1, pair J2 misses by 1.5 mm (SYS-V11 in M3).",
+  "moved": {"reference": "J2", "deltaMm": [1.5, 0.0]},
+  "residualMm": {"J1": 0.0, "J2": 1.5}
+ },
+ "frames": {
+  "mezz_base/F0": {"J1": "top", "J2": "top"},
+  "mezz_top/F0": {"J1": "bottom", "J2": "bottom"},
+  "mezz_top/F1": {"J1": "bottom", "J2": "bottom"},
+  "edge_a/F0": {"J1": "+x", "J2": "-x"},
+  "edge_b/F0": {"J1": "top", "J2": "+x"},
+  "ambiguous/F0": {"J1": null}
+ },
+ "pairs": {
+  "_comment": "Which connectors mate. edge_a J1 (right-angle header) into edge_b J1 (vertical socket) is the orthogonal assembly; edge_a J2 (right-angle socket) with edge_b J2 (right-angle header) is the coplanar one. KiCad's generic 2.54 mm parts have no manufacturer drawing, so their poses are not goldens here.",
+  "orthogonal": [["edge_a/F0", "J1"], ["edge_b/F0", "J1"]],
+  "coplanar": [["edge_a/F0", "J2"], ["edge_b/F0", "J2"]]
+ }
+}
