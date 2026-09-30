@@ -9,6 +9,9 @@ affected fixture steps (§11).
 
 Inspected baseline: `KiCAD-Prism` `57a7581e` (`dev` after #405).
 
+P2 (systems of systems, catalog assemblies, harnesses, 3D) extends this
+document in [CONTRACTS_P2.md](CONTRACTS_P2.md).
+
 Terms:
 
 - **System**: a named set of board instances and the connections between them.
@@ -43,7 +46,9 @@ Terms:
    exactly the candidate commit and observations stored in that review, even if
    the branch has moved since.
 6. **Canvas layout is not engineering state.** It has its own storage, no
-   ETag, and is excluded from digests, snapshots and the audit log.
+   ETag, and is excluded from the connectivity digest and the audit log.
+   *Revised by P2 (CONTRACTS_P2 §9.5):* snapshots and manifests freeze the
+   layout, and it counts toward the full digest only.
 7. **Children are read-only.** System Builder never writes to a child
    repository or a KiCad file.
 8. **PostgreSQL is authoritative.** Every engineering object has an opaque,

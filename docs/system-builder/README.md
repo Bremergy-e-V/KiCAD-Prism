@@ -28,6 +28,10 @@ every connected pin was accepted as:
 - [Frozen contracts](CONTRACTS.md): identity, the interface artifact, drift
   and auto-accept rules, the HTTP API, CSV and ICD formats, and the fixture
   acceptance matrix. Implementation must follow the current version.
+- [P2 contracts](CONTRACTS_P2.md) (draft): systems of systems, catalog
+  assemblies, exports, system nets and the `prism.system_manifest.v1` format
+  ([JSON Schema](schemas/system_manifest.v1.schema.json),
+  [examples](examples/)). Extends the P1 contracts.
 
 ## P1 boundaries
 

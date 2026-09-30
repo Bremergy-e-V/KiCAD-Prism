@@ -1,0 +1,1298 @@
+{
+  "$defs": {
+    "BoardInstance": {
+      "additionalProperties": false,
+      "properties": {
+        "baselineCommit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Baselinecommit",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "const": "board",
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "pinned": {
+          "title": "Pinned",
+          "type": "boolean"
+        },
+        "portOverrides": {
+          "items": {
+            "$ref": "#/$defs/PortOverride"
+          },
+          "title": "Portoverrides",
+          "type": "array"
+        },
+        "projectId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Projectid",
+          "type": "string"
+        },
+        "trackedRef": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trackedref"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "projectId",
+        "baselineCommit",
+        "pinned"
+      ],
+      "title": "BoardInstance",
+      "type": "object"
+    },
+    "CanvasLayout": {
+      "additionalProperties": false,
+      "description": "The saved diagram arrangement: node key (instance, harness or subsystem ID) -> position.",
+      "properties": {
+        "positions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CanvasPosition"
+          },
+          "maxProperties": 1000,
+          "propertyNames": {
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "title": "Positions",
+          "type": "object"
+        }
+      },
+      "title": "CanvasLayout",
+      "type": "object"
+    },
+    "CanvasPosition": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "title": "CanvasPosition",
+      "type": "object"
+    },
+    "CatalogInstance": {
+      "additionalProperties": false,
+      "properties": {
+        "catalog": {
+          "$ref": "#/$defs/CatalogRef"
+        },
+        "follow": {
+          "enum": [
+            "pinned",
+            "latest_released"
+          ],
+          "title": "Follow",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "assembly",
+            "module"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "kind",
+        "catalog",
+        "follow"
+      ],
+      "title": "CatalogInstance",
+      "type": "object"
+    },
+    "CatalogRef": {
+      "additionalProperties": false,
+      "properties": {
+        "componentId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Componentid",
+          "type": "string"
+        },
+        "identity": {
+          "description": "IPN or MPN, display only",
+          "title": "Identity",
+          "type": "string"
+        },
+        "revisionId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Revisionid",
+          "type": "string"
+        },
+        "revisionVersion": {
+          "minimum": 1,
+          "title": "Revisionversion",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "componentId",
+        "revisionId",
+        "revisionVersion",
+        "identity"
+      ],
+      "title": "CatalogRef",
+      "type": "object"
+    },
+    "DrivingMate": {
+      "additionalProperties": false,
+      "properties": {
+        "instanceId": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Instanceid",
+          "type": "string"
+        },
+        "linkId": {
+          "pattern": "^slk_[0-9a-f]{32}$",
+          "title": "Linkid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instanceId",
+        "linkId"
+      ],
+      "title": "DrivingMate",
+      "type": "object"
+    },
+    "Export": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Description",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^sxp_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "target": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PortTarget"
+            },
+            {
+              "$ref": "#/$defs/ExportTarget"
+            }
+          ],
+          "title": "Target"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "target"
+      ],
+      "title": "Export",
+      "type": "object"
+    },
+    "ExportBaseline": {
+      "additionalProperties": false,
+      "description": "What a parent accepted about a child's export (\u00a74.3).",
+      "properties": {
+        "exportId": {
+          "pattern": "^sxp_[0-9a-f]{32}$",
+          "title": "Exportid",
+          "type": "string"
+        },
+        "footprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Footprint"
+        },
+        "libId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Libid"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "pinCount": {
+          "minimum": 0,
+          "title": "Pincount",
+          "type": "integer"
+        },
+        "reference": {
+          "title": "Reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "exportId",
+        "name",
+        "reference",
+        "pinCount"
+      ],
+      "title": "ExportBaseline",
+      "type": "object"
+    },
+    "ExportEnd": {
+      "additionalProperties": false,
+      "properties": {
+        "export": {
+          "$ref": "#/$defs/ExportBaseline"
+        },
+        "exportId": {
+          "pattern": "^sxp_[0-9a-f]{32}$",
+          "title": "Exportid",
+          "type": "string"
+        },
+        "instanceId": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Instanceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instanceId",
+        "exportId",
+        "export"
+      ],
+      "title": "ExportEnd",
+      "type": "object"
+    },
+    "ExportTarget": {
+      "additionalProperties": false,
+      "description": "Re-export of a child's export (\u00a74.1).",
+      "properties": {
+        "exportId": {
+          "pattern": "^sxp_[0-9a-f]{32}$",
+          "title": "Exportid",
+          "type": "string"
+        },
+        "instanceId": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Instanceid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instanceId",
+        "exportId"
+      ],
+      "title": "ExportTarget",
+      "type": "object"
+    },
+    "Harness": {
+      "additionalProperties": false,
+      "properties": {
+        "cutLengthMm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cutlengthmm"
+        },
+        "ends": {
+          "items": {
+            "$ref": "#/$defs/HarnessEnd"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Ends",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^shn_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/HarnessNode"
+          },
+          "title": "Nodes",
+          "type": "array"
+        },
+        "serviceAllowancePct": {
+          "anyOf": [
+            {
+              "maximum": 100,
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Serviceallowancepct"
+        },
+        "wires": {
+          "items": {
+            "$ref": "#/$defs/Wire"
+          },
+          "title": "Wires",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "ends",
+        "wires"
+      ],
+      "title": "Harness",
+      "type": "object"
+    },
+    "HarnessEnd": {
+      "additionalProperties": false,
+      "properties": {
+        "bootMm": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bootmm"
+        },
+        "id": {
+          "pattern": "^she_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "mates": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PortEnd"
+            },
+            {
+              "$ref": "#/$defs/ExportEnd"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mates"
+        },
+        "ordinal": {
+          "minimum": 0,
+          "title": "Ordinal",
+          "type": "integer"
+        },
+        "part": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PartRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "null = Generic mating block"
+        },
+        "pinCount": {
+          "description": "end pins; copied from the mated connector while Generic",
+          "minimum": 1,
+          "title": "Pincount",
+          "type": "integer"
+        },
+        "pinMap": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "end pin -> mated pin; null = identity",
+          "title": "Pinmap"
+        }
+      },
+      "required": [
+        "id",
+        "ordinal",
+        "pinCount"
+      ],
+      "title": "HarnessEnd",
+      "type": "object"
+    },
+    "HarnessNode": {
+      "additionalProperties": false,
+      "properties": {
+        "ends": {
+          "description": "breakout: the ends it branches to",
+          "items": {
+            "pattern": "^she_[0-9a-f]{32}$",
+            "type": "string"
+          },
+          "title": "Ends",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^shd_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "breakout",
+            "waypoint"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "order": {
+          "minimum": 0,
+          "title": "Order",
+          "type": "integer"
+        },
+        "pinned": {
+          "default": false,
+          "title": "Pinned",
+          "type": "boolean"
+        },
+        "positionMm": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Positionmm",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "positionMm",
+        "order"
+      ],
+      "title": "HarnessNode",
+      "type": "object"
+    },
+    "Link": {
+      "additionalProperties": false,
+      "properties": {
+        "a": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PortEnd"
+            },
+            {
+              "$ref": "#/$defs/ExportEnd"
+            }
+          ],
+          "title": "A"
+        },
+        "b": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PortEnd"
+            },
+            {
+              "$ref": "#/$defs/ExportEnd"
+            }
+          ],
+          "title": "B"
+        },
+        "harnessLabel": {
+          "anyOf": [
+            {
+              "maxLength": 200,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Harnesslabel"
+        },
+        "id": {
+          "pattern": "^slk_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Name",
+          "type": "string"
+        },
+        "rows": {
+          "items": {
+            "$ref": "#/$defs/Row"
+          },
+          "title": "Rows",
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "unspecified",
+            "b2b"
+          ],
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "a",
+        "b",
+        "rows"
+      ],
+      "title": "Link",
+      "type": "object"
+    },
+    "Mating": {
+      "additionalProperties": false,
+      "properties": {
+        "frame": {
+          "$ref": "#/$defs/MatingFrame"
+        },
+        "instanceId": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Instanceid",
+          "type": "string"
+        },
+        "mode": {
+          "enum": [
+            "inferred",
+            "confirmed",
+            "override"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "portKey": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Portkey",
+          "type": "string"
+        },
+        "stackHeightMm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stackheightmm"
+        }
+      },
+      "required": [
+        "instanceId",
+        "portKey",
+        "mode",
+        "frame"
+      ],
+      "title": "Mating",
+      "type": "object"
+    },
+    "MatingFrame": {
+      "additionalProperties": false,
+      "properties": {
+        "axis": {
+          "enum": [
+            "top",
+            "bottom",
+            "+x",
+            "-x",
+            "+y",
+            "-y"
+          ],
+          "title": "Axis",
+          "type": "string"
+        },
+        "quarterTurns": {
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Quarterturns",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "axis",
+        "quarterTurns"
+      ],
+      "title": "MatingFrame",
+      "type": "object"
+    },
+    "Meta": {
+      "additionalProperties": false,
+      "properties": {
+        "createdAt": {
+          "title": "Createdat",
+          "type": "string"
+        },
+        "createdBy": {
+          "title": "Createdby",
+          "type": "string"
+        },
+        "snapshot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SnapshotHeader"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "sourceVersion": {
+          "description": "system version the manifest was taken at",
+          "minimum": 1,
+          "title": "Sourceversion",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "createdAt",
+        "createdBy",
+        "sourceVersion"
+      ],
+      "title": "Meta",
+      "type": "object"
+    },
+    "PartRef": {
+      "additionalProperties": false,
+      "properties": {
+        "componentId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Componentid",
+          "type": "string"
+        },
+        "revisionId": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Revisionid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "componentId",
+        "revisionId"
+      ],
+      "title": "PartRef",
+      "type": "object"
+    },
+    "Placement": {
+      "additionalProperties": false,
+      "properties": {
+        "drivingMates": {
+          "description": "user overrides only",
+          "items": {
+            "$ref": "#/$defs/DrivingMate"
+          },
+          "title": "Drivingmates",
+          "type": "array"
+        },
+        "poses": {
+          "items": {
+            "$ref": "#/$defs/Pose"
+          },
+          "title": "Poses",
+          "type": "array"
+        }
+      },
+      "title": "Placement",
+      "type": "object"
+    },
+    "PortBaseline": {
+      "additionalProperties": false,
+      "properties": {
+        "footprint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Footprint"
+        },
+        "libId": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Libid"
+        },
+        "memberKeys": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Memberkeys",
+          "type": "array"
+        },
+        "pinCount": {
+          "minimum": 0,
+          "title": "Pincount",
+          "type": "integer"
+        },
+        "portKey": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Portkey",
+          "type": "string"
+        },
+        "reference": {
+          "title": "Reference",
+          "type": "string"
+        }
+      },
+      "required": [
+        "portKey",
+        "memberKeys",
+        "reference",
+        "pinCount"
+      ],
+      "title": "PortBaseline",
+      "type": "object"
+    },
+    "PortEnd": {
+      "additionalProperties": false,
+      "properties": {
+        "instanceId": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Instanceid",
+          "type": "string"
+        },
+        "port": {
+          "$ref": "#/$defs/PortBaseline"
+        },
+        "portKey": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Portkey",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instanceId",
+        "portKey",
+        "port"
+      ],
+      "title": "PortEnd",
+      "type": "object"
+    },
+    "PortOverride": {
+      "additionalProperties": false,
+      "properties": {
+        "portKey": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Portkey",
+          "type": "string"
+        },
+        "state": {
+          "enum": [
+            "hidden",
+            "promoted"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "portKey",
+        "state"
+      ],
+      "title": "PortOverride",
+      "type": "object"
+    },
+    "PortTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "instanceId": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Instanceid",
+          "type": "string"
+        },
+        "portKey": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Portkey",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instanceId",
+        "portKey"
+      ],
+      "title": "PortTarget",
+      "type": "object"
+    },
+    "Pose": {
+      "additionalProperties": false,
+      "properties": {
+        "instanceId": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Instanceid",
+          "type": "string"
+        },
+        "rotation": {
+          "description": "unit quaternion x, y, z, w",
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 4,
+          "minItems": 4,
+          "title": "Rotation",
+          "type": "array"
+        },
+        "source": {
+          "enum": [
+            "auto",
+            "manual",
+            "default"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "translationMm": {
+          "items": {
+            "type": "number"
+          },
+          "maxItems": 3,
+          "minItems": 3,
+          "title": "Translationmm",
+          "type": "array"
+        }
+      },
+      "required": [
+        "instanceId",
+        "translationMm",
+        "rotation",
+        "source"
+      ],
+      "title": "Pose",
+      "type": "object"
+    },
+    "Row": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^srw_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "netA": {
+          "items": {
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": "Neta",
+          "type": "array"
+        },
+        "netB": {
+          "items": {
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": "Netb",
+          "type": "array"
+        },
+        "pinA": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Pina",
+          "type": "string"
+        },
+        "pinB": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Pinb",
+          "type": "string"
+        },
+        "signal": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Signal",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "manual",
+            "generator",
+            "import"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "pinA",
+        "pinB",
+        "source",
+        "netA",
+        "netB"
+      ],
+      "title": "Row",
+      "type": "object"
+    },
+    "SnapshotHeader": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^ssn_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "SnapshotHeader",
+      "type": "object"
+    },
+    "SystemHeader": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "default": "",
+          "maxLength": 4000,
+          "title": "Description",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^sys_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name"
+      ],
+      "title": "SystemHeader",
+      "type": "object"
+    },
+    "Wire": {
+      "additionalProperties": false,
+      "properties": {
+        "colour": {
+          "anyOf": [
+            {
+              "maxLength": 40,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Colour"
+        },
+        "from": {
+          "$ref": "#/$defs/WirePoint"
+        },
+        "gaugeAwg": {
+          "anyOf": [
+            {
+              "maximum": 40,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gaugeawg"
+        },
+        "id": {
+          "pattern": "^shw_[0-9a-f]{32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "maxLength": 100,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "netFrom": {
+          "items": {
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": "Netfrom",
+          "type": "array"
+        },
+        "netTo": {
+          "items": {
+            "maxLength": 1000,
+            "type": "string"
+          },
+          "title": "Netto",
+          "type": "array"
+        },
+        "signal": {
+          "default": "",
+          "maxLength": 200,
+          "title": "Signal",
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/WirePoint"
+        }
+      },
+      "required": [
+        "id",
+        "from",
+        "to",
+        "netFrom",
+        "netTo"
+      ],
+      "title": "Wire",
+      "type": "object"
+    },
+    "WirePoint": {
+      "additionalProperties": false,
+      "properties": {
+        "end": {
+          "pattern": "^she_[0-9a-f]{32}$",
+          "title": "End",
+          "type": "string"
+        },
+        "pin": {
+          "maxLength": 100,
+          "minLength": 1,
+          "title": "Pin",
+          "type": "string"
+        }
+      },
+      "required": [
+        "end",
+        "pin"
+      ],
+      "title": "WirePoint",
+      "type": "object"
+    }
+  },
+  "$id": "https://kicad-prism/schemas/system_manifest.v1.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "exports": {
+      "items": {
+        "$ref": "#/$defs/Export"
+      },
+      "title": "Exports",
+      "type": "array"
+    },
+    "harnesses": {
+      "items": {
+        "$ref": "#/$defs/Harness"
+      },
+      "title": "Harnesses",
+      "type": "array"
+    },
+    "instances": {
+      "items": {
+        "discriminator": {
+          "mapping": {
+            "assembly": "#/$defs/CatalogInstance",
+            "board": "#/$defs/BoardInstance",
+            "module": "#/$defs/CatalogInstance"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/$defs/BoardInstance"
+          },
+          {
+            "$ref": "#/$defs/CatalogInstance"
+          }
+        ]
+      },
+      "title": "Instances",
+      "type": "array"
+    },
+    "layout": {
+      "$ref": "#/$defs/CanvasLayout"
+    },
+    "links": {
+      "items": {
+        "$ref": "#/$defs/Link"
+      },
+      "title": "Links",
+      "type": "array"
+    },
+    "mating": {
+      "items": {
+        "$ref": "#/$defs/Mating"
+      },
+      "title": "Mating",
+      "type": "array"
+    },
+    "meta": {
+      "$ref": "#/$defs/Meta"
+    },
+    "placement": {
+      "$ref": "#/$defs/Placement"
+    },
+    "schema": {
+      "const": "prism.system_manifest.v1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "system": {
+      "$ref": "#/$defs/SystemHeader"
+    }
+  },
+  "required": [
+    "schema",
+    "system",
+    "meta",
+    "instances"
+  ],
+  "title": "prism.system_manifest.v1",
+  "type": "object"
+}
