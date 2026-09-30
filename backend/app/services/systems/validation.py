@@ -26,6 +26,8 @@ RULES = {
     "SYS-V07": ("pin_net_ambiguous", "warning"),
     "SYS-V08": ("open_review", "info"),
     # CONTRACTS_P2 §8.4. V09-V15 arrive with their tickets.
+    "SYS-V09": ("net_name_mismatch", "warning"),
+    "SYS-V10": ("power_meets_signal", "error"),
     "SYS-V14": ("child_revision_unreleased", "warning"),
     "SYS-V15": ("child_advance_blocked", "warning"),
     "SYS-V16": ("export_unresolved", "error"),
@@ -165,6 +167,29 @@ def validate(
                     if pcb is None or sorted(pcb) != nets:
                         findings.append(_finding("SYS-V06", **common,
                                                  detail={"schematic": nets, "pcb": pcb}))
+
+    # SYS-V09 / V10: each join (row) of this system's own links (CONTRACTS_P2 §8.4).
+    from app.services.systems import system_nets
+
+    for link in links:
+        pins = {}
+        for end in ("a", "b"):
+            interface = interfaces.get(link[f"{end}_instance_id"])
+            port_key = (link.get(f"{end}_port") or {}).get("portKey")
+            component = exposure.component_by_key(interface, port_key) if interface and port_key else None
+            pins[end] = exposure.pins_by_pad(component) if component else None
+        for row in link.get("rows") or []:
+            net_a, net_b = list(row.get("net_a") or []), list(row.get("net_b") or [])
+            if system_nets.name_mismatch(net_a, net_b):
+                findings.append(_finding("SYS-V09", link_id=link["id"], row_id=row["id"],
+                                         detail={"netA": net_a, "netB": net_b}))
+            if pins["a"] is None or pins["b"] is None:
+                continue
+            power_a = (pins["a"].get(str(row["pin_a"])) or {}).get("powerNet")
+            power_b = (pins["b"].get(str(row["pin_b"])) or {}).get("powerNet")
+            if system_nets.power_meets_signal(power_a, net_a, power_b, net_b):
+                findings.append(_finding("SYS-V10", link_id=link["id"], row_id=row["id"],
+                                         detail={"powerSide": "a" if power_a else "b", "netA": net_a, "netB": net_b}))
 
     # SYS-V16: exports that no longer resolve or are no longer exposed.
     from app.services.systems import exports as exports_module

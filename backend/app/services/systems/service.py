@@ -26,7 +26,7 @@ from typing import Any, Callable, Collection, ContextManager, Iterator, Mapping,
 from app.core.roles import Role
 from app.services.systems import (
     child_drift, csv_import, drift, exports as exports_module, exposure, generators, hierarchy, icd,
-    manifest as manifest_io, reconcile, redaction, sources, validation, visibility,
+    manifest as manifest_io, reconcile, redaction, sources, system_nets, validation, visibility,
 )
 from app.services.systems.manifest_schema import digests as manifest_digests
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
@@ -768,7 +768,8 @@ class SystemService:
             if not manifest:
                 return None
             return hierarchy.ChildSystem(source["systemId"], source["snapshotId"], manifest["system"]["name"],
-                                         manifest["instances"], manifest.get("exports") or [])
+                                         manifest["instances"], manifest.get("exports") or [],
+                                         manifest.get("links") or [])
 
         return load
 
@@ -778,6 +779,79 @@ class SystemService:
             return hierarchy.resolve(system_id, instances, self._child_loader(store))
         except hierarchy.HierarchyError as error:
             raise Invalid(str(error)) from None
+
+    # ------------------------------------------------------------------
+    # System nets (CONTRACTS_P2 §8)
+
+    def _net_groups(self, caller: Caller, system_id: str) -> tuple[list[dict], dict]:
+        """Every system net of the tree, redacted for the reader, plus the occurrence index."""
+        import hashlib
+
+        occurrences = {o["path"]: o for o in self.hierarchy(caller, system_id)["occurrences"]}
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            instances = store.list_instances(system_id, kinds=SystemStore.ALL_KINDS)
+            root = system_nets.Level(
+                prefix="", kinds={i["id"]: i["kind"] for i in instances}, labels={i["id"]: i["label"] for i in instances},
+                links=store.list_links(system_id),
+                exports=[{"id": e["id"], "target": ({"instanceId": e["target_instance_id"], "portKey": e["target_port"]["portKey"],
+                                                     "port": e["target_port"]} if e["target_port"]
+                                                    else {"instanceId": e["target_instance_id"], "exportId": e["target_export_id"]})}
+                         for e in store.list_exports(system_id)],
+            )
+            system_nets.attach_children(root, self._tree(store, system_id))
+        visible = {path for path, o in occurrences.items() if not o["restricted"]}
+
+        def shown(path: str) -> bool:
+            return path in visible
+
+        out = []
+        for group in system_nets.build(root):
+            members = [({"occurrence": m["occurrence"], "displayPath": occurrences[m["occurrence"]]["displayPath"],
+                         "net": m["net"], "redacted": False} if shown(m["occurrence"])
+                        else {"occurrence": None, "displayPath": None, "net": None, "redacted": True})
+                       for m in group.members]
+            hops = []
+            for hop in group.hops:
+                if not (shown(hop["from"]["occurrence"]) and shown(hop["to"]["occurrence"])):
+                    continue
+                hops.append({**hop, "from": {**hop["from"], "displayPath": occurrences[hop["from"]["occurrence"]]["displayPath"]},
+                             "to": {**hop["to"], "displayPath": occurrences[hop["to"]["occurrence"]]["displayPath"]}})
+            if not any(not m["redacted"] for m in members):
+                continue  # nothing of it is visible to this reader
+            aliases = sorted({system_nets.leaf(m["net"]) for m in members if m["net"] and not system_nets.is_auto(m["net"])})
+            out.append({
+                "groupId": hashlib.sha1(group.group_id.encode()).hexdigest()[:16],
+                "name": aliases[0] if aliases else next((m["net"] for m in members if m["net"]), "unconnected"),
+                "aliases": aliases, "pinCount": group.pin_count, "large": group.pin_count > system_nets.LARGE_GROUP_PINS,
+                "members": members, "hops": hops,
+            })
+        return out, occurrences
+
+    def nets(self, caller: Caller, system_id: str, *, search: str = "", occurrence: Optional[str] = None,
+             limit: int = 50) -> dict:
+        """``GET …/nets``: system nets matching ``search`` (any alias), optionally touching one board occurrence."""
+        groups, _occurrences = self._net_groups(caller, system_id)
+        needle = search.strip().casefold()
+        found = []
+        for group in groups:
+            if needle and not any(needle in alias.casefold() for alias in group["aliases"]) and not any(
+                    needle in (m["net"] or "").casefold() for m in group["members"]):
+                continue
+            if occurrence and not any(m["occurrence"] == occurrence for m in group["members"]):
+                continue
+            found.append({k: group[k] for k in ("groupId", "name", "aliases", "pinCount", "large")}
+                         | {"boards": len({m["occurrence"] for m in group["members"] if m["occurrence"]})})
+        found.sort(key=lambda g: (g["name"].casefold(), g["groupId"]))
+        return {"systemId": system_id, "groups": found[:limit], "total": len(found)}
+
+    def net(self, caller: Caller, system_id: str, group_id: str) -> dict:
+        """``GET …/nets/{groupId}``: one system net with its members and hops."""
+        groups, _occurrences = self._net_groups(caller, system_id)
+        found = next((g for g in groups if g["groupId"] == group_id), None)
+        if found is None:
+            raise NotFound("System net not found")
+        return found
 
     def add_catalog_instance(
         self, caller: Caller, system_id: str, version: int, *, kind: str, label: str, component_id: str,

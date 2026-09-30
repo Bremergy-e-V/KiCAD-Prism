@@ -56,12 +56,16 @@ class ValidationGoldenTest(FixtureSystemCase):
         self.service.decide(DESIGNER, self.sid, self.version(), review["id"], review["items"][0]["id"],
                             "accept", None)
         warnings = [f for f in self.report()["findings"] if f["severity"] == "warning"]
-        self.assertEqual(
-            [{"rule": f["rule"], "instance": self.labels[f["instanceId"]], "reference": f["reference"],
-              "pin": f["pin"], "schematic": f["detail"]["schematic"], "pcb": f["detail"]["pcb"]}
-             for f in warnings],
-            golden,
-        )
+
+        def shape(f: dict) -> dict:
+            base = {"rule": f["rule"], "instance": self.labels.get(f["instanceId"]), "reference": f["reference"],
+                    "pin": f["pin"]}
+            if f["rule"] == "SYS-V09":  # a row-level join finding (P2 §8.4)
+                return {**base, "netA": f["detail"]["netA"], "netB": f["detail"]["netB"]}
+            return {**base, "schematic": f["detail"]["schematic"], "pcb": f["detail"]["pcb"]}
+
+        self.assertEqual([shape(f) for f in warnings],
+                         [{k: v for k, v in w.items() if k != "note"} for w in golden])
 
     def test_pending_interface_is_not_evaluated_never_passed(self) -> None:
         self.conn.execute("DELETE FROM system_interface_artifacts WHERE project_id = 'prj_pwr'")
@@ -176,7 +180,7 @@ class ValidationRuleTest(unittest.TestCase):
         report = self.run_rules([_link("L1", [("3", "1")])],
                                 reviews=[{"id": "r1", "instance_id": "i1", "kind": "source_update"}])
         self.assertEqual([f["severity"] for f in report["findings"]], ["error", "info"])
-        self.assertEqual(set(RULES), {f"SYS-V0{n}" for n in range(1, 9)} | {"SYS-V14", "SYS-V15", "SYS-V16"})
+        self.assertEqual(set(RULES), {f"SYS-V0{n}" for n in range(1, 10)} | {"SYS-V10", "SYS-V14", "SYS-V15", "SYS-V16"})
 
 
 if __name__ == "__main__":

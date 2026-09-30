@@ -36,6 +36,7 @@ class ChildSystem:
     name: str
     instances: Sequence[Mapping[str, Any]]  # manifest v1 instances
     exports: Sequence[Mapping[str, Any]] = ()
+    links: Sequence[Mapping[str, Any]] = ()  # manifest v1 links (with rows), for system nets
 
 
 # revision_id -> ChildSystem, or None when the revision or its snapshot cannot be read
@@ -57,6 +58,7 @@ class Occurrence:
     child_system_id: Optional[str] = None
     child_snapshot_id: Optional[str] = None
     unresolved: bool = False         # an assembly whose revision or snapshot could not be read
+    child: Optional[ChildSystem] = None  # what an assembly resolved to (not serialized)
 
     @property
     def display_path(self) -> str:
@@ -130,6 +132,7 @@ def resolve(root_system_id: str, instances: Sequence[Mapping[str, Any]], loader:
             if child is None:
                 occurrence.unresolved = True
                 continue
+            occurrence.child = child
             occurrence.child_system_id = child.system_id
             occurrence.child_snapshot_id = child.snapshot_id
             if child.system_id in ancestors:

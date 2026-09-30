@@ -44,6 +44,11 @@ const RULE_TEXT: Record<string, string> = {
   pcb_out_of_sync: "PCB net differs from the schematic",
   pin_net_ambiguous: "Pin carries several nets",
   open_review: "Open review",
+  net_name_mismatch: "Joined nets share no name",
+  power_meets_signal: "Power net meets a signal net",
+  child_revision_unreleased: "Subsystem revision is not released",
+  child_advance_blocked: "Subsystem update blocked by hierarchy limits",
+  export_unresolved: "Export does not resolve",
 };
 
 export function findingText(finding: Pick<Finding, "name">): string {

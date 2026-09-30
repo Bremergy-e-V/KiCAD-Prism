@@ -313,6 +313,23 @@ async def remove_instance(
     return _no_content(result)
 
 
+@router.get("/{system_id}/nets")
+async def list_nets(
+    system_id: str, search: str = Query(default="", max_length=200),
+    occurrence: Optional[str] = Query(default=None, max_length=2000),
+    limit: int = Query(default=50, ge=1, le=500), user: AuthenticatedUser = Depends(require_viewer),
+):
+    """P2 §8.2: system nets matching ``search``, optionally on one board occurrence."""
+    return await _run(system_id, lambda: system_service.service.nets(
+        _caller(user), system_id, search=search, occurrence=occurrence, limit=limit,
+    ))
+
+
+@router.get("/{system_id}/nets/{group_id}")
+async def get_net(system_id: str, group_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    return await _run(system_id, lambda: system_service.service.net(_caller(user), system_id, group_id))
+
+
 @router.get("/{system_id}/hierarchy")
 async def get_hierarchy(system_id: str, user: AuthenticatedUser = Depends(require_viewer)):
     """P2 §11: the occurrence tree, redacted for the reader."""
