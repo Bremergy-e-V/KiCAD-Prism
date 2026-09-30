@@ -656,6 +656,20 @@
           "title": "Rows",
           "type": "array"
         },
+        "stackHeightMm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "b2b only: the mated pair's stack height (\u00a716.2)",
+          "title": "Stackheightmm"
+        },
         "type": {
           "enum": [
             "unspecified",
@@ -677,9 +691,24 @@
     },
     "Mating": {
       "additionalProperties": false,
+      "description": "A stored connector frame (\u00a715.2): inferred frames are recomputed, never stored.",
       "properties": {
         "frame": {
           "$ref": "#/$defs/MatingFrame"
+        },
+        "geometryDigest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the port's v6 geometry when confirmed; stale if it differs",
+          "title": "Geometrydigest"
         },
         "instanceId": {
           "pattern": "^sin_[0-9a-f]{32}$",
@@ -688,7 +717,6 @@
         },
         "mode": {
           "enum": [
-            "inferred",
             "confirmed",
             "override"
           ],
@@ -700,19 +728,6 @@
           "minLength": 1,
           "title": "Portkey",
           "type": "string"
-        },
-        "stackHeightMm": {
-          "anyOf": [
-            {
-              "exclusiveMinimum": 0,
-              "type": "number"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Stackheightmm"
         }
       },
       "required": [
