@@ -123,10 +123,28 @@ export interface FindingCounts {
   notEvaluated: number;
 }
 
+/** A connector this system publishes to parent systems (CONTRACTS_P2 §4). */
+export interface SystemExport {
+  id: string;
+  name: string;
+  description: string;
+  instanceId: string;
+  /** Null for a re-export or when the board is restricted. */
+  portKey: string | null;
+  port: PortBaseline | null;
+  childExportId: string | null;
+  /** False: the connector is gone or no longer exposed (SYS-V16). Null: not evaluated or restricted. */
+  resolved: boolean | null;
+  redacted: boolean;
+  updatedAt: string;
+}
+
 export interface SystemDocument {
   system: SystemSummary;
   instances: SystemInstance[];
   links: SystemLink[];
+  /** Absent in documents frozen before exports existed. */
+  exports?: SystemExport[];
   openReviewCount: number;
   findingCounts: FindingCounts | null;
 }

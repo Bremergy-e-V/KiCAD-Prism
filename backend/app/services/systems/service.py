@@ -25,8 +25,8 @@ from typing import Any, Callable, Collection, ContextManager, Iterator, Mapping,
 
 from app.core.roles import Role
 from app.services.systems import (
-    csv_import, drift, exposure, generators, icd, manifest as manifest_io, reconcile, redaction, sources,
-    validation, visibility,
+    csv_import, drift, exports as exports_module, exposure, generators, icd, manifest as manifest_io, reconcile,
+    redaction, sources, validation, visibility,
 )
 from app.services.systems.manifest_schema import digests as manifest_digests
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
@@ -233,7 +233,8 @@ class SystemService:
         job_state = self._latest_jobs(store, pending)
         overrides = {i["id"]: store.list_overrides(i["id"]) for i in instances if i["id"] in interfaces}
         open_reviews = store.list_reviews(system_id, status="open")
-        report = self._validate(store, system_id, instances, links, interfaces, job_state, open_reviews)
+        exports = store.list_exports(system_id)
+        report = self._validate(store, system_id, instances, links, interfaces, job_state, open_reviews, exports)
         review_rows = sorted({rid for review in open_reviews for item in review["items"] for rid in item["row_ids"]})
         return {
             "system": dict(system),
@@ -244,6 +245,7 @@ class SystemService:
                 for i in instances
             ],
             "links": [self._link_doc(link, interfaces, overrides) for link in links],
+            "exports": [self._export_doc(export, interfaces, overrides) for export in exports],
             "openReviewCount": system["openReviewCount"],
             "findingCounts": report["counts"],
             "validation": report,
@@ -267,6 +269,7 @@ class SystemService:
     def _validate(
         self, store: SystemStore, system_id: str, instances: Sequence[dict], links: Sequence[dict],
         interfaces: Mapping[str, dict], job_state: Mapping[str, dict], open_reviews: Sequence[dict],
+        exports: Sequence[dict] = (),
     ) -> dict:
         """§7.2 over the live state; an instance's failed extraction makes its source unavailable."""
 
@@ -278,7 +281,7 @@ class SystemService:
         return validation.validate(
             instances, links, {i["id"]: interfaces.get(i["id"]) for i in instances},
             {i["id"]: store.list_overrides(i["id"]) for i in instances},
-            open_reviews, unavailable=unavailable,
+            open_reviews, unavailable=unavailable, exports=exports,
         )
 
     def validation_report(self, caller: Caller, system_id: str) -> Result:
@@ -394,6 +397,141 @@ class SystemService:
             "rows": rows,
             "updatedAt": _iso(link["updated_at"]),
         }
+
+    @staticmethod
+    def _export_doc(export: Mapping[str, Any], interfaces: Mapping[str, dict],
+                    overrides: Mapping[str, Mapping[str, str]]) -> dict:
+        port = export["target_port"]
+        iid = export["target_instance_id"]
+        component = exports_module.resolve(interfaces.get(iid), port) if port else None
+        exposed = None if component is None else exposure.is_exposed(
+            component, overrides.get(iid, {}).get(component["portKey"]))
+        return {
+            "id": export["id"], "name": export["name"], "description": export["description"],
+            "instanceId": iid, "portKey": port["portKey"] if port else None,
+            "port": dict(port) if port else None, "childExportId": export["target_export_id"],
+            "resolved": None if iid not in interfaces else (component is not None and bool(exposed)),
+            "redacted": False, "updatedAt": _iso(export["updated_at"]),
+        }
+
+    # ------------------------------------------------------------------
+    # Exports (CONTRACTS_P2 §4)
+
+    def _export_port(self, store: SystemStore, system_id: str, instance_id: str, port_key: str,
+                     caller: Caller) -> dict:
+        """The port baseline of an exposed board port at its baseline."""
+        instance = self._open_instance(store, system_id, instance_id, caller)
+        interface = self._interface(store, instance)
+        component = exposure.component_by_key(interface, port_key)
+        if component is None:
+            raise Invalid("portKey is not a component of this board at its baseline")
+        override = store.list_overrides(instance_id).get(component["portKey"])
+        if not exposure.is_exposed(component, override):
+            raise Conflict("port_not_exposed: this port is not exposed on its board")
+        return exposure.port_baseline(component)
+
+    def list_exports(self, caller: Caller, system_id: str) -> list[dict]:
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            built, _instances, _jobs = self._build(store, system)
+            restricted = self._restricted_instances(store, system_id, caller)
+        return redaction.redact_document(built, restricted)["exports"]
+
+    def create_export(
+        self, caller: Caller, system_id: str, version: int, *, name: str, description: str,
+        instance_id: str, port_key: Optional[str], child_export_id: Optional[str],
+    ) -> Result:
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                if port_key is not None:
+                    port = self._export_port(store, system_id, instance_id, port_key, caller)
+                    row = store.create_export(change, name=name, description=description,
+                                              instance_id=instance_id, port=port)
+                else:
+                    self._open_instance(store, system_id, instance_id, caller)
+                    row = store.create_export(change, name=name, description=description,
+                                              instance_id=instance_id, child_export_id=child_export_id)
+                body = self._export_body(store, system, row["id"])
+        return Result(body, system_id, change.version)
+
+    def update_export(
+        self, caller: Caller, system_id: str, version: int, export_id: str, fields: Mapping[str, Any],
+    ) -> Result:
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                export = self._visible_export(store, system_id, export_id, caller)
+                if "name" in fields or "description" in fields:
+                    store.update_export(change, export_id, name=fields.get("name"),
+                                        description=fields.get("description"))
+                if fields.get("portKey") is not None:
+                    instance_id = fields.get("instanceId") or export["target_instance_id"]
+                    port = self._export_port(store, system_id, instance_id, fields["portKey"], caller)
+                    store.retarget_export(change, export_id, instance_id=instance_id, port=port)
+                body = self._export_body(store, system, export_id)
+        return Result(body, system_id, change.version)
+
+    def delete_export(self, caller: Caller, system_id: str, version: int, export_id: str) -> Result:
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                self._visible_export(store, system_id, export_id, caller)
+                store.delete_export(change, export_id)
+        return Result(None, system_id, change.version)
+
+    def _visible_export(self, store: SystemStore, system_id: str, export_id: str, caller: Caller) -> dict:
+        export = store.get_export(system_id, export_id)
+        try:
+            self._open_instance(store, system_id, export["target_instance_id"], caller)
+        except NotFound:
+            raise NotFound("Export not found") from None
+        return export
+
+    def _export_body(self, store: SystemStore, system: Mapping[str, Any], export_id: str) -> dict:
+        built, _instances, _jobs = self._build(store, system)
+        return next(e for e in built["exports"] if e["id"] == export_id)
+
+    def export_interface(self, caller: Caller, system_id: str, snapshot_id: Optional[str] = None) -> dict:
+        """``GET …/export-interface`` (P2 §4.3), live or at a snapshot, redacted for the reader."""
+
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            if snapshot_id is None:
+                instances = {i["id"]: i for i in store.list_instances(system_id)}
+                exports = store.list_exports(system_id)
+                restricted = self._restricted_instances(store, system_id, caller)
+            else:
+                row = store.get_snapshot(system_id, snapshot_id)
+                if row["manifest"] is None:
+                    raise NotFound("This snapshot predates manifests")
+                manifest = row["manifest"]
+                instances = {i["id"]: {"id": i["id"], "project_id": i["projectId"],
+                                       "baseline_commit": i["baselineCommit"]}
+                             for i in manifest["instances"] if i["kind"] == "board"}
+                exports = [{"id": e["id"], "name": e["name"], "description": e["description"],
+                            "target_instance_id": e["target"]["instanceId"],
+                            "target_port": e["target"].get("port"),
+                            "target_export_id": e["target"].get("exportId")} for e in manifest["exports"]]
+                restricted = self._restricted_in(store, row["document"], caller)
+            interfaces = {iid: store.get_interface(i["project_id"], i["baseline_commit"], EXTRACTOR_VERSION)
+                          for iid, i in instances.items()}
+            overrides = ({iid: store.list_overrides(iid) for iid in instances} if snapshot_id is None else
+                         {i["id"]: {o["portKey"]: o["state"] for o in i.get("portOverrides", [])}
+                          for i in manifest["instances"] if i["kind"] == "board"})
+        missing = [iid for e in exports for iid in [e["target_instance_id"]]
+                   if iid in instances and interfaces.get(iid) is None]
+        if missing:
+            for iid in set(missing):
+                self._enqueue_quietly(instances[iid]["project_id"], instances[iid]["baseline_commit"], caller)
+            raise Conflict("interface_not_ready: a board behind an export is still being extracted")
+        body = exports_module.interface(exports, instances, interfaces, overrides)
+        for entry in body["exports"]:
+            if entry["occurrence"].lstrip("/") in restricted:
+                entry.update({"reference": None, "libId": None, "footprint": None, "redacted": True,
+                              "pins": [{"pad": p["pad"], "nets": None, "powerNet": None, "pinNames": None,
+                                        "pinTypes": None} for p in entry["pins"]]})
+        return body
 
     # ------------------------------------------------------------------
     # Instances

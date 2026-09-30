@@ -6,7 +6,7 @@ import { chooseMenuItem } from "@/test/select";
 
 import { BoardsTab, linkedPortKeys, portState } from "./boards-tab";
 import { OverviewTab } from "./overview-tab";
-import { instance, link, port, systemDocument } from "./test-fixtures";
+import { exportOf, instance, link, port, systemDocument } from "./test-fixtures";
 
 vi.mock("@/hooks/use-workspace-data", () => ({
   useWorkspaceData: () => ({ projects: [] }),
@@ -151,5 +151,43 @@ describe("OverviewTab", () => {
     expect(onNavigate).toHaveBeenLastCalledWith("boards", { board: "sin_PAY" });
     fireEvent.click(screen.getByRole("button", { name: /L1/ }));
     expect(onNavigate).toHaveBeenLastCalledWith("connectivity", { link: "L1" });
+  });
+  it("exports a free port and marks it so it cannot be hidden", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 201, headers: { ETag: '"sys:sys_1:2"', "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const board = instance("OBC", { ports: [port("J7"), port("J6")] });
+    renderTab({ document: systemDocument([board, pay], [link("L1", board.id, "J7", pay.id, "J1", 3)]) });
+    expect(screen.getAllByRole("button", { name: /Export/ })).toHaveLength(1); // J7 is linked
+    fireEvent.click(screen.getByRole("button", { name: /Export/ }));
+    fireEvent.change(await screen.findByLabelText("Export name"), { target: { value: "DEBUG" } });
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect([url, init.method, JSON.parse(String(init.body))]).toEqual(["/api/systems/sys_1/exports", "POST",
+      { name: "DEBUG", description: "", instanceId: board.id, portKey: "key-J6" }]);
+  });
+
+  it("badges an exported port and disables Hide on it", () => {
+    const board = instance("OBC", { ports: [port("J6")] });
+    renderTab({ document: systemDocument([board], [], [exportOf("DEBUG", board.id, "J6")]) });
+    expect(screen.getByText(/exported as DEBUG/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /Hide/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: /^Export$/ })).toBeNull();
+  });
+  it("lists exports with their state and renames through the menu", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { ETag: '"sys:sys_1:2"', "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const withExports = systemDocument([obc, pay], [link("L1", obc.id, "J7", pay.id, "J1", 3)],
+      [exportOf("DEBUG", obc.id, "J5"), exportOf("PWR_IN", pay.id, "J2", { resolved: false })]);
+    const reload = vi.fn(async () => undefined);
+    render(<OverviewTab systemId="sys_1" document={withExports} etag='"sys:sys_1:1"' canEdit user={null} reload={reload} onNavigate={vi.fn()} />);
+    expect(screen.getByText("DEBUG")).toBeTruthy();
+    expect(screen.getByText("unresolved")).toBeTruthy();
+    await chooseMenuItem("Actions for DEBUG", /Rename/);
+    fireEvent.change(await screen.findByLabelText("Export name"), { target: { value: "SWD" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect([url, init.method, JSON.parse(String(init.body))]).toEqual(["/api/systems/sys_1/exports/sxp_DEBUG", "PATCH", { name: "SWD", description: "" }]);
   });
 });

@@ -24,6 +24,7 @@ import type {
   SnapshotDiff,
   SnapshotMeta,
   SystemDocument,
+  SystemExport,
   SystemInstance,
   SystemLink,
   SystemPort,
@@ -179,6 +180,28 @@ export function updateLink(systemId: string, etag: string, linkId: string, field
 
 export function deleteLink(systemId: string, etag: string, linkId: string) {
   return versioned<void>(path(systemId, "links", linkId), { method: "DELETE", etag });
+}
+
+// ---------------------------------------------------------------------------
+// Exports (CONTRACTS_P2 §4)
+
+export function createExport(
+  systemId: string, etag: string, input: { name: string; description?: string; instanceId: string; portKey: string },
+) {
+  return versioned<SystemExport>(path(systemId, "exports"), { method: "POST", etag, body: json(input) },
+    "Could not export the port");
+}
+
+export function updateExport(
+  systemId: string, etag: string, exportId: string,
+  fields: { name?: string; description?: string; instanceId?: string; portKey?: string },
+) {
+  return versioned<SystemExport>(path(systemId, "exports", exportId), { method: "PATCH", etag, body: json(fields) },
+    "Could not update the export");
+}
+
+export function deleteExport(systemId: string, etag: string, exportId: string) {
+  return versioned<void>(path(systemId, "exports", exportId), { method: "DELETE", etag });
 }
 
 export interface RowInput {

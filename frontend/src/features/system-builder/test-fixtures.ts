@@ -1,4 +1,4 @@
-import type { SystemDocument, SystemInstance, SystemLink, SystemPort } from "@/types/system";
+import type { SystemDocument, SystemExport, SystemInstance, SystemLink, SystemPort } from "@/types/system";
 
 export function port(reference: string, patch: Partial<SystemPort> = {}): SystemPort {
   return {
@@ -33,12 +33,22 @@ export function link(id: string, a: string, aRef: string, b: string, bRef: strin
   };
 }
 
-export function systemDocument(instances: SystemInstance[], links: SystemLink[] = []): SystemDocument {
+export function systemDocument(
+  instances: SystemInstance[], links: SystemLink[] = [], exports: SystemExport[] = [],
+): SystemDocument {
   return {
     system: {
       id: "sys_1", kind: "system", name: "Stack", description: "", folderId: null, version: 1, etag: '"sys:sys_1:1"',
       instanceCount: instances.length, openReviewCount: 0, createdBy: "user:a", createdAt: "", updatedAt: "",
     },
-    instances, links, openReviewCount: 0, findingCounts: { error: 0, warning: 1, info: 0, notEvaluated: 0 },
+    instances, links, exports, openReviewCount: 0, findingCounts: { error: 0, warning: 1, info: 0, notEvaluated: 0 },
+  };
+}
+
+export function exportOf(name: string, instanceId: string, reference: string, patch: Partial<SystemExport> = {}): SystemExport {
+  return {
+    id: `sxp_${name}`, name, description: "", instanceId, portKey: `key-${reference}`,
+    port: { portKey: `key-${reference}`, memberKeys: [`key-${reference}`], reference, libId: null, footprint: null, pinCount: 4 },
+    childExportId: null, resolved: true, redacted: false, updatedAt: "", ...patch,
   };
 }

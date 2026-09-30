@@ -228,7 +228,7 @@
         "target": {
           "anyOf": [
             {
-              "$ref": "#/$defs/PortTarget"
+              "$ref": "#/$defs/ExportPortTarget"
             },
             {
               "$ref": "#/$defs/ExportTarget"
@@ -324,6 +324,33 @@
         "export"
       ],
       "title": "ExportEnd",
+      "type": "object"
+    },
+    "ExportPortTarget": {
+      "additionalProperties": false,
+      "description": "A board port export, with the port baseline it resolves through (\u00a74.1, P2-1.3).",
+      "properties": {
+        "instanceId": {
+          "pattern": "^sin_[0-9a-f]{32}$",
+          "title": "Instanceid",
+          "type": "string"
+        },
+        "port": {
+          "$ref": "#/$defs/PortBaseline"
+        },
+        "portKey": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Portkey",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instanceId",
+        "portKey",
+        "port"
+      ],
+      "title": "ExportPortTarget",
       "type": "object"
     },
     "ExportTarget": {
@@ -917,28 +944,6 @@
         "state"
       ],
       "title": "PortOverride",
-      "type": "object"
-    },
-    "PortTarget": {
-      "additionalProperties": false,
-      "properties": {
-        "instanceId": {
-          "pattern": "^sin_[0-9a-f]{32}$",
-          "title": "Instanceid",
-          "type": "string"
-        },
-        "portKey": {
-          "maxLength": 2000,
-          "minLength": 1,
-          "title": "Portkey",
-          "type": "string"
-        }
-      },
-      "required": [
-        "instanceId",
-        "portKey"
-      ],
-      "title": "PortTarget",
       "type": "object"
     },
     "Pose": {

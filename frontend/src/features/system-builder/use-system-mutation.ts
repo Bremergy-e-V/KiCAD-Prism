@@ -39,3 +39,5 @@ export function useSystemMutation(reload: () => Promise<void>) {
 
   return { busy, run };
 }
+
+export type Mutate = ReturnType<typeof useSystemMutation>["run"];

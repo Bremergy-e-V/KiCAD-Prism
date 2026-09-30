@@ -59,7 +59,17 @@
       "description": "28 V bus input",
       "target": {
         "instanceId": "sin_f8cdbc63b67db711b1cc76ca0d905132",
-        "portKey": "/f8cdbc63-root/d74a8744-J20"
+        "portKey": "/f8cdbc63-root/d74a8744-J20",
+        "port": {
+          "portKey": "/f8cdbc63-root/d74a8744-J20",
+          "memberKeys": [
+            "/f8cdbc63-root/d74a8744-J20"
+          ],
+          "reference": "J20",
+          "libId": "Connector:Conn_01x04",
+          "footprint": "Connector_JST:JST_GH_BM04B-GHS-TBT_1x04-1MP_P1.25mm_Vertical",
+          "pinCount": 4
+        }
       }
     },
     {
@@ -68,7 +78,17 @@
       "description": "",
       "target": {
         "instanceId": "sin_ea99049f095f5bc06f822c74237ef14e",
-        "portKey": "/a49adf76-root/5439de10-J9"
+        "portKey": "/a49adf76-root/5439de10-J9",
+        "port": {
+          "portKey": "/a49adf76-root/5439de10-J9",
+          "memberKeys": [
+            "/a49adf76-root/5439de10-J9"
+          ],
+          "reference": "J9",
+          "libId": "Connector:Conn_01x04",
+          "footprint": "Connector_JST:JST_GH_BM04B-GHS-TBT_1x04-1MP_P1.25mm_Vertical",
+          "pinCount": 4
+        }
       }
     }
   ],

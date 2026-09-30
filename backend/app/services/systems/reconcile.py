@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Optional
 
-from app.services.systems import csv_import, drift, exposure
+from app.services.systems import csv_import, drift, exports, exposure
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
 from app.services.systems.store import Conflict, Invalid, Mutation, NotFound, SystemStore
 
@@ -192,6 +192,7 @@ def apply_review(store: SystemStore, change: Mutation, review: Mapping[str, Any]
             store.update_row_end(change, link["id"], row["id"], end,
                                  pin=pad if decision == "remap" else None, nets=pins.get(pad, []))
 
+    exports.refresh_after_advance(store, change, review["instance_id"], candidate)
     store.set_baseline(change, review["instance_id"], review["to_commit"], kind="review_applied",
                        payload={"reviewId": review["id"]})
     store.set_review_status(change, review["id"], "applied")

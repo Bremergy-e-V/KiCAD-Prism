@@ -156,11 +156,25 @@ class ExportTarget(_Model):
     exportId: ExportId
 
 
+class ExportPortTarget(_Model):
+    """A board port export, with the port baseline it resolves through (§4.1, P2-1.3)."""
+
+    instanceId: InstanceId
+    portKey: str = Field(min_length=1, max_length=2000)
+    port: PortBaseline
+
+    @model_validator(mode="after")
+    def _key_matches(self) -> "ExportPortTarget":
+        if self.port.portKey != self.portKey:
+            raise ValueError("port.portKey must equal portKey")
+        return self
+
+
 class Export(_Model):
     id: ExportId
     name: str = Field(min_length=1, max_length=100)
     description: str = Field(default="", max_length=2000)
-    target: Union[PortTarget, ExportTarget]
+    target: Union[ExportPortTarget, ExportTarget]
 
 
 # ---------------------------------------------------------------------------
@@ -370,7 +384,7 @@ def reference_problems(manifest: Manifest) -> list[str]:
         kind = kinds.get(end.instanceId)
         if kind is None:
             problems.append(f"{where}: unknown instance {end.instanceId}")
-        elif isinstance(end, (PortEnd, PortTarget)) and kind not in ("board", "module"):
+        elif isinstance(end, (PortEnd, PortTarget, ExportPortTarget)) and kind not in ("board", "module"):
             problems.append(f"{where}: portKey ends need a board or module instance")
         elif isinstance(end, (ExportEnd, ExportTarget)) and kind != "assembly":
             problems.append(f"{where}: exportId ends need an assembly instance")

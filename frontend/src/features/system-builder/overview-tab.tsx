@@ -3,8 +3,10 @@ import { ArrowRight, Pin } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { SystemDocument, SystemLink } from "@/types/system";
 
+import { ExportsSection } from "./exports-section";
 import type { SystemTabProps } from "./system-tab-content";
 import { TONE_BADGE, boardStatus, shortSha } from "./system-format";
+import { useSystemMutation } from "./use-system-mutation";
 
 function Stat({ label, value, hint, onClick }: { label: string; value: string | number; hint?: string; onClick?: () => void }) {
   const body = (
@@ -30,7 +32,8 @@ export function linkEnds(document: SystemDocument, link: SystemLink): string {
     .join(" ↔ ");
 }
 
-export function OverviewTab({ document, onNavigate }: SystemTabProps) {
+export function OverviewTab({ systemId, document, etag, canEdit, reload, onNavigate }: SystemTabProps) {
+  const { busy, run } = useSystemMutation(reload);
   const rows = document.links.reduce((total, link) => total + link.rows.length, 0);
   const counts = document.findingCounts;
   const findingsHint = counts
@@ -97,6 +100,9 @@ export function OverviewTab({ document, onNavigate }: SystemTabProps) {
           </div>
         )}
       </section>
+
+      <ExportsSection systemId={systemId} document={document} etag={etag} canEdit={canEdit} busy={busy} run={run}
+        onOpenBoard={(instanceId) => onNavigate("boards", { board: instanceId })} />
 
       <section className="space-y-2">
         <h2 className="text-sm font-semibold">Links</h2>

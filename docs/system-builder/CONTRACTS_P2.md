@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.2 · 2026-09-30 · tickets SB2-00 to SB2-02.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
+**Version P2-1.3 · 2026-09-30 · tickets SB2-00 to SB2-03.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §14.
@@ -156,7 +156,16 @@ An export is `{id, name, description, target}`:
 2. **An export's port must be exposed** (P1 §4.2), otherwise 409 `port_not_exposed`.
 3. **A re-export needs an assembly instance.** Its target must be an assembly instance's export at that instance's pinned revision.
 4. **Deleting an export is allowed.** Parents learn of it as `export_missing` in child drift (§7).
-5. At most **200 exports** per system.
+5. At most **200 exports** per system (422 `export_limit`).
+6. **Removing a board that carries exports** gives 409 unless `?cascade=links`, which also deletes its exports (each audited `export_deleted`).
+7. **A port export stores the port baseline** (like a link end) and resolves by `memberKeys` intersection at the board's baseline.
+   - When a baseline advances (auto-advance, rebase or an applied review), each export on that board moves to the component it now resolves to, audited `connector_relabelled` or `connector_rebound` with `exportId`.
+   - An export that no longer resolves, or whose port is no longer exposed, is **SYS-V16 `export_unresolved`** (error), and its interface entry has `resolved: false` and no pins. Exported connectors are never linked inside the system, so drift never reviews them; this finding is what surfaces a broken export.
+8. **An exported port cannot be hidden** (UI) and cannot be an end of a link (409 `export_port_linked`, from both directions).
+
+**Storage (workspace migration 31).** `system_exports`: `id`, `system_id`, `name` (unique per system, case-insensitive), `description`, `target_instance_id`, and exactly one of `target_port` (JSONB port baseline) or `target_export_id`.
+
+**Document.** The system document gains `exports: [{id, name, description, instanceId, portKey, port, childExportId, resolved, redacted, updatedAt}]`. On a restricted board, `portKey`, `port` and `resolved` are null and `redacted` is true; the name stays visible.
 
 ### 4.3 Export interface (`prism.system_export_interface.v1`)
 
@@ -174,8 +183,11 @@ An export is `{id, name, description, target}`:
 ```
 
 - It is computed from the snapshot's instance baselines and their interface artifacts, using P1 §3 pin rules (pad strings, sorted net sets).
-- A re-export is resolved to the physical connector.
-- `powerNet` comes from extractor v5 **[S4]**.
+- A re-export is resolved to the physical connector (SB2-05).
+- `powerNet` comes from extractor v5 **[S4]**. It is null until SB2-08.
+- Each entry carries `resolved`. An unresolved entry has `pinCount: 0` and `pins: []`, and publishing refuses it.
+- `GET …/export-interface` returns 409 `interface_not_ready` (and queues extraction) while a board behind an export has no interface at the current extractor version. `?snapshot=` computes it from the snapshot's manifest, so a live interface equals its snapshot's until something changes.
+- Redaction: an entry on a restricted board keeps its name and pad numbers, but `reference`, `libId`, `footprint`, and every pin's nets, names and types are null, with `redacted: true`.
 
 ## 5. Hierarchy
 
@@ -312,6 +324,7 @@ A net's **tokens** are the last path segment, uppercased, with KiCad markup (`~{
 | SYS-V13 | `length_mismatch` | warning | Reserved for M5. |
 | SYS-V14 | `child_revision_unreleased` | warning | An assembly or module instance pins a revision that is not `released`, or whose snapshot had open reviews. |
 | SYS-V15 | `child_advance_blocked` | warning | A released revision exists but advancing would break §5.3 limits. |
+| SYS-V16 | `export_unresolved` | error | An export's connector no longer resolves at its board's baseline, or is no longer exposed (§4.2 rule 7). Not evaluated while the board's interface is missing. |
 
 **`powerNet` (extractor v5 [S4]).** A pin's net is a power net when any schematic symbol on that net is a power symbol: KiCad `power` flag set on its lib symbol, or a reference starting with `#PWR`/`#FLG`. The extractor records `powerNet: bool` per pin. `EXTRACTOR_VERSION` goes to 5, and every board re-extracts once.
 
@@ -327,7 +340,7 @@ The models in `manifest_schema.py` are normative. Top-level keys:
 | `system` | `{id, name, description}` |
 | `meta` | `{createdAt, createdBy, sourceVersion, snapshot?: {id, name, note}}` |
 | `instances` | board `{id, label, kind: "board", projectId, baselineCommit, trackedRef, pinned, portOverrides}` or catalog `{id, label, kind: "assembly"\|"module", catalog: {componentId, revisionId, revisionVersion, identity}, follow}` |
-| `exports` | §4.1 |
+| `exports` | §4.1. A port target is `{instanceId, portKey, port: PortBaseline}` (P2-1.3); a re-export target is `{instanceId, exportId}` |
 | `links` | `{id, name, type, harnessLabel, a, b, rows}` with P1 rows (`netA`/`netB` baselines) |
 | `harnesses` | `{id, name, label, ends[{id, ordinal, mates, part, pinCount, pinMap, bootMm}], wires[{id, from, to, signal, gaugeAwg, colour, label, netFrom, netTo}], nodes[{id, kind, positionMm, pinned, order, ends}], cutLengthMm, serviceAllowancePct}` |
 | `mating` | `{instanceId, portKey, mode, frame: {axis, quarterTurns}, stackHeightMm}` |
@@ -439,6 +452,7 @@ Everything else stays on reader or writer roles, including inventory export, hea
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.3 | 2026-09-30 | SB2-03: exports. Migration 31; rules 6–8; SYS-V16; refresh on baseline advance; document `exports`; export interface `resolved`, 409 `interface_not_ready`, snapshot variant, redaction; manifest export port targets carry their baseline. |
 | P2-1.2 | 2026-09-30 | SB2-02: catalog kinds (migration 3); IPN via `provisional_ipn` + source `prism` instead of a new identity kind; `source_ref` carries the gate facts; assembly gates; integrity guards v5; hash stability; `?kind=`; viewer browse routes. |
 | P2-1.1 | 2026-09-30 | SB2-01: snapshots store the manifest and both digests (`digest` = full); `GET …/manifest` is whole-or-403; `import_manifest` keeps IDs; migration 30. §0 signed off. |
 | P2-1.0 | 2026-09-30 | First draft for sign-off (SB2-00). Adds catalog kinds and publishing, exports, hierarchy, child drift, system nets V09–V15, manifest v1 with digests, API, errors and audit kinds. P1 changes: snapshots store a manifest (§9.4); instances gain `kind` (§5.1); extractor v5 adds `powerNet` (§8.4). S6 revised by the user: canvas layout is part of the manifest and snapshots (§9.5, revises P1 invariant 6). |

@@ -32,6 +32,7 @@ from psycopg.types.json import Jsonb
 MAX_INSTANCES = 50
 MAX_LINKS = 500
 MAX_ROWS = 5000
+MAX_EXPORTS = 200
 
 ROW_SOURCES = frozenset({"manual", "generator", "import"})
 OVERRIDE_STATES = frozenset({"hidden", "promoted"})
@@ -350,10 +351,18 @@ class SystemStore:
             """,
             (change.system_id, instance_id, instance_id),
         ).fetchall()
+        exports = self.conn.execute(
+            "SELECT id FROM system_exports WHERE system_id = %s AND target_instance_id = %s ORDER BY id",
+            (change.system_id, instance_id),
+        ).fetchall()
         if links and not cascade_links:
             raise Conflict("instance is an endpoint of a link")
+        if exports and not cascade_links:
+            raise Conflict("instance carries exports; remove them or pass ?cascade=links")
         for link in links:
             self.delete_link(change, link["id"])
+        for export in exports:
+            self.delete_export(change, export["id"])
         self.conn.execute("DELETE FROM system_instances WHERE id = %s", (instance_id,))
         change.audit(
             "instance_removed",
@@ -507,8 +516,10 @@ class SystemStore:
         a_baseline, b_baseline = _port_baseline(a_port), _port_baseline(b_port)
         if a_instance_id == b_instance_id and a_baseline["portKey"] == b_baseline["portKey"]:
             raise Invalid("both link ends are the same port")
-        for instance_id in (a_instance_id, b_instance_id):
+        for instance_id, baseline in ((a_instance_id, a_baseline), (b_instance_id, b_baseline)):
             self.get_instance(change.system_id, instance_id)
+            if self.exported_port(change.system_id, instance_id, baseline["portKey"]):
+                raise Conflict("export_port_linked: this port is exported; delete or retarget the export first")
         count = self.conn.execute(
             "SELECT count(*) AS n FROM system_links WHERE system_id = %s", (change.system_id,)
         ).fetchone()["n"]
@@ -531,6 +542,153 @@ class SystemStore:
              "b": {"instanceId": b_instance_id, "portKey": b_baseline["portKey"]}},
         )
         return self.get_link(change.system_id, link_id)
+
+    # ------------------------------------------------------------------
+    # Exports (CONTRACTS_P2 §4)
+
+    def list_exports(self, system_id: str) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM system_exports WHERE system_id = %s ORDER BY lower(name), id", (system_id,)
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_export(self, system_id: str, export_id: str) -> dict:
+        row = self.conn.execute(
+            "SELECT * FROM system_exports WHERE system_id = %s AND id = %s", (system_id, export_id)
+        ).fetchone()
+        if row is None:
+            raise NotFound("Export not found")
+        return dict(row)
+
+    def exported_port(self, system_id: str, instance_id: str, port_key: str) -> Optional[dict]:
+        """The export whose target is this board port (by portKey), if any."""
+        for export in self.list_exports(system_id):
+            port = export["target_port"]
+            if export["target_instance_id"] == instance_id and port and port["portKey"] == port_key:
+                return export
+        return None
+
+    def linked_port(self, system_id: str, instance_id: str, port_key: str) -> bool:
+        return any(
+            link[f"{end}_instance_id"] == instance_id and link[f"{end}_port"]["portKey"] == port_key
+            for link in self.list_links(system_id) for end in ("a", "b")
+        )
+
+    def _require_free_export_name(self, system_id: str, name: str, *, except_id: str = "") -> str:
+        name = name.strip()
+        if not name or len(name) > 100:
+            raise Invalid("export name must be 1 to 100 characters")
+        clash = self.conn.execute(
+            "SELECT 1 FROM system_exports WHERE system_id = %s AND lower(name) = lower(%s) AND id <> %s",
+            (system_id, name, except_id),
+        ).fetchone()
+        if clash:
+            raise Conflict(f"an export named {name!r} already exists")
+        return name
+
+    def create_export(
+        self, change: Mutation, *, name: str, description: str, instance_id: str,
+        port: Optional[Mapping[str, Any]] = None, child_export_id: Optional[str] = None,
+        export_id: Optional[str] = None,
+    ) -> dict:
+        """One of ``port`` (a board port baseline) or ``child_export_id`` (a re-export)."""
+        if (port is None) == (child_export_id is None):
+            raise Invalid("an export targets exactly one of a port or a child export")
+        count = self.conn.execute(
+            "SELECT count(*) AS n FROM system_exports WHERE system_id = %s", (change.system_id,)
+        ).fetchone()["n"]
+        if count >= MAX_EXPORTS:
+            raise Invalid(f"export_limit: at most {MAX_EXPORTS} exports per system")
+        instance = self.get_instance(change.system_id, instance_id)
+        name = self._require_free_export_name(change.system_id, name)
+        baseline = _port_baseline(port) if port is not None else None
+        if baseline is not None:
+            if instance.get("kind", "board") not in ("board", "module"):
+                raise Invalid("a port export needs a board or module instance")
+            if self.linked_port(change.system_id, instance_id, baseline["portKey"]):
+                raise Conflict("export_port_linked: this port is an end of a link in this system")
+            if self.exported_port(change.system_id, instance_id, baseline["portKey"]):
+                raise Conflict("this port is already exported")
+        elif instance.get("kind", "board") != "assembly":
+            raise Invalid("a re-export needs an assembly instance")
+        export_id = _given_id("sxp_", export_id)
+        self.conn.execute(
+            """
+            INSERT INTO system_exports
+                (id, system_id, name, description, target_instance_id, target_port, target_export_id)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (export_id, change.system_id, name, description or "", instance_id,
+             Jsonb(baseline) if baseline is not None else None, child_export_id),
+        )
+        change.audit("export_created", {
+            "exportId": export_id, "name": name, "instanceId": instance_id,
+            "portKey": baseline["portKey"] if baseline else None, "childExportId": child_export_id,
+        })
+        return self.get_export(change.system_id, export_id)
+
+    def update_export(
+        self, change: Mutation, export_id: str, *, name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> dict:
+        before = self.get_export(change.system_id, export_id)
+        values = {
+            "name": before["name"] if name is None else self._require_free_export_name(
+                change.system_id, name, except_id=export_id),
+            "description": before["description"] if description is None else description,
+        }
+        self.conn.execute(
+            "UPDATE system_exports SET name = %s, description = %s, updated_at = NOW() WHERE id = %s",
+            (values["name"], values["description"], export_id),
+        )
+        changed = {k: {"before": before[k], "after": v} for k, v in values.items() if before[k] != v}
+        if changed:
+            change.audit("export_updated", {"exportId": export_id, **changed})
+        return self.get_export(change.system_id, export_id)
+
+    def retarget_export(
+        self, change: Mutation, export_id: str, *, instance_id: str, port: Mapping[str, Any],
+    ) -> dict:
+        """Point an export at another board port; its ID never changes (§4.1)."""
+        before = self.get_export(change.system_id, export_id)
+        baseline = _port_baseline(port)
+        instance = self.get_instance(change.system_id, instance_id)
+        if instance.get("kind", "board") not in ("board", "module"):
+            raise Invalid("a port export needs a board or module instance")
+        if self.linked_port(change.system_id, instance_id, baseline["portKey"]):
+            raise Conflict("export_port_linked: this port is an end of a link in this system")
+        other = self.exported_port(change.system_id, instance_id, baseline["portKey"])
+        if other and other["id"] != export_id:
+            raise Conflict("this port is already exported")
+        self.conn.execute(
+            """
+            UPDATE system_exports
+            SET target_instance_id = %s, target_port = %s, target_export_id = NULL, updated_at = NOW()
+            WHERE id = %s
+            """,
+            (instance_id, Jsonb(baseline), export_id),
+        )
+        change.audit("export_retargeted", {
+            "exportId": export_id,
+            "before": {"instanceId": before["target_instance_id"],
+                       "portKey": (before["target_port"] or {}).get("portKey"),
+                       "childExportId": before["target_export_id"]},
+            "after": {"instanceId": instance_id, "portKey": baseline["portKey"]},
+        })
+        return self.get_export(change.system_id, export_id)
+
+    def set_export_port(self, change: Mutation, export_id: str, port: Mapping[str, Any]) -> None:
+        """Refresh an export's port baseline after a silent relabel or rebind (no audit of its own)."""
+        self.conn.execute(
+            "UPDATE system_exports SET target_port = %s, updated_at = NOW() WHERE id = %s",
+            (Jsonb(_port_baseline(port)), export_id),
+        )
+
+    def delete_export(self, change: Mutation, export_id: str) -> None:
+        export = self.get_export(change.system_id, export_id)
+        self.conn.execute("DELETE FROM system_exports WHERE id = %s", (export_id,))
+        change.audit("export_deleted", {"exportId": export_id, "name": export["name"],
+                                        "instanceId": export["target_instance_id"]})
 
     def update_link(
         self, change: Mutation, link_id: str, *, name: Optional[str] = None, harness: Any = ...,

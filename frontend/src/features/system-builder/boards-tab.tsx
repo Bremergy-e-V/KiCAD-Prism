@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import { Eye, EyeOff, Lock, MoreHorizontal, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Lock, MoreHorizontal, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Share2, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ import { useWorkspaceData, workspaceSessionKey } from "@/hooks/use-workspace-dat
 import {
   addInstance,
   checkNow,
+  createExport,
   getInstanceInterface,
   removeInstance,
   setPortOverride,
@@ -38,6 +39,7 @@ import type { User } from "@/types/auth";
 import type { InstanceComponent, SystemDocument, SystemInstance, SystemPort } from "@/types/system";
 
 import { BoardFields, boardProblems, instanceInput, type BoardDraft } from "./board-fields";
+import { ExportDialog, exportForPort } from "./exports-section";
 import type { SystemTabProps } from "./system-tab-content";
 import { TONE_BADGE, boardStatus, shortSha } from "./system-format";
 import { useSystemMutation } from "./use-system-mutation";
@@ -353,6 +355,7 @@ interface PortsSectionProps {
 
 function PortsSection({ systemId, document, instance, etag, editable, busy, run }: PortsSectionProps) {
   const [showAll, setShowAll] = useState(false);
+  const [exporting, setExporting] = useState<SystemPort | null>(null);
   const [components, setComponents] = useState<{ key: string; items: InstanceComponent[] } | null>(null);
   const linked = linkedPortKeys(document, instance.id);
   const componentsKey = `${instance.id}:${instance.baselineCommit}:${etag}`;
@@ -424,6 +427,7 @@ function PortsSection({ systemId, document, instance, etag, editable, busy, run 
             {rows.map((port) => {
               const state = portState(port);
               const isLinked = linked.has(port.portKey);
+              const exported = exportForPort(document, instance.id, port.portKey);
               return (
                 <tr key={port.portKey} className="border-t">
                   <td className="px-3 py-2 font-medium" title={port.libId ?? undefined}>{port.reference}</td>
@@ -432,17 +436,23 @@ function PortsSection({ systemId, document, instance, etag, editable, busy, run 
                   <td className="px-3 py-2">
                     <span className={cn(state === "hidden" || state === "not exposed" ? "text-muted-foreground" : "")}>{state}</span>
                     {isLinked && <Badge variant="outline" className="ml-2">linked</Badge>}
+                    {exported && <Badge variant="outline" className="ml-2" title={exported.description || undefined}><Share2 className="h-3 w-3" /> exported as {exported.name}</Badge>}
                   </td>
                   {editable && (
-                    <td className="px-3 py-2 text-right">
+                    <td className="whitespace-nowrap px-3 py-2 text-right">
+                      {port.exposed && !isLinked && !exported && (
+                        <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setExporting(port)}>
+                          <Share2 className="mr-1 h-3.5 w-3.5" /> Export
+                        </Button>
+                      )}
                       {port.override !== null ? (
                         <Button size="sm" variant="ghost" disabled={busy !== null || (port.override === "promoted" && isLinked && !port.candidate)}
                           onClick={() => void setOverride(port, null, `${port.reference} reset`)}>
                           <RotateCcw className="mr-1 h-3.5 w-3.5" /> Reset
                         </Button>
                       ) : port.exposed ? (
-                        <Button size="sm" variant="ghost" disabled={busy !== null || isLinked}
-                          title={isLinked ? "A linked port cannot be hidden" : undefined}
+                        <Button size="sm" variant="ghost" disabled={busy !== null || isLinked || Boolean(exported)}
+                          title={isLinked ? "A linked port cannot be hidden" : exported ? "An exported port cannot be hidden" : undefined}
                           onClick={() => void setOverride(port, "hidden", `${port.reference} hidden`)}>
                           <EyeOff className="mr-1 h-3.5 w-3.5" /> Hide
                         </Button>
@@ -460,6 +470,18 @@ function PortsSection({ systemId, document, instance, etag, editable, busy, run 
           </tbody>
         </table>
       </div>
+      {exporting && (
+        <ExportDialog title={`Export ${instance.label} ${exporting.reference}`}
+          description="Publish this connector so a parent system can link to it. A linked port cannot be exported."
+          initial={{ name: exporting.reference, description: "" }} submitLabel="Export"
+          existingNames={(document.exports ?? []).map((entry) => entry.name)} busy={busy === "export"}
+          onClose={() => setExporting(null)}
+          onSubmit={async (value) => {
+            const done = await run("export", () => createExport(systemId, etag, { ...value, instanceId: instance.id, portKey: exporting.portKey }),
+              `Exported ${exporting.reference} as ${value.name}`);
+            if (done) setExporting(null);
+          }} />
+      )}
     </section>
   );
 }

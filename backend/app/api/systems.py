@@ -77,6 +77,21 @@ class UpdateLinkRequest(BaseModel):
     harness: Optional[str] = Field(default=None, max_length=200)
 
 
+class CreateExportRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str = Field(default="", max_length=2000)
+    instanceId: str = Field(min_length=1, max_length=200)
+    portKey: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+    childExportId: Optional[str] = Field(default=None, min_length=1, max_length=100)
+
+
+class UpdateExportRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    instanceId: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    portKey: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+
+
 class RowRequest(BaseModel):
     id: Optional[str] = Field(default=None, max_length=100)
     pinA: str = Field(min_length=1, max_length=100)
@@ -298,6 +313,66 @@ async def set_port_override(
         _caller(user), system_id, version, instance_id, port_key, body.state,
     ))
     return _respond(result, response)
+
+
+# ---------------------------------------------------------------------------
+# Exports (CONTRACTS_P2 §4)
+
+
+@router.get("/{system_id}/exports")
+async def list_exports(system_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    return await _run(system_id, lambda: system_service.service.list_exports(_caller(user), system_id))
+
+
+@router.post("/{system_id}/exports", dependencies=[Depends(require_designer)])
+async def create_export(
+    system_id: str, body: CreateExportRequest, request: Request, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    if (body.portKey is None) == (body.childExportId is None):
+        raise HTTPException(status_code=422, detail="give exactly one of portKey or childExportId")
+    result = await _run(system_id, lambda: system_service.service.create_export(
+        _caller(user), system_id, version, name=body.name, description=body.description,
+        instance_id=body.instanceId, port_key=body.portKey, child_export_id=body.childExportId,
+    ))
+    return _respond(result, response, 201)
+
+
+@router.patch("/{system_id}/exports/{export_id}", dependencies=[Depends(require_designer)])
+async def update_export(
+    system_id: str, export_id: str, body: UpdateExportRequest, request: Request, response: Response,
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    fields = {key: getattr(body, key) for key in body.model_fields_set}
+    if "instanceId" in fields and fields.get("portKey") is None:
+        raise HTTPException(status_code=422, detail="retargeting needs portKey")
+    result = await _run(system_id, lambda: system_service.service.update_export(
+        _caller(user), system_id, version, export_id, fields,
+    ))
+    return _respond(result, response)
+
+
+@router.delete("/{system_id}/exports/{export_id}", dependencies=[Depends(require_designer)])
+async def delete_export(
+    system_id: str, export_id: str, request: Request, user: AuthenticatedUser = Depends(require_viewer),
+):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.delete_export(
+        _caller(user), system_id, version, export_id,
+    ))
+    return _no_content(result)
+
+
+@router.get("/{system_id}/export-interface")
+async def export_interface(
+    system_id: str, snapshot: Optional[str] = Query(default=None, max_length=100),
+    user: AuthenticatedUser = Depends(require_viewer),
+):
+    return await _run(system_id, lambda: system_service.service.export_interface(
+        _caller(user), system_id, snapshot,
+    ))
 
 
 # ---------------------------------------------------------------------------
