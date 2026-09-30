@@ -157,6 +157,13 @@ so the ICD CSV works as a round trip through a spreadsheet.
   can have up to 32 ends. The harness editor on **Connections** lists the ends
   (what each mates, its mating block, and a pin map when a pin lands on a
   different pad) and the wires. Several wires on one pin form a splice.
+- **Mating parts.** An end's mating block starts Generic. **Choose part**
+  picks the real housing from the catalog: the parts the board connector
+  "mates with" come first, and you can search for any other. The end's pins
+  become the part's pins. When the part and the board connector have
+  different pin counts, map every wired pin to a connector pad; until then
+  the end shows an error. **Make generic** removes the part again. Parts with
+  wires on pins the new part lacks are refused; move those wires first.
 - **Converting.** A link's menu offers **Convert to a harness**. A link with a
   P1 harness label offers **Make harness … from its links**, which turns every
   link with that label into one harness. A harness with two ends, no splices

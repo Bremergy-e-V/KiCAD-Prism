@@ -87,11 +87,20 @@
           },
           "part": {
             "componentId": "cmp_ghr04",
-            "revisionId": "rev_ghr04_a"
+            "revisionId": "rev_ghr04_a",
+            "name": "GH housing 4-way",
+            "mpn": "GHR-04V-S",
+            "manufacturer": "JST"
           },
           "pinCount": 4,
           "pinMap": null,
-          "bootMm": null
+          "bootMm": null,
+          "partPins": [
+            "1",
+            "2",
+            "3",
+            "4"
+          ]
         },
         {
           "id": "she_cd3dc8b6cffb41e4163dcbd857ca87da",
@@ -111,7 +120,8 @@
           "part": null,
           "pinCount": 4,
           "pinMap": null,
-          "bootMm": 12.0
+          "bootMm": 12.0,
+          "partPins": null
         },
         {
           "id": "she_68a9e49bbc88c02083a062a78ab3bf30",
@@ -136,7 +146,8 @@
             "3": "3",
             "4": "4"
           },
-          "bootMm": null
+          "bootMm": null,
+          "partPins": null
         }
       ],
       "wires": [

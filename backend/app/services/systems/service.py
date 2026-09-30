@@ -1233,10 +1233,11 @@ class SystemService:
                          "resolved": None if end["id"] not in components else component is not None}
             ends.append({
                 "id": end["id"], "ordinal": end["ordinal"], "mates": mates,
-                "part": ({"componentId": end["catalog_component_id"], "revisionId": end["catalog_revision_id"]}
-                         if end["catalog_component_id"] else None),
+                "part": harnesses_module.part_ref(end),
                 "pinCount": end["pin_count"], "pinMap": end["pin_map"], "bootMm": end["boot_mm"],
                 "pins": harnesses_module.end_pins(end, component),
+                # The mated connector's pads, for the pin map (SB2-18).
+                "matePads": sorted(exposure.pins_by_pad(component), key=drift.pad_sort_key) if component else [],
             })
         wires = [{
             "id": wire["id"], "from": {"end": wire["from_end"], "pin": wire["from_pin"]},
@@ -1363,6 +1364,8 @@ class SystemService:
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
                 harness = self._visible_harness(store, system_id, harness_id, caller)
                 update = {k: fields[k] for k in ("pinMap", "bootMm") if k in fields}
+                if "part" in fields:
+                    update.update(self._block_part(harness, end_id, fields["part"]))
                 if "mates" in fields:
                     if fields["mates"]:
                         mates, component = self._mate(store, system_id, caller, fields["mates"])
@@ -1372,10 +1375,41 @@ class SystemService:
                         update["mates"] = None
                 store.update_harness_end(change, harness_id, end_id, update)
                 wires = [self._wire_input(w) for w in store.get_harness(system_id, harness_id)["wires"]]
-                if wires and ("mates" in update or "pinMap" in update):
+                if wires and ("mates" in update or "pinMap" in update or "partPins" in update):
                     self._replace_wires_in(store, change, harness_id, wires)
                 body = self._harness_body(store, system_id, harness_id, caller)
         return Result(body, system_id, change.version)
+
+    def _block_part(self, harness: Mapping[str, Any], end_id: str, part: Optional[Mapping[str, Any]]) -> dict:
+        """§17.2 (SB2-18): a catalog part for the end's mating block, or ``None`` for Generic again.
+
+        The part's pins replace the block's; pin-map entries for pins the part lacks are dropped, and
+        wires on such pins refuse the change.
+        """
+        end = next((e for e in harness["ends"] if e["id"] == end_id), None)
+        if end is None:
+            raise NotFound("Harness end not found")
+        if part is None:
+            return {"catalogComponentId": None, "catalogRevisionId": None, "partPins": None, "partSummary": None,
+                    "pinCount": max(1, int((end["mates_port"] or {}).get("pinCount") or end["pin_count"]))}
+        try:
+            found = self._catalog().part_for_block(str(part.get("componentId") or ""))
+        except LookupError:
+            raise NotFound("Catalog part not found") from None
+        except ValueError as error:
+            raise Invalid(str(error)) from None
+        pins = found.get("pins")
+        if not pins:
+            raise Invalid("the part has no symbol or footprint pins to wire")
+        wired = sorted({w[f"{side}_pin"] for w in harness["wires"] for side in ("from", "to")
+                        if w[f"{side}_end"] == end_id} - set(pins), key=drift.pad_sort_key)
+        if wired:
+            raise Conflict(f"wires use pins {', '.join(wired)} that {found['mpn'] or found['name']} does not have; "
+                           "remove or move those wires first")
+        pin_map = {k: v for k, v in (end["pin_map"] or {}).items() if k in pins} or None
+        return {"catalogComponentId": found["componentId"], "catalogRevisionId": found["revisionId"],
+                "partPins": list(pins), "partSummary": {k: found.get(k) or "" for k in harnesses_module.PART_SUMMARY},
+                "pinCount": len(pins), "pinMap": pin_map}
 
     def delete_harness_end(self, caller: Caller, system_id: str, version: int, harness_id: str, end_id: str) -> Result:
         with self._tx() as store:

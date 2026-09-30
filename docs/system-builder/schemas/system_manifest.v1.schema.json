@@ -515,6 +515,24 @@
           "default": null,
           "description": "null = Generic mating block"
         },
+        "partPins": {
+          "anyOf": [
+            {
+              "items": {
+                "maxLength": 100,
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "the part's pins; null while Generic (SB2-18)",
+          "title": "Partpins"
+        },
         "pinCount": {
           "description": "end pins; copied from the mated connector while Generic",
           "minimum": 1,
@@ -813,6 +831,45 @@
           "minLength": 1,
           "title": "Componentid",
           "type": "string"
+        },
+        "manufacturer": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Manufacturer"
+        },
+        "mpn": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mpn"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "maxLength": 500,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Name"
         },
         "revisionId": {
           "maxLength": 200,

@@ -42,6 +42,9 @@ function stubApi() {
       return json({ endId, connectorMpn: "X", connectorPart: { componentId: "p", name: "P", mpn: "FTSH-110", manufacturer: "Samtec" },
         suggestions: endId === "she_a" ? [{ componentId: "h", name: "Housing", mpn: "FFSD-10", manufacturer: "Samtec" }] : [] });
     }
+    if (url.startsWith("/api/catalog/components?")) {
+      return json({ items: [{ id: "molex", value: "Housing", description: "", mpn: "51021-0400", manufacturer: "Molex" }], total: 1, page: 1, page_size: 8 });
+    }
     if (url.endsWith("/generate")) {
       return json({ wires: [{ from: { end: "she_b", pin: "2" }, to: { end: "she_e", pin: "6" }, signal: "G", netFrom: [], netTo: [] }], skipped: [] });
     }
@@ -84,7 +87,49 @@ describe("HarnessEditor", () => {
     renderEditor();
     expect(await screen.findByText("Mates with FFSD-10")).toBeTruthy();
     expect(screen.getAllByText("No mating part recorded for FTSH-110").length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: /Assign|Use/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Use/ })).toBeNull();
+    expect(screen.getAllByTestId("mating-block").map((cell) => cell.textContent)).toContain("Generic · 4 pins");
+  });
+
+  it("assigns a suggested part only when the user picks it, and makes it Generic again", async () => {
+    const calls = stubApi();
+    const assigned = { ...five, ends: five.ends.map((end) => end.id === "she_b"
+      ? { ...end, part: { componentId: "jst", revisionId: "r1", name: "Housing", mpn: "PHR-4", manufacturer: "JST" }, pins: ["1", "2", "3", "4"] }
+      : end) };
+    renderEditor(assigned);
+    expect(await screen.findByText("PHR-4 · JST · 4 pins")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "Choose part" })[0]);
+    fireEvent.click(await screen.findByRole("button", { name: "Use FFSD-10" }));
+    await waitFor(() => expect(calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Make generic" }));
+    await waitFor(() => expect(calls.filter(([, init]) => init.method === "PATCH")).toHaveLength(2));
+    expect(calls.filter(([, init]) => init.method === "PATCH").map(([url, init]) => [url.split("/").pop(), JSON.parse(String(init.body))]))
+      .toEqual([["she_a", { part: { componentId: "h" } }], ["she_b", { part: null }]]);
+  });
+
+  it("finds any catalog part by search", async () => {
+    const calls = stubApi();
+    renderEditor();
+    fireEvent.click(screen.getAllByRole("button", { name: "Choose part" })[2]);
+    fireEvent.change(await screen.findByRole("textbox", { name: "Find a catalog part" }), { target: { value: "5102" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Use 51021-0400" }));
+    await waitFor(() => expect(calls.some(([, init]) => init.method === "PATCH")).toBe(true));
+    const [url, init] = calls.find(([, i]) => i.method === "PATCH")!;
+    expect([url, JSON.parse(String(init.body))]).toEqual(["/api/systems/sys_1/harnesses/shn_5/ends/she_c", { part: { componentId: "molex" } }]);
+  });
+
+  it("maps a part's pins onto the connector's pads", async () => {
+    const calls = stubApi();
+    const housing = { ...five, ends: five.ends.map((end) => end.id === "she_c"
+      ? { ...end, part: { componentId: "jst", revisionId: "r1" }, pins: ["A", "B"], matePads: ["1", "2"] } : end) };
+    renderEditor(housing);
+    fireEvent.click(screen.getAllByRole("button", { name: "One to one" })[2]);
+    await chooseOption("Pad for end pin A", "1");
+    await chooseOption("Pad for end pin B", "2");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls.some(([, init]) => init.method === "PATCH")).toBe(true));
+    const [, init] = calls.find(([, i]) => i.method === "PATCH")!;
+    expect(JSON.parse(String(init.body))).toEqual({ pinMap: { A: "1", B: "2" } });
   });
 
   it("adds a wire and saves the whole list", async () => {

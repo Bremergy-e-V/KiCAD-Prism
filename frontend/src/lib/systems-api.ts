@@ -7,7 +7,8 @@
  * reload and retry deliberately rather than overwrite someone's work.
  */
 
-import { ApiHttpError, fetchApi, readApiError } from "@/lib/api";
+import { ApiHttpError, fetchApi, fetchJson, readApiError } from "@/lib/api";
+import type { PaginatedComponents } from "@/types/catalog";
 import type {
   Decision,
   GeneratorKind,
@@ -434,7 +435,11 @@ export function addHarnessEnd(systemId: string, etag: string, harnessId: string,
 
 export function updateHarnessEnd(
   systemId: string, etag: string, harnessId: string, endId: string,
-  fields: { mates?: { instanceId: string; portKey: string } | null; pinMap?: Record<string, string> | null; bootMm?: number | null },
+  fields: {
+    mates?: { instanceId: string; portKey: string } | null; pinMap?: Record<string, string> | null; bootMm?: number | null;
+    /** A catalog part for the mating block, or null for Generic (CONTRACTS_P2 §17.2). */
+    part?: { componentId: string } | null;
+  },
 ) {
   return versioned<SystemHarness>(path(systemId, "harnesses", harnessId, "ends", endId),
     { method: "PATCH", etag, body: json(fields) }, "Could not update the end");
@@ -479,16 +484,30 @@ export function harnessToLink(systemId: string, etag: string, harnessId: string)
     "Could not convert the harness");
 }
 
+export interface CatalogPartSummary {
+  componentId: string;
+  name: string;
+  mpn: string;
+  manufacturer: string;
+}
+
 /** `GET …/harnesses/{hid}/ends/{eid}/suggestions` (CONTRACTS_P2 §18): suggestions only; nothing is assigned. */
 export interface EndSuggestions {
   endId: string;
   connectorMpn: string | null;
-  connectorPart: { componentId: string; name: string; mpn: string; manufacturer: string } | null;
-  suggestions: { componentId: string; name: string; mpn: string; manufacturer: string }[];
+  connectorPart: CatalogPartSummary | null;
+  suggestions: CatalogPartSummary[];
 }
 
 export async function getEndSuggestions(systemId: string, harnessId: string, endId: string): Promise<EndSuggestions> {
   const { body } = await send<EndSuggestions>(path(systemId, "harnesses", harnessId, "ends", endId, "suggestions"), {},
     "Could not load suggestions");
   return body;
+}
+
+/** Catalog parts matching `query` by MPN or name, for a harness end's mating block. */
+export async function searchCatalogParts(query: string, signal?: AbortSignal): Promise<CatalogPartSummary[]> {
+  const params = new URLSearchParams({ q: query, page: "1", page_size: "8", lightweight: "true", kind: "part" });
+  const body = await fetchJson<PaginatedComponents>(`/api/catalog/components?${params.toString()}`, { signal });
+  return body.items.map((item) => ({ componentId: item.id, name: item.value || item.description || item.mpn, mpn: item.mpn, manufacturer: item.manufacturer }));
 }

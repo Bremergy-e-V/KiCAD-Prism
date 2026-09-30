@@ -33,6 +33,7 @@ RULES = {
     "SYS-V16": ("export_unresolved", "error"),
     "SYS-V17": ("mating_stale", "info"),
     "SYS-V18": ("mate_pair_unknown", "warning"),
+    "SYS-V19": ("mate_pin_mismatch", "error"),
 }
 # Opt-in per system (``system_projects.optional_rules``, CONTRACTS_P2 §8.4): off unless enabled.
 OPTIONAL_RULES = frozenset({"SYS-V09"})

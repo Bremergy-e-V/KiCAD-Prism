@@ -1800,6 +1800,7 @@ class ReleaseStudioPostgresSchemaTests(unittest.TestCase):
                 (36, "system_port_mating"),
                 (37, "system_link_types"),
                 (38, "system_harnesses"),
+                (39, "system_harness_part_pins"),
             ],
         )
 

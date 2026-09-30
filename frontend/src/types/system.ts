@@ -186,12 +186,15 @@ export interface HarnessEnd {
     resolved: boolean | null;
     redacted: boolean;
   } | null;
-  part: { componentId: string; revisionId: string } | null;
+  /** The block's catalog part, with its name and MPN as they were at assignment; null = Generic. */
+  part: { componentId: string; revisionId: string; name?: string | null; mpn?: string | null; manufacturer?: string | null } | null;
   pinCount: number;
   pinMap: Record<string, string> | null;
   bootMm: number | null;
-  /** End pin names: the mated connector's pads while Generic; `1…pinCount` while unmated. */
+  /** End pin names: the part's pins when a part is assigned, else the mated connector's pads, else `1…pinCount`. */
   pins: string[];
+  /** The mated connector's pads, which the pin map targets (SB2-18); empty while unmated. */
+  matePads: string[];
 }
 
 export interface HarnessWire {

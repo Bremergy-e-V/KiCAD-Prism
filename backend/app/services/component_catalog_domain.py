@@ -1157,6 +1157,16 @@ class ComponentCatalogDomainService:
         with self._connect() as conn:
             return catalog_mates.parts_by_mpn(conn, mpns)
 
+    def part_for_block(self, component_id: str) -> dict[str, Any]:
+        """A part a harness end's mating block can take: its summary, current revision and pins (§17.2)."""
+        self.initialize()
+        with self._connect() as conn:
+            row = catalog_mates.require_part(conn, component_id)
+            revision = conn.execute("SELECT current_revision_id FROM components WHERE id = %s",
+                                    (component_id,)).fetchone()["current_revision_id"]
+            return {**catalog_mates.summary(row), "revisionId": str(revision),
+                    "pins": catalog_mates.part_pins(conn, component_id)}
+
     def mate_pairs(self, component_ids: list[str]) -> set[tuple[str, str]]:
         self.initialize()
         with self._connect() as conn:

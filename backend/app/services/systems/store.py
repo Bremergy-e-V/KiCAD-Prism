@@ -1109,7 +1109,8 @@ class SystemStore:
         mates_port: Optional[Mapping[str, Any]] = None, pin_count: int, end_id: Optional[str] = None,
         pin_map: Optional[Mapping[str, str]] = None, boot_mm: Optional[float] = None,
         catalog_component_id: Optional[str] = None, catalog_revision_id: Optional[str] = None,
-        ordinal: Optional[int] = None,
+        ordinal: Optional[int] = None, part_pins: Optional[Sequence[str]] = None,
+        part_summary: Optional[Mapping[str, Any]] = None,
     ) -> dict:
         harness = self.get_harness(change.system_id, harness_id)
         if len(harness["ends"]) >= MAX_HARNESS_ENDS:
@@ -1125,12 +1126,14 @@ class SystemStore:
         self.conn.execute(
             """
             INSERT INTO system_harness_ends (id, harness_id, ordinal, mates_instance_id, mates_port,
-                catalog_component_id, catalog_revision_id, pin_count, pin_map, boot_mm)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                catalog_component_id, catalog_revision_id, pin_count, pin_map, boot_mm, part_pins, part_summary)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (end_id, harness_id, ordinal, mates_instance_id, Jsonb(baseline) if baseline else None,
              catalog_component_id, catalog_revision_id, int(pin_count),
-             Jsonb(dict(pin_map)) if pin_map else None, boot_mm),
+             Jsonb(dict(pin_map)) if pin_map else None, boot_mm,
+             Jsonb(list(part_pins)) if part_pins is not None else None,
+             Jsonb(dict(part_summary)) if part_summary is not None else None),
         )
         change.audit("harness_updated", {"harnessId": harness_id, "endAdded": end_id,
                                          "mates": {"instanceId": mates_instance_id,
@@ -1143,7 +1146,8 @@ class SystemStore:
         if before is None:
             raise NotFound("Harness end not found")
         values = {k: before[k] for k in ("mates_instance_id", "mates_port", "catalog_component_id",
-                                          "catalog_revision_id", "pin_count", "pin_map", "boot_mm")}
+                                          "catalog_revision_id", "pin_count", "pin_map", "boot_mm", "part_pins",
+                                          "part_summary")}
         if "mates" in fields:
             mates = fields["mates"]
             if mates is None:
@@ -1154,7 +1158,8 @@ class SystemStore:
                 values["mates_instance_id"], values["mates_port"] = mates["instanceId"], baseline
         for key, column in (("pinCount", "pin_count"), ("pinMap", "pin_map"), ("bootMm", "boot_mm"),
                             ("catalogComponentId", "catalog_component_id"),
-                            ("catalogRevisionId", "catalog_revision_id")):
+                            ("catalogRevisionId", "catalog_revision_id"), ("partPins", "part_pins"),
+                            ("partSummary", "part_summary")):
             if key in fields:
                 values[column] = fields[key]
         if values["pin_map"] is not None:
@@ -1165,11 +1170,14 @@ class SystemStore:
         self.conn.execute(
             """
             UPDATE system_harness_ends SET mates_instance_id = %s, mates_port = %s, catalog_component_id = %s,
-                catalog_revision_id = %s, pin_count = %s, pin_map = %s, boot_mm = %s WHERE id = %s
+                catalog_revision_id = %s, pin_count = %s, pin_map = %s, boot_mm = %s, part_pins = %s,
+                part_summary = %s WHERE id = %s
             """,
             (values["mates_instance_id"], Jsonb(values["mates_port"]) if values["mates_port"] else None,
              values["catalog_component_id"], values["catalog_revision_id"], int(values["pin_count"]),
-             Jsonb(values["pin_map"]) if values["pin_map"] else None, values["boot_mm"], end_id),
+             Jsonb(values["pin_map"]) if values["pin_map"] else None, values["boot_mm"],
+             Jsonb(list(values["part_pins"])) if values["part_pins"] is not None else None,
+             Jsonb(dict(values["part_summary"])) if values["part_summary"] is not None else None, end_id),
         )
         changed = {k: {"before": before[k], "after": v} for k, v in values.items() if before[k] != v}
         if changed:

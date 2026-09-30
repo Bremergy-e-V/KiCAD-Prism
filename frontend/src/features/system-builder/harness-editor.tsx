@@ -24,7 +24,10 @@ import {
   harnessToLink,
   replaceWires,
   updateHarness,
+  searchCatalogParts,
   updateHarnessEnd,
+  type CatalogPartSummary,
+  type EndSuggestions,
   type WireInput,
 } from "@/lib/systems-api";
 import type { Finding, GeneratorKind, HarnessEnd, SystemDocument, SystemHarness } from "@/types/system";
@@ -101,23 +104,116 @@ interface HarnessEditorProps {
   onConverted: (linkId: string) => void;
 }
 
-/** Catalog partners of the mated connector's part (§18): a suggestion, never assigned here. */
-function EndSuggestion({ systemId, harnessId, endId, etag }: { systemId: string; harnessId: string; endId: string; etag: string }) {
-  const [state, setState] = useState<{ key: string; text: string | null } | null>(null);
-  const key = `${endId}:${etag}`;
+function partText(part: { name?: string | null; mpn?: string | null; manufacturer?: string | null }): string {
+  return part.mpn ? [part.mpn, part.manufacturer].filter(Boolean).join(" · ") : part.name ?? "";
+}
+
+/** Pick a catalog part for an end's mating block: the connector's known partners first, or any part by search. */
+function PartDialog({ end, suggestions, busy, onClose, onPick }: {
+  end: HarnessEnd; suggestions: CatalogPartSummary[]; busy: boolean; onClose: () => void;
+  onPick: (part: CatalogPartSummary) => Promise<unknown>;
+}) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<{ query: string; items: CatalogPartSummary[] }>({ query: "", items: [] });
+  const text = query.trim();
   useEffect(() => {
+    if (text.length < 2) return undefined;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      searchCatalogParts(text, controller.signal)
+        .then((items) => setResults({ query: text, items }))
+        .catch(() => undefined);
+    }, 200);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [text]);
+  const found = text.length >= 2 && results.query === text ? results.items : [];
+  const pick = async (part: CatalogPartSummary) => {
+    await onPick(part);
+    onClose();
+  };
+  const row = (part: CatalogPartSummary) => (
+    <li key={part.componentId} className="flex items-center gap-3 px-3 py-2 text-sm">
+      <span className="min-w-0 flex-1 truncate">{partText(part)}</span>
+      <Button size="sm" variant="outline" disabled={busy || part.componentId === end.part?.componentId}
+        aria-label={`Use ${part.mpn || part.name}`} onClick={() => void pick(part)}>Use</Button>
+    </li>
+  );
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{endLabel(end)} mating part</DialogTitle>
+          <DialogDescription>The part's pins become the end's pins. Map them onto the connector's pads where the names differ.</DialogDescription>
+        </DialogHeader>
+        {suggestions.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-muted-foreground">Mates with the connector</p>
+            <ul className="divide-y border" data-testid="part-suggestions">{suggestions.map(row)}</ul>
+          </div>
+        )}
+        <Input aria-label="Find a catalog part" placeholder="Find a part by MPN or name" value={query}
+          onChange={(event) => setQuery(event.target.value)} />
+        {found.length > 0 && <ul className="divide-y border">{found.map(row)}</ul>}
+        <DialogFooter><Button variant="outline" onClick={onClose}>Cancel</Button></DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/**
+ * An end's mating block: Generic or a catalog part (§17.2), with the catalog partners of the mated
+ * connector as suggestions (§18). A part is only assigned when the user picks one.
+ */
+function MatingBlock({ systemId, harnessId, end, etag, editable, busy, run }: {
+  systemId: string; harnessId: string; end: HarnessEnd; etag: string; editable: boolean; busy: boolean; run: Mutate;
+}) {
+  const [state, setState] = useState<{ key: string; body: EndSuggestions | null } | null>(null);
+  const [picking, setPicking] = useState(false);
+  const key = `${end.id}:${etag}`;
+  const lookup = Boolean(end.mates && !end.mates.redacted);
+  useEffect(() => {
+    if (!lookup) return undefined;
     let cancelled = false;
-    getEndSuggestions(systemId, harnessId, endId)
-      .then((body) => !cancelled && setState({ key, text: body.suggestions.length
-        ? `Mates with ${body.suggestions.map((part) => part.mpn || part.name).join(", ")}`
-        : body.connectorPart ? `No mating part recorded for ${body.connectorPart.mpn}` : null }))
-      .catch(() => !cancelled && setState({ key, text: null }));
+    getEndSuggestions(systemId, harnessId, end.id)
+      .then((body) => !cancelled && setState({ key, body }))
+      .catch(() => !cancelled && setState({ key, body: null }));
     return () => {
       cancelled = true;
     };
-  }, [systemId, harnessId, endId, key]);
-  const text = state?.key === key ? state.text : null;
-  return text ? <span className="block text-xs text-muted-foreground" data-testid="end-suggestion">{text}</span> : null;
+  }, [systemId, harnessId, end.id, key, lookup]);
+  const body = state?.key === key ? state.body : null;
+  const suggestions = body?.suggestions ?? [];
+  const hint = end.part || !body ? null : suggestions.length
+    ? `Mates with ${suggestions.map((part) => part.mpn || part.name).join(", ")}`
+    : body.connectorPart ? `No mating part recorded for ${body.connectorPart.mpn}` : null;
+  const assign = (part: { componentId: string } | null, done: string) =>
+    run("harness", () => updateHarnessEnd(systemId, etag, harnessId, end.id, { part }), done);
+  return (
+    <>
+      <span data-testid="mating-block">
+        {end.part ? `${end.part.mpn || end.part.name ? partText(end.part) : "Catalog part"} · ${end.pinCount} pins` : `Generic · ${end.pinCount} pins`}
+      </span>
+      {hint && <span className="block text-xs text-muted-foreground" data-testid="end-suggestion">{hint}</span>}
+      {editable && (
+        <span className="mt-1 flex flex-wrap gap-x-2 text-xs">
+          <button type="button" className="whitespace-nowrap underline-offset-2 hover:underline" disabled={busy} onClick={() => setPicking(true)}>
+            {end.part ? "Change part" : "Choose part"}
+          </button>
+          {end.part && (
+            <button type="button" className="whitespace-nowrap underline-offset-2 hover:underline" disabled={busy}
+              onClick={() => void assign(null, "End made Generic")}>Make generic</button>
+          )}
+        </span>
+      )}
+      {picking && (
+        <PartDialog end={end} suggestions={suggestions} busy={busy} onClose={() => setPicking(false)}
+          onPick={(part) => assign({ componentId: part.componentId }, `${part.mpn || part.name} assigned`)} />
+      )}
+    </>
+  );
 }
 
 function matesText(document: SystemDocument, end: HarnessEnd): string {
@@ -162,7 +258,10 @@ function PinMapDialog({ end, pads, busy, onClose, onSave }: {
       <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{endLabel(end)} pin map</DialogTitle>
-          <DialogDescription>Each end pin lands on the connector pad of the same name unless you map it elsewhere.</DialogDescription>
+          <DialogDescription>
+            Each end pin lands on the connector pad of the same name unless you map it elsewhere.
+            {end.part && " Every wired pin of the part must land on a pad (SYS-V19)."}
+          </DialogDescription>
         </DialogHeader>
         <div className="grid grid-cols-[4rem_1fr] items-center gap-2 text-sm">
           {end.pins.map((pin) => (
@@ -173,7 +272,9 @@ function PinMapDialog({ end, pads, busy, onClose, onSave }: {
                 if (pad === pin) delete next[pin]; else next[pin] = pad;
                 return next;
               })}>
-                <SelectTrigger aria-label={`Pad for end pin ${pin}`} className={`h-8 ${clash.has(map[pin]) ? "border-destructive" : ""}`}><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label={`Pad for end pin ${pin}`} className={`h-8 ${clash.has(map[pin]) ? "border-destructive" : ""}`}>
+                  <SelectValue placeholder="No pad of this name" />
+                </SelectTrigger>
                 <SelectContent>{pads.map((pad) => <SelectItem key={pad} value={pad}>{pad === pin ? `${pad} (same)` : pad}</SelectItem>)}</SelectContent>
               </Select>
             </div>
@@ -313,10 +414,8 @@ export function HarnessEditor({ systemId, document, harness, etag, canEdit, find
                     <td className="px-3 py-2 font-medium">{endLabel(end)}</td>
                     <td className="px-3 py-2">{matesText(document, end)}</td>
                     <td className="px-3 py-2 text-muted-foreground">
-                      {end.part ? "Catalog part" : `Generic · ${end.pinCount} pins`}
-                      {!end.part && end.mates && !end.mates.redacted && (
-                        <EndSuggestion systemId={systemId} harnessId={harness.id} endId={end.id} etag={etag} />
-                      )}
+                      <MatingBlock systemId={systemId} harnessId={harness.id} end={end} etag={etag} editable={editable}
+                        busy={isBusy} run={run} />
                     </td>
                     <td className="px-3 py-2">
                       {editable && end.mates && !end.mates.redacted ? (
@@ -456,7 +555,8 @@ export function HarnessEditor({ systemId, document, harness, etag, canEdit, find
       )}
       {pinMapEnd && (
         <PinMapDialog end={pinMapEnd} busy={isBusy} onClose={() => setDialog(null)}
-          pads={[...new Set([...pinMapEnd.pins, ...Object.values(pinMapEnd.pinMap ?? {})])].sort(comparePads)}
+          pads={[...new Set([...(pinMapEnd.matePads.length ? pinMapEnd.matePads : pinMapEnd.pins),
+            ...Object.values(pinMapEnd.pinMap ?? {})])].sort(comparePads)}
           onSave={(pinMap) => run("harness", () => updateHarnessEnd(systemId, etag, harness.id, pinMapEnd.id, { pinMap }), "Pin map saved")} />
       )}
       <ConfirmDialog open={dialog === "delete"} onOpenChange={(open) => !open && setDialog(null)}

@@ -105,3 +105,49 @@ def pairs_among(conn: Any, component_ids: Iterable[str]) -> set[tuple[str, str]]
         "SELECT part_a, part_b FROM catalog_mates_with WHERE part_a = ANY(%s) OR part_b = ANY(%s)", (ids, ids)
     ).fetchall()
     return {(str(r["part_a"]), str(r["part_b"])) for r in rows}
+
+
+def _natural(pin: str) -> tuple:
+    head = pin.rstrip("0123456789")
+    tail = pin[len(head):]
+    return (head, int(tail) if tail else -1, pin)
+
+
+def part_pins(conn: Any, component_id: str) -> list[str] | None:
+    """The part's pin numbers from its symbol (else its footprint pads), natural order; None when it has neither.
+
+    A mating housing (CONTRACTS_P2 §17.2) replaces a Generic block's pins with these.
+    """
+    from pathlib import Path
+
+    rows = conn.execute(
+        """
+        SELECT a.asset_type, a.canonical_path, a.target_name
+        FROM components c JOIN revision_assets ra ON ra.revision_id = c.current_revision_id
+        JOIN assets a ON a.id = ra.asset_id
+        WHERE c.id = %s AND a.asset_type IN ('symbol', 'footprint')
+        ORDER BY a.asset_type DESC, a.id
+        """,
+        (component_id,),
+    ).fetchall()
+    for row in rows:
+        path = Path(str(row["canonical_path"]))
+        if not path.is_file():
+            continue
+        try:
+            if row["asset_type"] == "symbol":
+                from kicad_monkey.kicad_symbol_lib import KiCadSymbolLib
+
+                library = KiCadSymbolLib.from_file(path)
+                symbol = library.get_symbol(str(row["target_name"])) or library.get_symbol(library.symbol_names()[0])
+                numbers = {str(pin.number) for pin in symbol.get_all_pins() if str(pin.number or "")}
+            else:
+                from kicad_monkey import kicad_pcb_footprint, kicad_sexpr
+
+                footprint = kicad_pcb_footprint.Footprint.from_sexp(kicad_sexpr.parse_sexp(path.read_text()))
+                numbers = {str(pad.number) for pad in footprint.pads if str(pad.number or "")}
+        except Exception:  # an unreadable asset leaves the pins unknown
+            continue
+        if numbers:
+            return sorted(numbers, key=_natural)
+    return None
