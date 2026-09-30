@@ -344,6 +344,12 @@ async def get_hierarchy(system_id: str, user: AuthenticatedUser = Depends(requir
     return await _run(system_id, lambda: system_service.service.hierarchy(_caller(user), system_id))
 
 
+@router.get("/{system_id}/scene")
+async def get_scene(system_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    """P2 §20: every occurrence placed, with the board bundles that draw it."""
+    return await _run(system_id, lambda: system_service.service.scene(_caller(user), system_id))
+
+
 @router.get("/{system_id}/instances/{instance_id}/interface")
 async def get_interface(
     system_id: str, instance_id: str, commit: Optional[str] = Query(default=None, max_length=40),
