@@ -90,6 +90,19 @@ def _given_id(prefix: str, value: Optional[str]) -> str:
     return value
 
 
+LINK_TYPES = ("unspecified", "b2b")
+
+
+def _check_link_type(link_type: str, stack_height_mm: Optional[float]) -> None:
+    if link_type not in LINK_TYPES:
+        raise Invalid(f"type must be one of {', '.join(LINK_TYPES)}")
+    if stack_height_mm is not None:
+        if link_type != "b2b":
+            raise Invalid("stackHeightMm applies to board-to-board links only")
+        if not (0 < float(stack_height_mm) < 1000):
+            raise Invalid("stackHeightMm must be between 0 and 1000 mm")
+
+
 def _port_baseline(port: Mapping[str, Any]) -> dict[str, Any]:
     missing = [key for key in PORT_BASELINE_KEYS if key not in port]
     if missing:
@@ -631,8 +644,10 @@ class SystemStore:
         self, change: Mutation, *, a_instance_id: str, a_port: Mapping[str, Any],
         b_instance_id: str, b_port: Mapping[str, Any], name: str = "",
         harness: Optional[str] = None, link_id: Optional[str] = None,
+        link_type: str = "unspecified", stack_height_mm: Optional[float] = None,
     ) -> dict:
         a_baseline, b_baseline = _port_baseline(a_port), _port_baseline(b_port)
+        _check_link_type(link_type, stack_height_mm)
         if a_instance_id == b_instance_id and a_baseline["portKey"] == b_baseline["portKey"]:
             raise Invalid("both link ends are the same port")
         for instance_id, baseline in ((a_instance_id, a_baseline), (b_instance_id, b_baseline)):
@@ -645,18 +660,21 @@ class SystemStore:
         if count >= MAX_LINKS:
             raise Invalid(f"limit links_per_system ({MAX_LINKS})")
         link_id = _given_id("slk_", link_id)
+        if link_type == "b2b":
+            self._check_b2b_ports(change.system_id, link_id, ((a_instance_id, a_baseline["portKey"]),
+                                                              (b_instance_id, b_baseline["portKey"])))
         self.conn.execute(
             """
             INSERT INTO system_links
-                (id, system_id, name, harness, a_instance_id, a_port, b_instance_id, b_port)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (id, system_id, name, harness, a_instance_id, a_port, b_instance_id, b_port, type, stack_height_mm)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (link_id, change.system_id, name, harness or None, a_instance_id, Jsonb(a_baseline),
-             b_instance_id, Jsonb(b_baseline)),
+             b_instance_id, Jsonb(b_baseline), link_type, stack_height_mm),
         )
         change.audit(
             "link_created",
-            {"linkId": link_id, "name": name, "harness": harness or None,
+            {"linkId": link_id, "name": name, "harness": harness or None, "type": link_type,
              "a": {"instanceId": a_instance_id, "portKey": a_baseline["portKey"]},
              "b": {"instanceId": b_instance_id, "portKey": b_baseline["portKey"]}},
         )
@@ -818,20 +836,49 @@ class SystemStore:
 
     def update_link(
         self, change: Mutation, link_id: str, *, name: Optional[str] = None, harness: Any = ...,
+        link_type: Optional[str] = None, stack_height_mm: Any = ...,
     ) -> dict:
         before = self.get_link(change.system_id, link_id)
         values = {
             "name": before["name"] if name is None else name,
             "harness": before["harness"] if harness is ... else (harness or None),
         }
+        new_type = before["type"] if link_type is None else link_type
+        stack = before["stack_height_mm"] if stack_height_mm is ... else stack_height_mm
+        if new_type != "b2b" and stack_height_mm is ...:
+            stack = None  # leaving b2b drops the pair's stack height (§16.2)
+        _check_link_type(new_type, stack)
+        if new_type == "b2b" and before["type"] != "b2b":
+            self._check_b2b_ports(change.system_id, link_id, ((before["a_instance_id"], before["a_port"]["portKey"]),
+                                                              (before["b_instance_id"], before["b_port"]["portKey"])))
         self.conn.execute(
-            "UPDATE system_links SET name = %s, harness = %s, updated_at = NOW() WHERE id = %s",
-            (values["name"], values["harness"], link_id),
+            "UPDATE system_links SET name = %s, harness = %s, type = %s, stack_height_mm = %s, updated_at = NOW()"
+            " WHERE id = %s",
+            (values["name"], values["harness"], new_type, stack, link_id),
         )
         changed = {k: {"before": before[k], "after": v} for k, v in values.items() if before[k] != v}
+        if before["stack_height_mm"] != stack:
+            changed["stackHeightMm"] = {"before": before["stack_height_mm"], "after": stack}
         if changed:
             change.audit("link_updated", {"linkId": link_id, **changed})
+        if before["type"] != new_type:
+            change.audit("link_type_changed", {"linkId": link_id, "before": before["type"], "after": new_type})
         return self.get_link(change.system_id, link_id)
+
+    def _check_b2b_ports(self, system_id: str, link_id: str, ends: Sequence[tuple[str, str]]) -> None:
+        """§16.2 [T6]: a port is in at most one ``b2b`` link."""
+        for instance_id, port_key in ends:
+            clash = self.conn.execute(
+                """
+                SELECT id FROM system_links
+                WHERE system_id = %s AND type = 'b2b' AND id <> %s
+                  AND ((a_instance_id = %s AND a_port->>'portKey' = %s) OR (b_instance_id = %s AND b_port->>'portKey' = %s))
+                LIMIT 1
+                """,
+                (system_id, link_id, instance_id, port_key, instance_id, port_key),
+            ).fetchone()
+            if clash is not None:
+                raise Conflict("port_already_mated: this connector already mates in another board-to-board link")
 
     def set_link_port(
         self, change: Mutation, link_id: str, end: str, port: Mapping[str, Any]

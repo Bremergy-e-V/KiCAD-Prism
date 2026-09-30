@@ -82,6 +82,7 @@ def build(
                 ends[end] = {"instanceId": link[f"{end}_instance_id"], "portKey": port["portKey"], "port": port}
         links.append({
             "id": link["id"], "name": link["name"], "type": link.get("type") or "unspecified",
+            "stackHeightMm": link.get("stack_height_mm"),
             "harnessLabel": link["harness"], **ends,
             "rows": [{
                 "id": row["id"], "pinA": row["pin_a"], "pinB": row["pin_b"], "signal": row["signal"],
@@ -174,6 +175,7 @@ def import_manifest(
                 change, a_instance_id=link.a.instanceId, a_port=_end_baseline(link.a),
                 b_instance_id=link.b.instanceId, b_port=_end_baseline(link.b),
                 name=link.name, harness=link.harnessLabel, link_id=link.id,
+                link_type=link.type, stack_height_mm=link.stackHeightMm,
             )
             store.replace_rows(change, link.id, [{
                 "id": r.id, "pinA": r.pinA, "pinB": r.pinB, "signal": r.signal, "source": r.source,

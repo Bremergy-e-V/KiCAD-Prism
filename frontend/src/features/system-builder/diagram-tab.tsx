@@ -32,10 +32,12 @@ import {
   buildDiagram,
   connectionToLink,
   handleId,
+  nextLinkMode,
   subsystemContents,
   type DiagramEdgeData,
   type DiagramNodeData,
   type InsideEntry,
+  type LinkMode,
 } from "./diagram-model";
 import { wirePoints } from "./system-layout";
 import type { SystemTabProps } from "./system-tab-content";
@@ -159,12 +161,15 @@ function WireEdgeView({ id, sourceX, sourceY, targetX, targetY, data, selected }
   return (
     <>
       <BaseEdge id={id} path={path} interactionWidth={14}
-        style={{ strokeWidth: active ? 2.5 : 1.5, stroke: active ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))" }} />
+        style={{
+          strokeWidth: (active ? 2.5 : 1.5) + (data!.b2b ? 1.5 : 0),
+          stroke: active ? "hsl(var(--primary))" : "hsl(var(--muted-foreground))",
+        }} />
       {active && (
         <EdgeLabelRenderer>
           <div className="nodrag nopan pointer-events-none absolute border bg-popover px-2 py-1 text-[11px] text-popover-foreground shadow-sm"
             style={{ transform: `translate(-50%, -120%) translate(${middle.x}px, ${middle.y}px)` }}>
-            {data!.label}{data!.harness ? ` · harness ${data!.harness}` : ""}
+            {data!.label}{data!.b2b ? " · board-to-board" : ""}{data!.harness ? ` · harness ${data!.harness}` : ""}
           </div>
         </EdgeLabelRenderer>
       )}
@@ -211,6 +216,7 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [hovered, setHovered] = useState<string | null>(null);
   const [tree, setTree] = useState<{ key: string; body: SystemHierarchy } | null>(null);
+  const [mode, setMode] = useState<LinkMode>(null);
   const { run } = useSystemMutation(reload);
   const hasSubsystems = document.instances.some((instance) => instance.kind === "assembly");
   const treeKey = `${systemId}:${etag}`;
@@ -295,7 +301,10 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
       toast.error(request.error);
       return;
     }
-    void run("link", () => createLink(systemId, etag, request), "Link created").then((created) => {
+    const type = mode ?? undefined;
+    setMode(null);
+    void run("link", () => createLink(systemId, etag, { ...request, type }),
+      type === "b2b" ? "Board-to-board link created" : "Link created").then((created) => {
       if (created) {
         onNavigate("connectivity", { link: created.body.id });
       }
@@ -313,6 +322,13 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
             ? "Drag between ports to link them. Hover a wire to see it; click it to edit its pins."
             : "Hover a wire to see it; click it to see its pins."}
         </p>
+        {canEdit && (
+          <Button variant={mode === "b2b" ? "default" : "outline"} size="sm" className="h-7" aria-pressed={mode === "b2b"}
+            onClick={() => setMode((current) => (current === "b2b" ? null : "b2b"))}
+            title="Make the next link you draw board-to-board (B; Esc cancels)">
+            {mode === "b2b" ? "Next link: board-to-board · Esc" : "Board-to-board (B)"}
+          </Button>
+        )}
         {canEdit && arranged && (
           <Button variant="outline" size="sm" className="h-7" onClick={() => void savePositions({})}
             title="Discard the saved arrangement and place boards automatically">
@@ -320,7 +336,15 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
           </Button>
         )}
       </div>
-      <div className="min-h-0 flex-1" data-testid="system-diagram">
+      {/* Shortcuts fire only while the diagram has focus and no text field is active (§16.2). */}
+      <div className="min-h-0 flex-1 outline-none" data-testid="system-diagram" tabIndex={0}
+        role="application" aria-label="System diagram"
+        onKeyDown={(event) => {
+          if (!canEdit) return;
+          const target = event.target as HTMLElement;
+          const typing = target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+          setMode((current) => nextLinkMode(event.key, current, typing));
+        }}>
         {document.instances.length === 0 ? (
           <p className="p-6 text-sm text-muted-foreground">Add boards on the Boards tab to see them here.</p>
         ) : (

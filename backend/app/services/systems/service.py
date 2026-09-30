@@ -443,6 +443,8 @@ class SystemService:
             "id": link["id"],
             "name": link["name"],
             "harness": link["harness"],
+            "type": link.get("type") or "unspecified",
+            "stackHeightMm": link.get("stack_height_mm"),
             "a": ends["a"],
             "b": ends["b"],
             "rows": rows,
@@ -1145,7 +1147,8 @@ class SystemService:
 
     def create_link(
         self, caller: Caller, system_id: str, version: int, *, a: Mapping[str, str],
-        b: Mapping[str, str], name: str, harness: Optional[str],
+        b: Mapping[str, str], name: str, harness: Optional[str], link_type: str = "unspecified",
+        stack_height_mm: Optional[float] = None,
     ) -> Result:
         with self._tx() as store:
             self._system(store, system_id, caller)
@@ -1164,6 +1167,7 @@ class SystemService:
                 link = store.create_link(
                     change, a_instance_id=a["instanceId"], a_port=baselines[0],
                     b_instance_id=b["instanceId"], b_port=baselines[1], name=name, harness=harness,
+                    link_type=link_type, stack_height_mm=stack_height_mm,
                 )
                 body = self._link_body(store, system_id, link["id"])
         return Result(body, system_id, change.version)
@@ -1176,7 +1180,8 @@ class SystemService:
             with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
                 self._visible_link(store, system_id, link_id, caller)
                 store.update_link(
-                    change, link_id, name=fields.get("name"), harness=fields.get("harness", ...)
+                    change, link_id, name=fields.get("name"), harness=fields.get("harness", ...),
+                    link_type=fields.get("type"), stack_height_mm=fields.get("stackHeightMm", ...),
                 )
                 body = self._link_body(store, system_id, link_id)
         return Result(body, system_id, change.version)

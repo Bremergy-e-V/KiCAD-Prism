@@ -7,6 +7,7 @@ import {
   connectionToLink,
   handleId,
   layoutInputs,
+  nextLinkMode,
   nodeHeight,
   portKeyOf,
   subsystemContents,
@@ -34,6 +35,13 @@ describe("layoutInputs", () => {
 });
 
 describe("buildDiagram", () => {
+  it("marks board-to-board wires", () => {
+    const doc = systemDocument([obc, pay], [{ ...link("L1", obc.id, "J7", pay.id, "J4", 3), type: "b2b" as const },
+      link("L2", obc.id, "J8", pay.id, "J5", 1)]);
+    const flags = Object.fromEntries(buildDiagram(doc, {}).edges.map((edge) => [edge.id, edge.data.b2b]));
+    expect(flags).toEqual({ L1: true, L2: false });
+  });
+
   it("always shows an exported port as a row named after its export", () => {
     const doc = systemDocument([obc, pay], [link("L1", obc.id, "J7", pay.id, "J4", 3)], [exportOf("DEBUG", obc.id, "J10")]);
     const [a] = buildDiagram(doc, {}).nodes;
@@ -127,5 +135,15 @@ describe("subsystemContents", () => {
       { path: "/A/SUB/PAY", label: "PAY", kind: "board", depth: 4, restricted: true },
     ]);
     expect(subsystemContents(occurrences, "PDU")).toEqual([]);
+  });
+});
+
+describe("nextLinkMode", () => {
+  it("B toggles board-to-board, Esc clears, typing never changes it", () => {
+    expect(nextLinkMode("b", null, false)).toBe("b2b");
+    expect(nextLinkMode("B", "b2b", false)).toBeNull();
+    expect(nextLinkMode("Escape", "b2b", false)).toBeNull();
+    expect(nextLinkMode("x", "b2b", false)).toBe("b2b");
+    expect(nextLinkMode("b", null, true)).toBeNull();
   });
 });
