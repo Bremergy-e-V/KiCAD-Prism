@@ -48,7 +48,7 @@ it appears.
 | # | Choice | Why |
 |---|---|---|
 | T1 | **Board frame** origin is KiCad's page origin, y flipped up, z out of the front, **z = 0 at the board mid-plane** (§14.2). | Extractor numbers come straight from the file; top and bottom connectors are symmetric (±t/2); the 3D bundle's own centring is absorbed by a per-asset offset in M2. |
-| T2 | **Inference has three confidences** (§15.1). A footprint without `_Vertical`/`_Horizontal` still infers from geometry (body over the pads → vertical) at `medium`. | The JTYU mezzanines (Samtec FTSH, SEAF8, ADM6) have no orientation keyword; name-only inference would ask for details on every real B2B. |
+| T2 | **Inference has three confidences** (§15.1). A footprint without `_Vertical`/`_Horizontal` still infers from geometry (body over the pads → vertical) at `medium`. Right-angle axes are named in the **footprint's** frame, so they survive any footprint rotation. | The JTYU mezzanines (Samtec FTSH, SEAF8, ADM6) have no orientation keyword; name-only inference would ask for details on every real B2B. |
 | T3 | **Auto-placement uses only confirmed or override frames**; inferred ones are one click from confirmed. A confirmation records the port's geometry digest and goes **stale** (info `SYS-V17`) when the footprint moves (§15.2). | PLAN risk table: confirmation is mandatory before placement; a moved connector must not keep a silently wrong frame. |
 | T4 | **Conversions** (§16.1): link → harness always works (rows become wires); harness → link only for 2 ends, no splices, identity pin maps. | Round-trips without losing information; anything richer stays a harness. |
 | T5 | **Stack height lives on the B2B link**, not on each port (§16.2); the frozen manifest shape moves `stackHeightMm` from `mating[]` to `links[]` (no data had it yet). | It is a datasheet property of the mated pair; two per-port values could disagree. |
@@ -522,7 +522,7 @@ Computed from extractor v6 geometry (§14.6) in the board frame:
 - **x axis:** the principal axis of the pad centres (largest eigenvector of their 2D covariance), signed so that **pad "1"** (or, without one, the first pad in natural order) lies at negative x. When the two eigenvalues are within 5 % of each other (a square array) or there is one pad, x is the footprint's own +x rotated by the footprint angle.
 - **z axis (mating direction):**
   - vertical: the board normal, +z for a front footprint, −z for a back one;
-  - right-angle: in the board plane, from the pad centroid toward the **body centroid** (the courtyard centroid; M4 may refine with model bounds), snapped to the footprint's nearest local ±x/±y axis.
+  - right-angle: in the board plane, along the footprint's own ±x/±y axis named by the inference or override (§15.1), rotated by the footprint angle into the board frame. The body centre is the courtyard centre; M4 may refine it with model bounds.
 - **y = z × x**; if z ∥ x (a right-angle connector whose pads run along the mating direction), x is replaced by the in-plane axis perpendicular to z, signed toward pad 1 as above.
 - A confirmed override (§15) replaces the inferred axis choice and applies `quarterTurns` × 90° about z.
 
@@ -561,15 +561,18 @@ B_world = A_world · F_a · T(0, 0, h) · Rx(180°) · Rz(k · 90°) · F_b⁻¹
 
 ### 15.1 Inference **[T2]**
 
-Inference is a pure function of a component's v6 geometry (both languages, shared goldens). It returns `{axis, quarterTurns: 0, confidence, reasons}`:
+Inference is a pure function of a component's v6 geometry (both languages, shared goldens in `placement_cases.json`). It returns `{axis, confidence, reasons}`, with `axis` null at `low`. Terms, all in the **footprint's own frame** (§14.6): the *pad box* is the bounding box of the pad centres grown by 1 mm; the *body centre* is the courtyard centre; the body is *off one side* when it lies outside the pad box, at least 0.5 mm from the pad centroid, within 20° of a footprint axis. Keywords are matched case-insensitively on the footprint name as whole `_`-separated words: vertical `_Vertical`; right-angle `_Horizontal`, `_RightAngle`, `_Right_Angle`, `_Angled`, `_RA`.
 
 | Evidence | Result | Confidence |
 |---|---|---|
-| Footprint name contains `_Vertical`, and the geometry agrees (body centroid within the pad hull + 1 mm) | `top` / `bottom` by side | `high` |
-| Name contains `_Horizontal`, `_RightAngle`, `_Angled` or `_RA_`, and the body centroid is ≥ 0.5 mm from the pad centroid, within 20° of a footprint axis | that axis, as `+x`/`-x`/`+y`/`-y` in the **board** frame | `high` |
-| No keyword; the body centroid lies within the pad hull + 1 mm (a mezzanine such as Samtec FTSH/ADM6 on JTYU) | `top` / `bottom` by side | `medium` |
-| No keyword; the body centroid is clearly off one side (≥ 0.5 mm, within 20° of an axis) | that axis | `medium` |
-| Keyword and geometry disagree, no courtyard and no keyword, or one pad | none | `low` → **"Mating details needed"** |
+| Vertical keyword, body centre in the pad box | `top` / `bottom` by side | `high` |
+| Vertical keyword, no courtyard | `top` / `bottom` by side | `medium` |
+| Right-angle keyword, body off one side | that side as `+x`/`-x`/`+y`/`-y` **in the footprint frame** | `high` |
+| No keyword, body centre in the pad box (mezzanines such as Hirose DF40, or Samtec FTSH/ADM6 on JTYU) | `top` / `bottom` by side | `medium` |
+| No keyword, body off one side | that side | `medium` |
+| A keyword the geometry contradicts; no courtyard without a vertical keyword; fewer than two distinct pad positions; a body neither over the pads nor clearly off one side | none | `low` → **"Mating details needed"** |
+
+The right-angle axis is kept in the footprint frame, so rotating the footprint (including by 45°) never invalidates it, and a back-side footprint's axis is read in its stored, mirrored coordinates.
 
 `reasons` lists the evidence used (`name_vertical`, `body_over_pads`, …) for the UI.
 
