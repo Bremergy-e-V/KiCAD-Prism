@@ -39,7 +39,7 @@ it appears.
 | S3 | Depth counts **system levels including the root**: root → child → grandchild → great-grandchild is depth 4, the maximum. | A clear reading of "depth 4". |
 | S4 | The power-meets-signal finding needs a per-pin **power-net flag**. Extractor **v5** (in M0, SB2-08) adds only that flag. The connector geometry planned as "v5" becomes **v6** (SB2-11). | Connector pins are usually `passive`, so pin types can't tell power from signal. |
 | S5 | The name-mismatch finding (V09) compares **tokens**, not whole names (§8.3). `/SPI_SCK` meets `/SCK_IN` → shares `SCK` → no warning. `TM_MON` meets `GND_3` → warning. | Whole-name comparison would warn on nearly every link. |
-| S6 | Canvas layout stays **out** of the manifest (P1 invariant 6 unchanged). | Keeps presentation out of digests and Git diffs; auto-layout is the default anyway. |
+| S6 | **Revised by the user:** canvas layout is **in** the manifest (`layout`), frozen by snapshots and (M7) committed to Git, like a Vivado block design. It is excluded from the connectivity digest and included in the full digest. Live layout edits still take no If-Match and write no audit event (P1 invariant 6, revised in §9.5). | A saved arrangement is shared work other users should see and get back from a snapshot; it is still never an engineering change. |
 | S7 | A child system hidden from the reader shows its **catalog interface** (export names and pin numbers) but no internals, and its export pin nets are redacted if the board behind the export is hidden. | Consistent with catalog readability (D-P2-24) and P1 per-board redaction. |
 | S8 | **Viewers** gain catalog read (D-P2-24). The SB2-02 test lists every catalog read route that opens up; inventory and provider tokens stay writer-only. | User decision 2026-09-30; guarded by a test. |
 
@@ -323,6 +323,7 @@ The models in `manifest_schema.py` are normative. Top-level keys:
 | `harnesses` | `{id, name, label, ends[{id, ordinal, mates, part, pinCount, pinMap, bootMm}], wires[{id, from, to, signal, gaugeAwg, colour, label, netFrom, netTo}], nodes[{id, kind, positionMm, pinned, order, ends}], cutLengthMm, serviceAllowancePct}` |
 | `mating` | `{instanceId, portKey, mode, frame: {axis, quarterTurns}, stackHeightMm}` |
 | `placement` | `{poses[{instanceId, translationMm, rotation (xyzw unit), source}], drivingMates[{instanceId, linkId}]}` |
+| `layout` | `{positions: {<nodeKey>: {x, y}}}`, the saved diagram arrangement. Node keys are instance IDs and harness IDs at this level (at most 1000). An expanded child renders with the layout frozen in its own snapshot. |
 
 Rules:
 - Unknown fields are rejected.
@@ -346,7 +347,7 @@ Checks that need other documents (a child's export exists at the pinned revision
 The canonical form is JSON with sorted keys, `(",", ":")` separators and `ensure_ascii=False`, hashed with SHA-256 and written `sha256:<hex>`.
 
 - **`full`**: the manifest without `meta`.
-- **`connectivity`**: `full` without `mating`, `placement`, and each harness's `nodes`, `cutLengthMm`, `serviceAllowancePct` and every end's `bootMm`.
+- **`connectivity`**: `full` without `layout`, `mating`, `placement`, and each harness's `nodes`, `cutLengthMm`, `serviceAllowancePct` and every end's `bootMm`.
 
 Drift, publish identity and catalog `connectivityDigest` use **connectivity**. Snapshot identity uses **full**.
 
@@ -358,6 +359,13 @@ From SB2-01, a snapshot stores:
 - both digests.
 
 P1 snapshots (with a `document` and no `manifest`) remain readable. They are listed with `manifestSchema: null` and can't be published.
+
+### 9.5 Canvas layout (revises P1 invariant 6)
+
+- **Live:** `GET/PUT …/layout` is unchanged. It is shared by every user of the system, takes no If-Match (last write wins), writes no audit event and never bumps the system version.
+- **Frozen:** a snapshot's manifest carries the layout as it was when the snapshot was taken. A system restored or published from a snapshot shows that arrangement.
+- **Digests:** layout is excluded from the connectivity digest and included in the full digest.
+- **A layout change alone never** opens a review, bumps drift, or makes a parent see a new child revision.
 
 ## 10. ICD changes (extends P1 §9.4–§9.5)
 
@@ -405,4 +413,4 @@ All routes are under `/api/systems/{id}` and follow P1 conventions (If-Match, 41
 
 | Version | Date | Change |
 |---|---|---|
-| P2-1.0 | 2026-09-30 | First draft for sign-off (SB2-00). Adds catalog kinds and publishing, exports, hierarchy, child drift, system nets V09–V15, manifest v1 with digests, API, errors and audit kinds. P1 changes: snapshots store a manifest (§9.4); instances gain `kind` (§5.1); extractor v5 adds `powerNet` (§8.4). |
+| P2-1.0 | 2026-09-30 | First draft for sign-off (SB2-00). Adds catalog kinds and publishing, exports, hierarchy, child drift, system nets V09–V15, manifest v1 with digests, API, errors and audit kinds. P1 changes: snapshots store a manifest (§9.4); instances gain `kind` (§5.1); extractor v5 adds `powerNet` (§8.4). S6 revised by the user: canvas layout is part of the manifest and snapshots (§9.5, revises P1 invariant 6). |

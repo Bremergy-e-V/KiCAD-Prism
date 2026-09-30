@@ -43,6 +43,7 @@ class ManifestSchemaTest(unittest.TestCase):
         moved["harnesses"][0]["ends"][1]["bootMm"] = 20.0
         moved["harnesses"][0]["cutLengthMm"] = 900.0
         moved["meta"]["sourceVersion"] = 8
+        moved["layout"]["positions"][raw["instances"][0]["id"]] = {"x": -500.0, "y": 42.0}
         after = digests(Manifest.model_validate(moved))
         self.assertEqual(after["connectivity"], before["connectivity"])
         self.assertNotEqual(after["full"], before["full"])

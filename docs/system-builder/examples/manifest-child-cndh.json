@@ -193,5 +193,21 @@
       }
     ],
     "drivingMates": []
+  },
+  "layout": {
+    "positions": {
+      "sin_ea99049f095f5bc06f822c74237ef14e": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "sin_ef30e4890c270406bb166d6e117ebbb3": {
+        "x": 320.0,
+        "y": 140.0
+      },
+      "sin_f8cdbc63b67db711b1cc76ca0d905132": {
+        "x": 640.0,
+        "y": 0.0
+      }
+    }
   }
 }

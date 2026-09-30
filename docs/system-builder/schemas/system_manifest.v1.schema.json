@@ -66,6 +66,45 @@
       "title": "BoardInstance",
       "type": "object"
     },
+    "CanvasLayout": {
+      "additionalProperties": false,
+      "description": "The saved diagram arrangement: node key (instance, harness or subsystem ID) -> position.",
+      "properties": {
+        "positions": {
+          "additionalProperties": {
+            "$ref": "#/$defs/CanvasPosition"
+          },
+          "maxProperties": 1000,
+          "propertyNames": {
+            "maxLength": 200,
+            "minLength": 1
+          },
+          "title": "Positions",
+          "type": "object"
+        }
+      },
+      "title": "CanvasLayout",
+      "type": "object"
+    },
+    "CanvasPosition": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "title": "X",
+          "type": "number"
+        },
+        "y": {
+          "title": "Y",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "title": "CanvasPosition",
+      "type": "object"
+    },
     "CatalogInstance": {
       "additionalProperties": false,
       "properties": {
@@ -1215,6 +1254,9 @@
       },
       "title": "Instances",
       "type": "array"
+    },
+    "layout": {
+      "$ref": "#/$defs/CanvasLayout"
     },
     "links": {
       "items": {

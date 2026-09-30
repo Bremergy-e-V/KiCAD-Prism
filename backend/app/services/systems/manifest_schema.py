@@ -8,8 +8,9 @@ from them (``python -m app.services.systems.manifest_schema``) and a test
 fails if the committed file drifts.
 
 Digests (§9.3): ``full`` covers everything except ``meta``; ``connectivity``
-also drops placement-only facts (mating frames, poses, harness nodes and
-harness geometry fields), so moving a board never changes it.
+also drops presentation and placement facts (canvas layout, mating frames,
+poses, harness nodes and harness geometry fields), so rearranging the diagram
+or moving a board never changes it.
 """
 
 from __future__ import annotations
@@ -293,6 +294,23 @@ class Placement(_Model):
 
 
 # ---------------------------------------------------------------------------
+# Canvas layout (presentation, §9.1; revises P1 invariant 6)
+
+
+class CanvasPosition(_Model):
+    x: float = Field(allow_inf_nan=False)
+    y: float = Field(allow_inf_nan=False)
+
+
+class CanvasLayout(_Model):
+    """The saved diagram arrangement: node key (instance, harness or subsystem ID) -> position."""
+
+    positions: dict[Annotated[str, Field(min_length=1, max_length=200)], CanvasPosition] = Field(
+        default_factory=dict, max_length=1000
+    )
+
+
+# ---------------------------------------------------------------------------
 # The manifest
 
 
@@ -325,6 +343,7 @@ class Manifest(_Model):
     harnesses: list[Harness] = Field(default_factory=list)
     mating: list[Mating] = Field(default_factory=list)
     placement: Placement = Field(default_factory=Placement)
+    layout: CanvasLayout = Field(default_factory=CanvasLayout)
 
     model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
 
@@ -429,6 +448,7 @@ def connectivity_view(manifest: Manifest) -> dict:
     """``full_view`` without placement-only facts."""
 
     body = full_view(manifest)
+    body.pop("layout")
     body.pop("mating")
     body.pop("placement")
     for harness in body["harnesses"]:
