@@ -771,7 +771,7 @@ class SystemApiTest(unittest.TestCase):
             second = jobs.extract_and_store(project, f0, self.connect)
         self.assertEqual(extract.call_count, 1)
         self.assertEqual(first["digest"], second["digest"])
-        self.assertEqual(artifact_key("prj_obc", f0), f"system-interface:v4:prj_obc:{f0}")
+        self.assertEqual(artifact_key("prj_obc", f0), f"system-interface:v5:prj_obc:{f0}")
 
     def test_extraction_job_fails_permanently_without_a_source(self) -> None:
         from app.services.job_runtime import PermanentJobError

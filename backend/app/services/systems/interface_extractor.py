@@ -29,7 +29,7 @@ from app.services import semantic_index_variants
 from app.services.systems import connector_detection
 
 SCHEMA = "prism.system_interface.v1"
-EXTRACTOR_VERSION = "4"
+EXTRACTOR_VERSION = "5"
 _UNCONNECTED_PREFIX = "unconnected-("
 
 
@@ -159,6 +159,21 @@ def _board_pad_nets(board: Any) -> dict[str, dict[str, set[str]]]:
     return result
 
 
+def _power_net_names(design: Any) -> set[str]:
+    """Names of nets set by power symbols (lib symbol ``power`` flag): the symbol's value is the net."""
+
+    names: set[str] = set()
+    for top in getattr(design, "schematics", None) or []:
+        for symbol, _path, sheet in top.walk_symbols():
+            lib = sheet.get_lib_symbol_for_symbol(symbol)
+            if lib is None or not getattr(lib, "power", False):
+                continue
+            value = next((p.value for p in getattr(symbol, "properties", []) if p.key == "Value"), "")
+            if value:
+                names.add(_string(value))
+    return names
+
+
 def _field_map(component: Any) -> dict[str, str]:
     fields = getattr(component, "fields", None) or {}
     return {str(key): _string(value) for key, value in dict(fields).items()}
@@ -188,6 +203,7 @@ def extract_interface(
         for component in getattr(netlist, "components", ()) or ()
     }
     schematic_pins = _schematic_pins(netlist)
+    power_nets = _power_net_names(design)
     occurrences = _occurrences(design)
 
     pcb_path = getattr(design, "pcb_path", None)
@@ -238,6 +254,8 @@ def extract_interface(
                     "pcbNets": normalized_nets(board_nets) if board_nets is not None else None,
                     "pinNames": sorted(entry["names"]) or None,
                     "pinTypes": sorted(entry["types"]) or None,
+                    # CONTRACTS_P2 §8.4 (v5): the pin's net is driven by a power symbol.
+                    "powerNet": any(net in power_nets for net in nets),
                 }
             )
 

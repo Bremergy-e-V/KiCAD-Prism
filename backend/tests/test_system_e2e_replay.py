@@ -401,7 +401,7 @@ class ReplayTest(unittest.TestCase):
             findings = self.call("GET", f"/{self.sid}/validation").json["findings"]
             warnings = [(f["rule"], f["instanceId"], f["reference"], f["pin"])
                         for f in findings if f["severity"] == "warning"]
-            self.assertEqual(warnings, [(w["rule"], self.instances[w["instance"]], w["reference"], w["pin"])
+            self.assertEqual(warnings, [(w["rule"], (self.instances[w["instance"]] if w["instance"] else None), w["reference"], w["pin"])
                                         for w in spec["afterAccept"]["warnings"]])
         elif name == "F9":
             port = self.link("L-J2J1")["a"]["port"]
