@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.11 · 2026-09-30 · tickets SB2-00 to SB2-10.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.12 · 2026-09-30 · tickets SB2-00 to SB2-11.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -670,6 +670,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.12 | 2026-09-30 | SB2-11: extractor v6 implemented as §14.6 (`EXTRACTOR_VERSION` 6, every board re-extracts once). Goldens compare pad centres and footprint poses with `kicad-cli` 10.0.6 IPC-D-356 and position-file exports (`fixtures/system_builder/p2/evidence/geometry`). |
 | P2-1.11 | 2026-09-30 | SB2-10 M1 packet: §0.1 choices T1–T7 (signed off by the user 2026-09-30); §14 frames and conventions, extractor v6 geometry; §15 mating inference, storage and API; §16 link type conversions and B2B rules; §17 harness tables, behaviour, API, ICD/CSV; §18 mates with; findings V17–V19; errors and audit additions. Manifest: `mating[]` stores only confirmed/override with `geometryDigest`; `stackHeightMm` moves to `links[]` (b2b only, full digest only, omitted when unset). The revision log becomes §19. |
 | P2-1.10 | 2026-09-30 | SYS-V09 becomes opt-in per system (user decision after M0: 108 warnings on JTYU). Migration 35 `optional_rules`; `PATCH /systems/{id}` `optionalRules`; manifest `system.optionalRules` (full digest only, omitted when empty); Overview **Checks** section. SYS-V10 stays an error. |
 | P2-1.9 | 2026-09-30 | SB2-09: parent ICD Subsystems table and unreleased banner; `?depth=all` on live and snapshot ICDs (CSV `occurrence` column, HTML "Inside subsystems"), with recursive redaction; diagram subsystem node and its contents list; History "All levels" link. Backfills rows P2-1.5 to P2-1.8, whose document edits were missing from their tickets. |
