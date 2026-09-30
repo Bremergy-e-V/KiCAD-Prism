@@ -561,6 +561,11 @@ async def delete_harness_end(system_id: str, harness_id: str, end_id: str, reque
     return _respond(result, response)
 
 
+@router.get("/{system_id}/harnesses/{harness_id}/ends/{end_id}/suggestions")
+async def end_suggestions(system_id: str, harness_id: str, end_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    return await _run(system_id, lambda: system_service.service.end_suggestions(_caller(user), system_id, harness_id, end_id))
+
+
 @router.put("/{system_id}/harnesses/{harness_id}/wires", dependencies=[Depends(require_designer)])
 async def replace_wires(system_id: str, harness_id: str, body: list[WireRequest], request: Request,
                         response: Response, user: AuthenticatedUser = Depends(require_viewer)):

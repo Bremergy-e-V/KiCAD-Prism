@@ -49,6 +49,8 @@ const RULE_TEXT: Record<string, string> = {
   child_revision_unreleased: "Subsystem revision is not released",
   child_advance_blocked: "Subsystem update blocked by hierarchy limits",
   export_unresolved: "Export does not resolve",
+  mating_stale: "Connector moved since its mating frame was confirmed",
+  mate_pair_unknown: "Catalog does not list these parts as mating",
 };
 
 export function findingText(finding: Pick<Finding, "name">): string {

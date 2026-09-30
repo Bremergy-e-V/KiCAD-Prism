@@ -291,6 +291,7 @@ class SystemService:
             report = validation.with_findings(report, harnesses_module.findings(
                 harness, components, {i["id"]: store.list_overrides(i["id"]) for i in instances},
                 system.get("optionalRules") or (), validation.make_finding))
+        report = validation.with_findings(report, self._mate_pair_findings(links, harness_rows, interfaces))
         review_rows = sorted({rid for review in open_reviews for item in review["items"] for rid in item["row_ids"]})
         return {
             "system": dict(system),
@@ -664,6 +665,80 @@ class SystemService:
 
     # ------------------------------------------------------------------
     # Assembly and module instances (CONTRACTS_P2 §5)
+
+    def _mate_pair_findings(self, links: Sequence[Mapping[str, Any]], harness_rows: Sequence[Mapping[str, Any]],
+                            interfaces: Mapping[str, dict]) -> list[dict]:
+        """SYS-V18 (CONTRACTS_P2 §18): a b2b pair, or a harness end's part and its board connector,
+        whose two catalog parts are both known and not related by mates-with. Unknown parts: not evaluated."""
+
+        def connector(instance_id: Optional[str], port: Optional[Mapping[str, Any]]) -> Optional[dict]:
+            interface = interfaces.get(instance_id) if instance_id else None
+            return exposure.component_by_key(interface, port["portKey"]) if interface and port else None
+
+        b2b = [(link, [connector(link[f"{e}_instance_id"], link[f"{e}_port"]) for e in ("a", "b")])
+               for link in links if link.get("type") == "b2b"]
+        ends = [(harness, end, connector(end["mates_instance_id"], end["mates_port"]))
+                for harness in harness_rows for end in harness["ends"]
+                if end["catalog_component_id"] and end["mates_instance_id"]]
+        mpns = [c["mpn"] for _link, pair in b2b for c in pair if c and c.get("mpn")] + \
+               [c["mpn"] for _h, _e, c in ends if c and c.get("mpn")]
+        if not mpns:
+            return []
+        try:
+            catalog = self._catalog()
+            parts = catalog.parts_by_mpn(mpns)
+
+            def part(component: Optional[Mapping[str, Any]]) -> Optional[str]:
+                if not component or not component.get("mpn"):
+                    return None
+                return (parts.get(component["mpn"].strip().lower()) or {}).get("componentId")
+
+            known = {p for _link, pair in b2b for p in map(part, pair) if p} | \
+                    {p for _h, e, c in ends for p in (part(c), e["catalog_component_id"]) if p}
+            pairs = catalog.mate_pairs(sorted(known))
+        except Exception:  # the catalog is a separate service; findings wait for it
+            logger.exception("Could not read catalog mates for SYS-V18")
+            return []
+
+        def related(x: str, y: str) -> bool:
+            return (min(x, y), max(x, y)) in pairs
+
+        out = []
+        for link, pair in b2b:
+            ids = [part(c) for c in pair]
+            if all(ids) and ids[0] != ids[1] and not related(*ids):
+                out.append(validation.make_finding("SYS-V18", link_id=link["id"],
+                                                   detail={"partA": ids[0], "partB": ids[1]}))
+        for harness, end, component in ends:
+            board_part = part(component)
+            if board_part and not related(board_part, end["catalog_component_id"]):
+                out.append(validation.make_finding(
+                    "SYS-V18", instance_id=end["mates_instance_id"], reference=(end["mates_port"] or {}).get("reference"),
+                    detail={"harnessId": harness["id"], "endId": end["id"], "part": end["catalog_component_id"],
+                            "connectorPart": board_part}))
+        return out
+
+    def end_suggestions(self, caller: Caller, system_id: str, harness_id: str, end_id: str) -> dict:
+        """``GET …/harnesses/{hid}/ends/{eid}/suggestions`` (§18): the mated connector's part and its known
+        partners. Nothing is assigned."""
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            harness = self._visible_harness(store, system_id, harness_id, caller)
+            end = next((e for e in harness["ends"] if e["id"] == end_id), None)
+            if end is None:
+                raise NotFound("Harness end not found")
+            component = self._end_components(store, harness).get(end_id)
+        mpn = (component or {}).get("mpn")
+        if not mpn:
+            return {"endId": end_id, "connectorMpn": None, "connectorPart": None, "suggestions": []}
+        try:
+            catalog = self._catalog()
+            board_part = catalog.parts_by_mpn([mpn]).get(mpn.strip().lower())
+            suggestions = catalog.list_mates_with(board_part["componentId"]) if board_part else []
+        except Exception:
+            logger.exception("Could not read catalog mates for a harness end")
+            board_part, suggestions = None, []
+        return {"endId": end_id, "connectorMpn": mpn, "connectorPart": board_part, "suggestions": suggestions}
 
     def _catalog_revision(self, revision_id: str) -> Optional[dict]:
         try:

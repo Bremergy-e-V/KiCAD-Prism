@@ -111,10 +111,28 @@ def _component_kinds(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS components_kind_idx ON components (kind)")
 
 
+def _mates_with(conn: Any) -> None:
+    """System Builder P2 (CONTRACTS_P2 §18): parts that mate, stored once per pair with ``part_a < part_b``."""
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS catalog_mates_with (
+            part_a     TEXT NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+            part_b     TEXT NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (part_a, part_b),
+            CHECK (part_a < part_b)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS catalog_mates_with_b_idx ON catalog_mates_with (part_b)")
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "portable_column_types", _portable_column_types),
     (2, "import_proposal_draft_column", _import_proposal_draft_column),
     (3, "component_kinds", _component_kinds),
+    (4, "mates_with", _mates_with),
 )
 
 

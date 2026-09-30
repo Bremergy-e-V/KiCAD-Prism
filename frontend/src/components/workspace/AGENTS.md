@@ -41,6 +41,7 @@ save validation matches the single PATCH, not bulk-edit shape checks),
 `library-component-asset-download.ts` (released-revision downloads through the
 matching remote-provider representation, not the default placement pair),
 `library-component-quick-view.tsx`,
+`library-component-mates.tsx` (a part's "mates with" list and editor, System Builder P2 §18),
 `library-asset-link-picker.tsx`, `use-edit-history.ts`.
 
 **Previews** — two paths that share nothing but a subject.

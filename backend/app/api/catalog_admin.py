@@ -890,6 +890,35 @@ def verify_component_audit(component_id: str, user: AuthenticatedUser = Depends(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+class MateRequest(BaseModel):
+    componentId: str = Field(min_length=1, max_length=200)
+
+
+def _mates_call(action):
+    try:
+        return {"items": action()}
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/components/{component_id}/mates-with")
+def list_mates_with(component_id: str, user: AuthenticatedUser = Depends(require_catalog_browser)):
+    """CONTRACTS_P2 §18: the parts this part mates with."""
+    return _mates_call(lambda: catalog_service.list_mates_with(component_id))
+
+
+@router.post("/components/{component_id}/mates-with")
+def add_mate(component_id: str, body: MateRequest, user: AuthenticatedUser = Depends(require_catalog_writer)):
+    return _mates_call(lambda: catalog_service.set_mate(component_id, body.componentId, mates=True, actor=user.email))
+
+
+@router.delete("/components/{component_id}/mates-with/{other_id}")
+def remove_mate(component_id: str, other_id: str, user: AuthenticatedUser = Depends(require_catalog_writer)):
+    return _mates_call(lambda: catalog_service.set_mate(component_id, other_id, mates=False, actor=user.email))
+
+
 @router.get("/components/{component_id}/usage")
 def list_component_usage(
     component_id: str,

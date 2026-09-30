@@ -100,6 +100,7 @@ import {
   RevisionsPanel,
   WhereUsedPanel,
 } from "./library-component-evidence-panels";
+import { MatesWithPanel } from "./library-component-mates";
 import { LibraryPreviewPair } from "./library-preview-inspector";
 import {
   ASSET_LABELS,
@@ -325,6 +326,8 @@ function OverviewPanel({ component, canMutate, onEdit }: { component: CatalogCom
           <DefinitionRows rows={Object.entries(component.extra_fields).map(([label, value]) => ({ label, value }))} />
         </PanelCard>
       ) : null}
+
+      <MatesWithPanel componentId={component.id} canMutate={canMutate} />
     </div>
   );
 }

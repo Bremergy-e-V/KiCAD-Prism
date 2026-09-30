@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Cable, MoreHorizontal, Pencil, Plus, Trash2, Unlink, Wand2, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   addHarnessEnd,
   deleteHarness,
+  getEndSuggestions,
   deleteHarnessEnd,
   generateWires,
   harnessToLink,
@@ -98,6 +99,25 @@ interface HarnessEditorProps {
   run: Mutate;
   onDeleted: () => void;
   onConverted: (linkId: string) => void;
+}
+
+/** Catalog partners of the mated connector's part (§18): a suggestion, never assigned here. */
+function EndSuggestion({ systemId, harnessId, endId, etag }: { systemId: string; harnessId: string; endId: string; etag: string }) {
+  const [state, setState] = useState<{ key: string; text: string | null } | null>(null);
+  const key = `${endId}:${etag}`;
+  useEffect(() => {
+    let cancelled = false;
+    getEndSuggestions(systemId, harnessId, endId)
+      .then((body) => !cancelled && setState({ key, text: body.suggestions.length
+        ? `Mates with ${body.suggestions.map((part) => part.mpn || part.name).join(", ")}`
+        : body.connectorPart ? `No mating part recorded for ${body.connectorPart.mpn}` : null }))
+      .catch(() => !cancelled && setState({ key, text: null }));
+    return () => {
+      cancelled = true;
+    };
+  }, [systemId, harnessId, endId, key]);
+  const text = state?.key === key ? state.text : null;
+  return text ? <span className="block text-xs text-muted-foreground" data-testid="end-suggestion">{text}</span> : null;
 }
 
 function matesText(document: SystemDocument, end: HarnessEnd): string {
@@ -292,7 +312,12 @@ export function HarnessEditor({ systemId, document, harness, etag, canEdit, find
                   <tr key={end.id} className="border-t">
                     <td className="px-3 py-2 font-medium">{endLabel(end)}</td>
                     <td className="px-3 py-2">{matesText(document, end)}</td>
-                    <td className="px-3 py-2 text-muted-foreground">{end.part ? "Catalog part" : `Generic · ${end.pinCount} pins`}</td>
+                    <td className="px-3 py-2 text-muted-foreground">
+                      {end.part ? "Catalog part" : `Generic · ${end.pinCount} pins`}
+                      {!end.part && end.mates && !end.mates.redacted && (
+                        <EndSuggestion systemId={systemId} harnessId={harness.id} endId={end.id} etag={etag} />
+                      )}
+                    </td>
                     <td className="px-3 py-2">
                       {editable && end.mates && !end.mates.redacted ? (
                         <button type="button" className="underline-offset-2 hover:underline" onClick={() => setDialog({ pinMap: end.id })}>
