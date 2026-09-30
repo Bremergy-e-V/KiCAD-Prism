@@ -264,6 +264,17 @@ export function layoutSystem(
     }
   }
   if (Object.keys(fixed).length) {
+    // A node without a saved position (a new board or harness) keeps its default slot unless a
+    // saved node already sits there; then it moves down until it is clear of every node placed so far.
+    const overlaps = (p: LayoutBoard, q: LayoutBoard) => Math.abs(p.x - q.x) < BOARD_WIDTH + BOARD_GAP
+      && p.y < q.y + height(q) + BOARD_GAP && q.y < p.y + height(p) + BOARD_GAP;
+    const placed = [...result.values()].filter((board) => board.id in fixed);
+    for (const board of [...result.values()].filter((b) => !(b.id in fixed)).sort((p, q) => p.y - q.y || p.x - q.x)) {
+      for (let blocker = placed.find((other) => overlaps(board, other)); blocker; blocker = placed.find((other) => overlaps(board, other))) {
+        board.y = blocker.y + height(blocker) + BOARD_GAP;
+      }
+      placed.push(board);
+    }
     for (let pass = 0; pass < 2; pass += 1) for (const board of result.values()) sortRows(board);
   }
   return result;

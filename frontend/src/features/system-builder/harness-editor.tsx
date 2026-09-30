@@ -1,0 +1,443 @@
+import { useState } from "react";
+import { Cable, MoreHorizontal, Pencil, Plus, Trash2, Unlink, Wand2, X } from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import {
+  addHarnessEnd,
+  deleteHarness,
+  deleteHarnessEnd,
+  generateWires,
+  harnessToLink,
+  replaceWires,
+  updateHarness,
+  updateHarnessEnd,
+  type WireInput,
+} from "@/lib/systems-api";
+import type { Finding, GeneratorKind, HarnessEnd, SystemDocument, SystemHarness } from "@/types/system";
+
+import { endLabel, endWireCount } from "./diagram-model";
+import { FindingsAlert } from "./findings-ui";
+import { comparePads } from "./pads";
+import type { Mutate } from "./use-system-mutation";
+
+/** A wire being edited: `key` is stable across edits; `id` is kept for existing wires. */
+export interface DraftWire extends WireInput {
+  key: string;
+}
+
+let draftCounter = 0;
+const newKey = () => `new-${(draftCounter += 1)}`;
+
+/** Wires in end order then pin order; a draft keeps this order while it is edited, so rows never jump. */
+export function draftFromHarness(harness: SystemHarness): DraftWire[] {
+  const ordinal = new Map(harness.ends.map((end) => [end.id, end.ordinal]));
+  const sorted = [...harness.wires].sort((x, y) => (ordinal.get(x.from.end) ?? 0) - (ordinal.get(y.from.end) ?? 0)
+    || comparePads(x.from.pin, y.from.pin) || (ordinal.get(x.to.end) ?? 0) - (ordinal.get(y.to.end) ?? 0)
+    || comparePads(x.to.pin, y.to.pin));
+  return sorted.map((wire) => ({
+    key: wire.id, id: wire.id, from: { ...wire.from }, to: { ...wire.to }, signal: wire.signal,
+    gaugeAwg: wire.gaugeAwg, colour: wire.colour, label: wire.label,
+  }));
+}
+
+/** Problems the server would refuse, shown before saving (§17.2). */
+export function wireProblems(draft: DraftWire[], harness: SystemHarness): Map<string, string> {
+  const pins = new Map(harness.ends.map((end) => [end.id, new Set(end.pins)]));
+  const problems = new Map<string, string>();
+  for (const wire of draft) {
+    const { from, to } = wire;
+    if (!from.end || !to.end || !from.pin || !to.pin) problems.set(wire.key, "Choose both ends and pins.");
+    else if (from.end === to.end) problems.set(wire.key, "A wire joins two different ends.");
+    else if (!pins.get(from.end)?.has(from.pin) || !pins.get(to.end)?.has(to.pin)) {
+      problems.set(wire.key, "That pin does not exist on the end.");
+    }
+  }
+  return problems;
+}
+
+/** End pins carrying more than one wire: splices (allowed, shown for review). */
+export function splices(draft: DraftWire[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const wire of draft) {
+    for (const point of [wire.from, wire.to]) {
+      const key = `${point.end}#${point.pin}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+  }
+  const spliced = new Set<string>();
+  for (const [key, count] of counts) if (count > 1) spliced.add(key);
+  return spliced;
+}
+
+function toInput(wire: DraftWire): WireInput {
+  return { id: wire.id, from: wire.from, to: wire.to, signal: wire.signal ?? "", gaugeAwg: wire.gaugeAwg ?? null,
+    colour: wire.colour || null, label: wire.label || null };
+}
+
+interface HarnessEditorProps {
+  systemId: string;
+  document: SystemDocument;
+  harness: SystemHarness;
+  etag: string;
+  canEdit: boolean;
+  findings: Finding[];
+  busy: string | null;
+  run: Mutate;
+  onDeleted: () => void;
+  onConverted: (linkId: string) => void;
+}
+
+function matesText(document: SystemDocument, end: HarnessEnd): string {
+  if (!end.mates) return "Not mated";
+  if (end.mates.redacted || !end.mates.port) return "Restricted board";
+  const label = document.instances.find((instance) => instance.id === end.mates!.instanceId)?.label ?? "?";
+  return `${label} ${end.mates.port.reference}`;
+}
+
+function EndPicker({ harness, value, onChange, label }: {
+  harness: SystemHarness; value: { end: string; pin: string }; label: string;
+  onChange: (value: { end: string; pin: string }) => void;
+}) {
+  const end = harness.ends.find((candidate) => candidate.id === value.end);
+  return (
+    <div className="flex gap-1">
+      <Select value={value.end} onValueChange={(next) => onChange({ end: next, pin: "" })}>
+        <SelectTrigger aria-label={`${label} end`} className="h-8 w-24"><SelectValue placeholder="End" /></SelectTrigger>
+        <SelectContent>
+          {harness.ends.map((candidate) => <SelectItem key={candidate.id} value={candidate.id}>{endLabel(candidate)}</SelectItem>)}
+        </SelectContent>
+      </Select>
+      <Select value={value.pin} onValueChange={(pin) => onChange({ ...value, pin })} disabled={!end}>
+        <SelectTrigger aria-label={`${label} pin`} className="h-8 w-20"><SelectValue placeholder="Pin" /></SelectTrigger>
+        <SelectContent>
+          {(end?.pins ?? []).map((pin) => <SelectItem key={pin} value={pin}>{pin}</SelectItem>)}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+function PinMapDialog({ end, pads, busy, onClose, onSave }: {
+  end: HarnessEnd; pads: string[]; busy: boolean; onClose: () => void;
+  onSave: (pinMap: Record<string, string> | null) => Promise<unknown>;
+}) {
+  const [map, setMap] = useState<Record<string, string>>({ ...(end.pinMap ?? {}) });
+  const targets = Object.values(map);
+  const clash = new Set(targets.filter((pad, index) => targets.indexOf(pad) !== index));
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{endLabel(end)} pin map</DialogTitle>
+          <DialogDescription>Each end pin lands on the connector pad of the same name unless you map it elsewhere.</DialogDescription>
+        </DialogHeader>
+        <div className="grid grid-cols-[4rem_1fr] items-center gap-2 text-sm">
+          {end.pins.map((pin) => (
+            <div key={pin} className="contents">
+              <span className="font-mono">{pin}</span>
+              <Select value={map[pin] ?? pin} onValueChange={(pad) => setMap((current) => {
+                const next = { ...current };
+                if (pad === pin) delete next[pin]; else next[pin] = pad;
+                return next;
+              })}>
+                <SelectTrigger aria-label={`Pad for end pin ${pin}`} className={`h-8 ${clash.has(map[pin]) ? "border-destructive" : ""}`}><SelectValue /></SelectTrigger>
+                <SelectContent>{pads.map((pad) => <SelectItem key={pad} value={pad}>{pad === pin ? `${pad} (same)` : pad}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          ))}
+        </div>
+        {clash.size > 0 && <p className="text-xs text-destructive">Each connector pad takes one end pin.</p>}
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button disabled={busy || clash.size > 0} onClick={async () => {
+            await onSave(Object.keys(map).length ? map : null);
+            onClose();
+          }}>Save</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function DetailsDialog({ harness, busy, onClose, onSave }: {
+  harness: SystemHarness; busy: boolean; onClose: () => void;
+  onSave: (fields: { name: string; label: string | null; cutLengthMm: number | null }) => Promise<unknown>;
+}) {
+  const [name, setName] = useState(harness.name);
+  const [label, setLabel] = useState(harness.label ?? "");
+  const [cut, setCut] = useState(harness.cutLengthMm ? String(harness.cutLengthMm) : "");
+  const cutValue = cut.trim() ? Number(cut) : null;
+  const invalid = !name.trim() || (cutValue !== null && !(cutValue > 0));
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Harness details</DialogTitle>
+          <DialogDescription>The label is the drawing or part number the cable is built to.</DialogDescription>
+        </DialogHeader>
+        <form className="grid gap-4" onSubmit={async (event) => {
+          event.preventDefault();
+          await onSave({ name: name.trim(), label: label.trim() || null, cutLengthMm: cutValue });
+          onClose();
+        }}>
+          <div className="grid gap-2"><Label htmlFor="harness-name">Name</Label>
+            <Input id="harness-name" value={name} maxLength={200} onChange={(event) => setName(event.target.value)} /></div>
+          <div className="grid gap-2"><Label htmlFor="harness-label">Label</Label>
+            <Input id="harness-label" value={label} maxLength={200} placeholder="e.g. WH-003" onChange={(event) => setLabel(event.target.value)} /></div>
+          <div className="grid gap-2"><Label htmlFor="harness-cut">Cut length (mm)</Label>
+            <Input id="harness-cut" inputMode="decimal" value={cut} placeholder="Optional" onChange={(event) => setCut(event.target.value)} /></div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={busy || invalid}>Save</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function HarnessEditor({ systemId, document, harness, etag, canEdit, findings, busy, run, onDeleted, onConverted }: HarnessEditorProps) {
+  const [draft, setDraft] = useState<DraftWire[] | null>(null);
+  const [dialog, setDialog] = useState<"details" | "delete" | { pinMap: string } | null>(null);
+  const [pair, setPair] = useState<{ from: string; to: string; generator: GeneratorKind }>(
+    { from: harness.ends[0]?.id ?? "", to: harness.ends[1]?.id ?? "", generator: "identity" });
+  const editable = canEdit && !harness.ends.some((end) => end.mates?.redacted);
+  const wires = draft ?? draftFromHarness(harness);
+  const problems = wireProblems(wires, harness);
+  const spliced = splices(wires);
+  const own = findings.filter((finding) => (finding.detail as { harnessId?: string } | null)?.harnessId === harness.id);
+  const isBusy = busy !== null;
+
+  const edit = (update: (rows: DraftWire[]) => DraftWire[]) => setDraft((current) => update(current ?? draftFromHarness(harness)));
+  const save = async () => {
+    if (!draft) return;
+    const done = await run("wires", () => replaceWires(systemId, etag, harness.id, draft.map(toInput)), "Wires saved");
+    if (done) setDraft(null);
+  };
+  const generate = async () => {
+    const proposal = await run("generate", () => generateWires(systemId, harness.id,
+      { fromEnd: pair.from, toEnd: pair.to, generator: pair.generator }));
+    if (proposal) edit((rows) => [...rows, ...proposal.wires.map((wire) => ({ ...wire, key: newKey() }))]);
+  };
+  const pinMapEnd = typeof dialog === "object" && dialog ? harness.ends.find((end) => end.id === dialog.pinMap) : undefined;
+
+  return (
+    <div className="space-y-5">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="flex items-center gap-2 truncate text-lg font-semibold"><Cable className="h-5 w-5" /> {harness.name}</h2>
+          <p className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            <span>{harness.ends.length} ends · {harness.wires.length} wires</span>
+            {harness.label && <Badge variant="outline">{harness.label}</Badge>}
+            {harness.cutLengthMm && <span>· cut {harness.cutLengthMm} mm</span>}
+          </p>
+        </div>
+        {editable && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Harness actions"><MoreHorizontal className="h-4 w-4" /></Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-52">
+              <DropdownMenuItem onSelect={() => setDialog("details")}><Pencil className="mr-2 h-4 w-4" /> Edit details</DropdownMenuItem>
+              <DropdownMenuItem disabled={!harness.linkable}
+                onSelect={() => void run("harness", () => harnessToLink(systemId, etag, harness.id), "Converted to a link")
+                  .then((done) => done && onConverted(done.body.id))}>
+                <Unlink className="mr-2 h-4 w-4" /> Convert to a link
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => setDialog("delete")}>
+                <Trash2 className="mr-2 h-4 w-4" /> Delete harness
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </header>
+
+      <FindingsAlert findings={own} />
+
+      <section className="space-y-2" aria-label="Ends">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold">Ends</h3>
+          {editable && (
+            <Button variant="outline" size="sm" disabled={isBusy}
+              onClick={() => void run("harness", () => addHarnessEnd(systemId, etag, harness.id, { pinCount: 2 }), "Generic end added")}>
+              <Plus className="mr-1 h-4 w-4" /> Generic end
+            </Button>
+          )}
+        </div>
+        <div className="overflow-x-auto rounded-md border">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+              <tr><th className="px-3 py-2 font-medium">End</th><th className="px-3 py-2 font-medium">Mates</th>
+                <th className="px-3 py-2 font-medium">Mating block</th><th className="px-3 py-2 font-medium">Pin map</th>
+                <th className="px-3 py-2 font-medium">Wires</th><th className="px-3 py-2" /></tr>
+            </thead>
+            <tbody>
+              {harness.ends.map((end) => {
+                const remapped = Object.keys(end.pinMap ?? {}).length;
+                return (
+                  <tr key={end.id} className="border-t">
+                    <td className="px-3 py-2 font-medium">{endLabel(end)}</td>
+                    <td className="px-3 py-2">{matesText(document, end)}</td>
+                    <td className="px-3 py-2 text-muted-foreground">{end.part ? "Catalog part" : `Generic · ${end.pinCount} pins`}</td>
+                    <td className="px-3 py-2">
+                      {editable && end.mates && !end.mates.redacted ? (
+                        <button type="button" className="underline-offset-2 hover:underline" onClick={() => setDialog({ pinMap: end.id })}>
+                          {remapped ? `${remapped} remapped` : "One to one"}
+                        </button>
+                      ) : remapped ? `${remapped} remapped` : "One to one"}
+                    </td>
+                    <td className="px-3 py-2 tabular-nums">{endWireCount(harness, end.id)}</td>
+                    <td className="px-3 py-2 text-right">
+                      {editable && (
+                        <span className="inline-flex gap-1">
+                          {end.mates && (
+                            <Button variant="ghost" size="sm" disabled={isBusy} aria-label={`Unmate ${endLabel(end)}`}
+                              onClick={() => void run("harness", () => updateHarnessEnd(systemId, etag, harness.id, end.id, { mates: null }), "End unmated")}>
+                              Unmate
+                            </Button>
+                          )}
+                          <Button variant="ghost" size="icon" className="h-8 w-8" disabled={isBusy || harness.ends.length === 1}
+                            aria-label={`Remove ${endLabel(end)}`}
+                            onClick={() => void run("harness", () => deleteHarnessEnd(systemId, etag, harness.id, end.id), "End removed")}>
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {editable && <p className="text-xs text-muted-foreground">Drag from a harness end on the diagram to a port to mate it, or from “Add an end” to add one.</p>}
+      </section>
+
+      <section className="space-y-2" aria-label="Wires">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">Wires{spliced.size > 0 && <span className="ml-2 font-normal text-muted-foreground">{spliced.size} spliced {spliced.size === 1 ? "pin" : "pins"}</span>}</h3>
+          {editable && harness.ends.length > 1 && (
+            <div className="flex flex-wrap items-center gap-1">
+              {(["from", "to"] as const).map((side) => (
+                <Select key={side} value={pair[side]} onValueChange={(value) => setPair((current) => ({ ...current, [side]: value }))}>
+                  <SelectTrigger aria-label={`Generate ${side} end`} className="h-8 w-24"><SelectValue /></SelectTrigger>
+                  <SelectContent>{harness.ends.map((end) => <SelectItem key={end.id} value={end.id}>{endLabel(end)}</SelectItem>)}</SelectContent>
+                </Select>
+              ))}
+              <Select value={pair.generator} onValueChange={(value) => setPair((current) => ({ ...current, generator: value as GeneratorKind }))}>
+                <SelectTrigger aria-label="Generator" className="h-8 w-32"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="identity">Same pin</SelectItem>
+                  <SelectItem value="reverse">Reversed</SelectItem>
+                  <SelectItem value="net_name">By net name</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button variant="outline" size="sm" disabled={isBusy || !pair.from || !pair.to || pair.from === pair.to} onClick={() => void generate()}>
+                <Wand2 className="mr-1 h-4 w-4" /> Generate
+              </Button>
+            </div>
+          )}
+        </div>
+        <div className="overflow-x-auto rounded-md border">
+          <table className="w-full min-w-[56rem] text-sm">
+            <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+              <tr><th className="px-2 py-2 font-medium">From</th><th className="px-2 py-2 font-medium">To</th>
+                <th className="px-2 py-2 font-medium">Signal</th><th className="px-2 py-2 font-medium">AWG</th>
+                <th className="px-2 py-2 font-medium">Colour</th><th className="px-2 py-2 font-medium">Nets</th><th className="px-2 py-2" /></tr>
+            </thead>
+            <tbody>
+              {wires.length === 0 && (
+                <tr><td colSpan={7} className="px-3 py-4 text-center text-muted-foreground">No wires yet.</td></tr>
+              )}
+              {wires.map((wire, index) => {
+                const saved = harness.wires.find((candidate) => candidate.id === wire.id);
+                const problem = problems.get(wire.key);
+                const update = (patch: Partial<DraftWire>) => edit((rows) => rows.map((row) => (row.key === wire.key ? { ...row, ...patch } : row)));
+                return (
+                  <tr key={wire.key} className="border-t align-top" data-testid="wire-row">
+                    <td className="px-2 py-1.5">
+                      {editable ? <EndPicker harness={harness} label={`Wire ${index + 1} from`} value={wire.from} onChange={(from) => update({ from })} />
+                        : <span>{endLabel(harness.ends.find((end) => end.id === wire.from.end)!)} · {wire.from.pin}</span>}
+                      {spliced.has(`${wire.from.end}#${wire.from.pin}`) && <Badge variant="outline" className="mt-1">splice</Badge>}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      {editable ? <EndPicker harness={harness} label={`Wire ${index + 1} to`} value={wire.to} onChange={(to) => update({ to })} />
+                        : <span>{endLabel(harness.ends.find((end) => end.id === wire.to.end)!)} · {wire.to.pin}</span>}
+                      {spliced.has(`${wire.to.end}#${wire.to.pin}`) && <Badge variant="outline" className="mt-1">splice</Badge>}
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <Input aria-label={`Wire ${index + 1} signal`} className="h-8" value={wire.signal ?? ""} disabled={!editable}
+                        onChange={(event) => update({ signal: event.target.value })} />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <Input aria-label={`Wire ${index + 1} gauge`} className="h-8 w-16" inputMode="numeric" disabled={!editable}
+                        value={wire.gaugeAwg ?? ""} onChange={(event) => update({ gaugeAwg: event.target.value ? Number(event.target.value) : null })} />
+                    </td>
+                    <td className="px-2 py-1.5">
+                      <Input aria-label={`Wire ${index + 1} colour`} className="h-8 w-24" disabled={!editable}
+                        value={wire.colour ?? ""} onChange={(event) => update({ colour: event.target.value })} />
+                    </td>
+                    <td className="px-2 py-1.5 font-mono text-[11px] text-muted-foreground">
+                      {saved ? `${(saved.netFrom ?? ["restricted"]).join(", ") || "—"} → ${(saved.netTo ?? ["restricted"]).join(", ") || "—"}` : "on save"}
+                      {problem && <p className="font-sans text-xs text-destructive">{problem}</p>}
+                    </td>
+                    <td className="px-2 py-1.5 text-right">
+                      {editable && (
+                        <Button variant="ghost" size="icon" className="h-8 w-8" aria-label={`Remove wire ${index + 1}`}
+                          onClick={() => edit((rows) => rows.filter((row) => row.key !== wire.key))}><X className="h-4 w-4" /></Button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {editable && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" size="sm" disabled={harness.ends.length < 2}
+              onClick={() => edit((rows) => [...rows, { key: newKey(), from: { end: harness.ends[0].id, pin: "" },
+                to: { end: harness.ends[1].id, pin: "" }, signal: "" }])}>
+              <Plus className="mr-1 h-4 w-4" /> Add wire
+            </Button>
+            {draft && (
+              <>
+                <span className="text-sm text-muted-foreground">Unsaved changes: {draft.length} wires</span>
+                <Button size="sm" disabled={isBusy || problems.size > 0} onClick={() => void save()}>Save wires</Button>
+                <Button size="sm" variant="ghost" onClick={() => setDraft(null)}>Discard</Button>
+              </>
+            )}
+          </div>
+        )}
+      </section>
+
+      {dialog === "details" && (
+        <DetailsDialog harness={harness} busy={isBusy} onClose={() => setDialog(null)}
+          onSave={(fields) => run("harness", () => updateHarness(systemId, etag, harness.id, fields), "Harness updated")} />
+      )}
+      {pinMapEnd && (
+        <PinMapDialog end={pinMapEnd} busy={isBusy} onClose={() => setDialog(null)}
+          pads={[...new Set([...pinMapEnd.pins, ...Object.values(pinMapEnd.pinMap ?? {})])].sort(comparePads)}
+          onSave={(pinMap) => run("harness", () => updateHarnessEnd(systemId, etag, harness.id, pinMapEnd.id, { pinMap }), "Pin map saved")} />
+      )}
+      <ConfirmDialog open={dialog === "delete"} onOpenChange={(open) => !open && setDialog(null)}
+        title={`Delete ${harness.name}?`} description="Its ends and wires are deleted. The boards are not changed."
+        confirmLabel="Delete harness" destructive
+        onConfirm={() => void run("harness", () => deleteHarness(systemId, etag, harness.id), "Harness deleted").then(() => onDeleted())} />
+    </div>
+  );
+}

@@ -17,25 +17,29 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { toast } from "sonner";
-import { ChevronDown, Layers, LayoutGrid, Lock, Share2 } from "lucide-react";
+import { Cable, ChevronDown, Layers, LayoutGrid, Lock, Share2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { createLink, getHierarchy, getLayout, putLayout, type LayoutPositions } from "@/lib/systems-api";
+import {
+  addHarnessEnd, createHarness, createLink, getHierarchy, getLayout, putLayout, updateHarnessEnd, type LayoutPositions,
+} from "@/lib/systems-api";
 import type { SystemHierarchy } from "@/types/system";
 import { cn } from "@/lib/utils";
 
 import {
+  ADD_END_HANDLE,
   HEADER_HEIGHT,
   NODE_WIDTH,
   ROW_HEIGHT,
   buildDiagram,
-  connectionToLink,
+  connectionIntent,
   handleId,
   nextLinkMode,
   subsystemContents,
   type DiagramEdgeData,
   type DiagramNodeData,
+  type HarnessNodeData,
   type InsideEntry,
   type LinkMode,
 } from "./diagram-model";
@@ -46,6 +50,58 @@ import { useSystemMutation } from "./use-system-mutation";
 
 type BoardNode = Node<DiagramNodeData & { height: number; onToggle: (id: string) => void; inside?: InsideEntry[] }, "board">;
 type WireEdge = Edge<DiagramEdgeData & { hovered: boolean }, "wire">;
+type CanvasNode = BoardNode | HarnessNode;
+type HarnessNode = Node<HarnessNodeData & { height: number; onOpen: (id: string) => void }, "harness">;
+
+/** CONTRACTS_P2 §17: a harness node, one row per end with its mating block as a cap on the port. */
+function HarnessNodeView({ id, data, isConnectable, selected }: NodeProps<HarnessNode>) {
+  const { harness, rows, height, onOpen } = data;
+  return (
+    <div className={cn("relative rounded-xl border-2 border-dashed bg-card text-card-foreground shadow-sm",
+      selected ? "border-primary" : "border-border")} style={{ width: NODE_WIDTH, height }} data-kind="harness">
+      <div className="flex items-center gap-2 border-b bg-muted/40 px-3" style={{ height: HEADER_HEIGHT }}>
+        <Cable className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold">{harness.name}</p>
+          <p className="truncate text-[11px] text-muted-foreground">
+            Harness · {harness.ends.length} {harness.ends.length === 1 ? "end" : "ends"} · {harness.wires.length} {harness.wires.length === 1 ? "wire" : "wires"}
+          </p>
+        </div>
+        <button type="button" className="nodrag nopan shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
+          aria-label={`Edit harness ${harness.name}`} onClick={(event) => {
+            event.stopPropagation();
+            onOpen(id);
+          }}>
+          Edit
+        </button>
+      </div>
+      {rows.map((row, index) => (
+        <div key={row.endId} className={cn("absolute inset-x-0 flex items-center gap-2 px-3 text-xs", index > 0 && "border-t border-border/50")}
+          style={{ top: HEADER_HEIGHT + index * ROW_HEIGHT, height: ROW_HEIGHT }}
+          title={row.partner ? `${row.label} mates ${row.partner}` : `${row.label} mates nothing yet: drag it to a port`}>
+          <span className="shrink-0 font-semibold">{row.label}</span>
+          <span className="shrink-0 rounded border bg-muted px-1 text-[10px] text-muted-foreground" data-testid="mating-cap">{row.block}</span>
+          <span className="min-w-0 flex-1 truncate text-right text-[11px] text-muted-foreground">
+            {row.partner ? `↔ ${row.partner}` : "not mated"}
+          </span>
+          {(["l", "r"] as const).map((side) => (
+            <Handle key={side} id={handleId(side, row.endId)} type="source" position={side === "l" ? Position.Left : Position.Right}
+              isConnectable={isConnectable && !row.partner} className={HANDLE_CLASS}
+              aria-label={`${harness.name} ${row.label} ${side === "l" ? "left" : "right"}`} />
+          ))}
+        </div>
+      ))}
+      <div className="absolute inset-x-0 flex items-center justify-center border-t text-[11px] text-muted-foreground"
+        style={{ top: HEADER_HEIGHT + rows.length * ROW_HEIGHT, height: ROW_HEIGHT }} title="Drag to a port to add an end">
+        + Add an end: drag to a port
+        {(["l", "r"] as const).map((side) => (
+          <Handle key={side} id={handleId(side, ADD_END_HANDLE)} type="source" position={side === "l" ? Position.Left : Position.Right}
+            isConnectable={isConnectable} className={HANDLE_CLASS} aria-label={`${harness.name} add end ${side === "l" ? "left" : "right"}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
 
 const HANDLE_CLASS = "!h-2 !w-2 !min-h-0 !min-w-0 !border !border-background !bg-primary";
 
@@ -177,7 +233,7 @@ function WireEdgeView({ id, sourceX, sourceY, targetX, targetY, data, selected }
   );
 }
 
-const NODE_TYPES = { board: BoardNodeView };
+const NODE_TYPES = { board: BoardNodeView, harness: HarnessNodeView };
 const EDGE_TYPES = { wire: WireEdgeView };
 
 interface NodeOverride {
@@ -258,7 +314,8 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
     return next;
   });
   const occurrences = tree?.key === treeKey ? tree.body.occurrences : [];
-  const nodes: BoardNode[] = diagram.nodes.map((node) => {
+  const openHarness = (id: string) => onNavigate("connectivity", { harness: id });
+  const boardNodes: BoardNode[] = diagram.nodes.map((node) => {
     const extra = overrides[node.id] ?? {};
     const inside = node.data.instance.kind === "assembly" ? subsystemContents(occurrences, node.id) : undefined;
     return {
@@ -273,6 +330,15 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
       height: node.height,
     };
   });
+  const harnessNodes: HarnessNode[] = diagram.harnesses.map((node) => {
+    const extra = overrides[node.id] ?? {};
+    return {
+      id: node.id, type: "harness", position: node.position,
+      data: { ...node.data, height: node.height, onOpen: openHarness },
+      measured: extra.measured, selected: extra.selected, dragging: extra.dragging, width: NODE_WIDTH, height: node.height,
+    };
+  });
+  const nodes: CanvasNode[] = [...boardNodes, ...harnessNodes];
   const edges: WireEdge[] = diagram.edges.map((edge) => ({
     id: edge.id,
     type: "wire",
@@ -291,19 +357,32 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
       })
       .catch(() => toast.error("Could not save the layout"));
 
-  const saveLayout = (moved: BoardNode) => {
+  const saveLayout = (moved: CanvasNode) => {
     void savePositions(Object.fromEntries(nodes.map((node) => [node.id, node.id === moved.id ? moved.position : node.position])));
   };
 
   const connect = (connection: Connection) => {
-    const request = connectionToLink(connection);
-    if ("error" in request) {
-      toast.error(request.error);
+    const intent = connectionIntent(connection, document, mode);
+    if (intent.kind === "error") {
+      toast.error(intent.error);
       return;
     }
-    const type = mode ?? undefined;
     setMode(null);
-    void run("link", () => createLink(systemId, etag, { ...request, type }),
+    if (intent.kind === "harness") {
+      void run("harness", () => createHarness(systemId, etag, { name: "Harness", ends: [intent.a, intent.b], identity: true }),
+        "Harness created").then((created) => created && openHarness(created.body.id));
+      return;
+    }
+    if (intent.kind === "add_end") {
+      void run("harness", () => addHarnessEnd(systemId, etag, intent.harnessId, intent.port), "End added");
+      return;
+    }
+    if (intent.kind === "mate_end") {
+      void run("harness", () => updateHarnessEnd(systemId, etag, intent.harnessId, intent.endId, { mates: intent.port }), "End mated");
+      return;
+    }
+    const type = mode === "b2b" ? "b2b" : undefined;
+    void run("link", () => createLink(systemId, etag, { a: intent.a, b: intent.b, type }),
       type === "b2b" ? "Board-to-board link created" : "Link created").then((created) => {
       if (created) {
         onNavigate("connectivity", { link: created.body.id });
@@ -327,6 +406,14 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
             onClick={() => setMode((current) => (current === "b2b" ? null : "b2b"))}
             title="Make the next link you draw board-to-board (B; Esc cancels)">
             {mode === "b2b" ? "Next link: board-to-board · Esc" : "Board-to-board (B)"}
+          </Button>
+        )}
+        {canEdit && (
+          <Button variant={mode === "harness" ? "default" : "outline"} size="sm" className="h-7" aria-pressed={mode === "harness"}
+            onClick={() => setMode((current) => (current === "harness" ? null : "harness"))}
+            title="Make the next connection you draw a harness (H; Esc cancels)">
+            <Cable className="mr-1 h-3.5 w-3.5" />
+            {mode === "harness" ? "Next: harness · Esc" : "Harness (H)"}
           </Button>
         )}
         {canEdit && arranged && (
@@ -361,7 +448,8 @@ export function DiagramTab({ systemId, document, etag, canEdit, reload, onNaviga
             onNodesChange={(changes) => setOverrides((current) => applyOverrides(current, changes))}
             onNodeDragStop={(_event, node) => saveLayout(node)}
             onConnect={connect}
-            onEdgeClick={(_event, edge) => onNavigate("connectivity", { link: edge.id })}
+            onEdgeClick={(_event, edge) => (edge.data?.harnessId
+              ? openHarness(edge.data.harnessId) : onNavigate("connectivity", { link: edge.id }))}
             onEdgeMouseEnter={(_event, edge) => setHovered(edge.id)}
             onEdgeMouseLeave={() => setHovered(null)}
             fitView

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { MoreHorizontal, Pencil, Plus, Trash2, Wand2 } from "lucide-react";
+import { Cable, MoreHorizontal, Pencil, Plus, Trash2, Wand2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { deleteLink, getInstanceInterface, replaceRows, updateLink } from "@/lib/systems-api";
+import { deleteLink, getInstanceInterface, harnessFromLabel, linkToHarness, replaceRows, updateLink } from "@/lib/systems-api";
 import type { Finding, LinkType, SystemDocument, SystemInstance, SystemLink } from "@/types/system";
 
 import { FindingsAlert } from "./findings-ui";
@@ -227,9 +227,11 @@ interface LinkEditorProps {
   busy: string | null;
   run: Mutate;
   onDeleted: () => void;
+  /** Opens a harness this link was just converted into (CONTRACTS_P2 §16.1). */
+  onHarness?: (harnessId: string) => void;
 }
 
-export function LinkEditor({ systemId, document, link, etag, canEdit, findings, busy, run, onDeleted }: LinkEditorProps) {
+export function LinkEditor({ systemId, document, link, etag, canEdit, findings, busy, run, onDeleted, onHarness }: LinkEditorProps) {
   const pins = useEndPins(systemId, link, document.instances);
   const [draft, setDraft] = useState<DraftRow[] | null>(null);
   const [dialog, setDialog] = useState<"details" | "delete" | "generate" | null>(null);
@@ -323,6 +325,18 @@ export function LinkEditor({ systemId, document, link, etag, canEdit, findings, 
                 <DropdownMenuItem onSelect={() => setDialog("details")}>
                   <Pencil className="mr-2 h-4 w-4" /> Edit details
                 </DropdownMenuItem>
+                {link.type !== "b2b" && (
+                  <DropdownMenuItem onSelect={() => void run("link", () => linkToHarness(systemId, etag, link.id), "Converted to a harness")
+                    .then((done) => done && onHarness?.(done.body.id))}>
+                    <Cable className="mr-2 h-4 w-4" /> Convert to a harness
+                  </DropdownMenuItem>
+                )}
+                {link.harness && link.type !== "b2b" && (
+                  <DropdownMenuItem onSelect={() => void run("link", () => harnessFromLabel(systemId, etag, link.harness!),
+                    `Harness ${link.harness} created`).then((done) => done && onHarness?.(done.body.id))}>
+                    <Cable className="mr-2 h-4 w-4" /> Make harness {link.harness} from its links
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => setDialog("delete")}>
                   <Trash2 className="mr-2 h-4 w-4" /> Delete link
