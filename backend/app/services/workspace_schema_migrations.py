@@ -43,6 +43,7 @@ from app.services.workspace_migrations import m034_system_child_reviews
 from app.services.workspace_migrations import m035_system_optional_rules
 from app.services.workspace_migrations import m036_system_port_mating
 from app.services.workspace_migrations import m037_system_link_types
+from app.services.workspace_migrations import m038_system_harnesses
 from app.services.trackers import migrations as tracker_migrations
 
 
@@ -84,6 +85,7 @@ MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (35, "system_optional_rules", m035_system_optional_rules.migrate),
     (36, "system_port_mating", m036_system_port_mating.migrate),
     (37, "system_link_types", m037_system_link_types.migrate),
+    (38, "system_harnesses", m038_system_harnesses.migrate),
 )
 
 

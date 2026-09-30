@@ -1,0 +1,118 @@
+"""Harness rules that need no database (CONTRACTS_P2 §17).
+
+An end's *pins* are the harness-side names of its mating block. While the
+block is Generic they are the mated connector's pads; ``pinMap`` sends an end
+pin to a different pad (null = identity). Wires join end pins; their net
+baselines are the nets of the pads those pins map to, captured like row nets.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Mapping, Optional, Sequence
+
+from app.services.systems import exposure, system_nets
+from app.services.systems.drift import pad_sort_key
+from app.services.systems.store import Invalid, SystemStore
+
+Component = Optional[Mapping[str, Any]]
+
+
+def end_pins(end: Mapping[str, Any], component: Component) -> list[str]:
+    """The end's pin names, natural order."""
+    if component is None:
+        names = {str(n) for n in range(1, int(end["pin_count"]) + 1)}
+    else:
+        names = set(exposure.pins_by_pad(component))
+    names |= set((end.get("pin_map") or {}).keys())
+    return sorted(names, key=pad_sort_key)
+
+
+def pin_facts(end: Mapping[str, Any], component: Component) -> dict[str, dict]:
+    """``end pin -> facts of the pad it maps to`` (nets, names); empty facts while unmated."""
+    pads = exposure.pins_by_pad(component) if component is not None else {}
+    out = {}
+    for pin in end_pins(end, component):
+        pad = SystemStore.end_pad(end, pin)
+        if component is not None and pad not in pads:
+            continue  # mapped to a pad the connector does not have (SYS-V04)
+        out[pin] = dict(pads.get(pad) or {"pad": pad, "nets": []})
+    return out
+
+
+def capture(wires: Sequence[Mapping[str, Any]], ends: Mapping[str, Mapping[str, Any]],
+            components: Mapping[str, Component]) -> list[dict]:
+    """Validate end pins and capture ``netFrom``/``netTo`` at the mated baselines (§17.2)."""
+    facts = {end_id: pin_facts(end, components.get(end_id)) for end_id, end in ends.items()}
+    out = []
+    for wire in wires:
+        item = dict(wire)
+        for side, column in (("from", "netFrom"), ("to", "netTo")):
+            point = wire.get(side) or {}
+            end_id, pin = point.get("end"), str(point.get("pin") or "")
+            if end_id not in ends:
+                raise Invalid("every wire joins two ends of this harness")
+            if pin not in facts[end_id]:
+                raise Invalid(f"pin {pin} does not exist on end {ends[end_id]['ordinal'] + 1}")
+            item[column] = sorted(set(facts[end_id][pin].get("nets") or []))
+        out.append(item)
+    return out
+
+
+def wires_from_rows(link: Mapping[str, Any], end_a: str, end_b: str) -> list[dict]:
+    """A link's rows as wires between two ends with identity pin maps (row ID kept in ``label``)."""
+    return [{"from": {"end": end_a, "pin": row["pin_a"]}, "to": {"end": end_b, "pin": row["pin_b"]},
+             "signal": row["signal"], "label": row["id"], "netFrom": list(row["net_a"]), "netTo": list(row["net_b"])}
+            for row in sorted(link["rows"], key=lambda r: (pad_sort_key(r["pin_a"]), pad_sort_key(r["pin_b"])))]
+
+
+def is_linkable(harness: Mapping[str, Any]) -> bool:
+    """§16.1: two ends, identity pin maps, and no end pin carrying two wires."""
+    if len(harness["ends"]) != 2 or any(end.get("pin_map") for end in harness["ends"]):
+        return False
+    used = [(w[f"{side}_end"], w[f"{side}_pin"]) for w in harness["wires"] for side in ("from", "to")]
+    return len(used) == len(set(used))
+
+
+def findings(harness: Mapping[str, Any], components: Mapping[str, Component],
+             overrides: Mapping[str, Mapping[str, str]], optional_rules: Sequence[str],
+             finding) -> list[dict]:
+    """§17.2 validation for one harness: V01, V03, V04 per end and wire, V09 (opt-in) and V10 per wire.
+
+    ``finding`` is ``validation._finding``; harness findings carry ``harnessId``/``endId``/``wireId``
+    in ``detail`` and the wire ID as ``rowId`` so the UI can place them.
+    """
+    out: list[dict] = []
+    ends = {end["id"]: end for end in harness["ends"]}
+    for end in harness["ends"]:
+        if not end["mates_instance_id"] or end["id"] not in components:
+            continue  # unmated, or its board's interface is not extracted yet (not evaluated)
+        component = components[end["id"]]
+        common = {"instance_id": end["mates_instance_id"], "reference": (end["mates_port"] or {}).get("reference"),
+                  "detail": {"harnessId": harness["id"], "endId": end["id"]}}
+        override = (overrides.get(end["mates_instance_id"]) or {}).get((component or {}).get("portKey"))
+        if component is None or not exposure.is_exposed(component, override):
+            out.append(finding("SYS-V03", **common))
+            continue
+        pads = exposure.pins_by_pad(component)
+        for pin, pad in sorted((end.get("pin_map") or {}).items()):
+            if pad not in pads:
+                out.append(finding("SYS-V04", **{**common, "pin": pad}))
+    seen: dict[frozenset, str] = {}
+    for wire in harness["wires"]:
+        key = frozenset({(wire["from_end"], wire["from_pin"]), (wire["to_end"], wire["to_pin"])})
+        detail = {"harnessId": harness["id"], "wireId": wire["id"]}
+        if key in seen:
+            out.append(finding("SYS-V01", row_id=wire["id"], detail={**detail, "duplicateOf": seen[key]}))
+        seen.setdefault(key, wire["id"])
+        net_from, net_to = list(wire["net_from"]), list(wire["net_to"])
+        if "SYS-V09" in optional_rules and system_nets.name_mismatch(net_from, net_to):
+            out.append(finding("SYS-V09", row_id=wire["id"], detail={**detail, "netA": net_from, "netB": net_to}))
+        power = []
+        for side in ("from", "to"):
+            end, component = ends[wire[f"{side}_end"]], components.get(wire[f"{side}_end"])
+            pad = SystemStore.end_pad(end, wire[f"{side}_pin"])
+            power.append((exposure.pins_by_pad(component).get(pad) or {}).get("powerNet") if component else None)
+        if system_nets.power_meets_signal(power[0], net_from, power[1], net_to):
+            out.append(finding("SYS-V10", row_id=wire["id"],
+                               detail={**detail, "powerSide": "from" if power[0] else "to", "netA": net_from, "netB": net_to}))
+    return out

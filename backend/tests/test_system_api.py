@@ -603,6 +603,34 @@ class SystemApiTest(unittest.TestCase):
         document = self.call("GET", f"/{sid}").json
         self.assertEqual(document["links"][0]["rows"][0]["signal"], "SCK")
 
+    def test_harness_routes(self) -> None:
+        """SB2-14 (CONTRACTS_P2 §17.3): create with identity wires, wires, generate, and back to a link."""
+        sid, etag, obc, pay = self.two_boards()
+        ends = [{"instanceId": obc, "portKey": self.port_key("prj_obc", "J7")},
+                {"instanceId": pay, "portKey": self.port_key("prj_pay", "J4")}]
+        self.assertEqual(self.call("POST", f"/{sid}/harnesses", body={"ends": ends}).status, 428)
+        created = self.mutate("POST", f"/{sid}/harnesses", etag, expect=201,
+                              body={"name": "WH-001", "ends": ends, "identity": True})
+        harness = created.json
+        self.assertEqual(len(harness["ends"]), 2)
+        self.assertTrue(harness["wires"])
+        a, b = harness["ends"][0]["id"], harness["ends"][1]["id"]
+        generated = self.call("POST", f"/{sid}/harnesses/{harness['id']}/generate",
+                              body={"fromEnd": a, "toEnd": b, "generator": "identity"})
+        self.assertEqual((generated.status, generated.json["wires"]), (200, []))
+        first = harness["wires"][0]
+        replaced = self.mutate("PUT", f"/{sid}/harnesses/{harness['id']}/wires", created.headers["etag"],
+                               body=[{"id": first["id"], "from": first["from"], "to": first["to"], "gaugeAwg": 26}])
+        self.assertEqual([w["gaugeAwg"] for w in replaced.json["wires"]], [26])
+        listed = self.call("GET", f"/{sid}/harnesses").json
+        self.assertEqual([h["id"] for h in listed], [harness["id"]])
+        link = self.mutate("POST", f"/{sid}/harnesses/{harness['id']}/to-link", replaced.headers["etag"], expect=201)
+        self.assertEqual(len(link.json["rows"]), 1)
+        self.assertEqual(self.call("GET", f"/{sid}").json["harnesses"], [])
+        back = self.mutate("POST", f"/{sid}/links/{link.json['id']}/to-harness", link.headers["etag"], expect=201)
+        self.assertEqual(len(back.json["wires"]), 1)
+        self.mutate("DELETE", f"/{sid}/harnesses/{back.json['id']}", back.headers["etag"], expect=204)
+
     def test_update_and_delete_link(self) -> None:
         sid, etag, obc, pay = self.two_boards()
         created = self.link_j7_j4(sid, etag, obc, pay)

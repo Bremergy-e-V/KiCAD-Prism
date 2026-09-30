@@ -13,7 +13,7 @@ from typing import Any, Callable, List, Literal, Optional, TypeVar
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.security import AuthenticatedUser, require_designer, require_viewer
 from app.services.systems import csv_import
@@ -420,6 +420,180 @@ async def clear_mating(
         _caller(user), system_id, version, instance_id, port_key, None,
     ))
     return _respond(result, response)
+
+
+# ---------------------------------------------------------------------------
+# Harnesses (CONTRACTS_P2 §17.3)
+
+
+class HarnessEndRequest(BaseModel):
+    instanceId: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    portKey: Optional[str] = Field(default=None, min_length=1, max_length=2000)
+    pinCount: Optional[int] = Field(default=None, ge=1, le=1000)
+
+
+class CreateHarnessRequest(BaseModel):
+    name: str = Field(default="Harness", min_length=1, max_length=200)
+    label: Optional[str] = Field(default=None, max_length=200)
+    ends: list[HarnessEndRequest] = Field(default_factory=lambda: [HarnessEndRequest()], min_length=1, max_length=32)
+    identity: bool = False
+
+
+class UpdateHarnessRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    label: Optional[str] = Field(default=None, max_length=200)
+    cutLengthMm: Optional[float] = Field(default=None, gt=0)
+    serviceAllowancePct: Optional[float] = Field(default=None, ge=0, le=100)
+
+
+class MatesRequest(BaseModel):
+    instanceId: str = Field(min_length=1, max_length=200)
+    portKey: str = Field(min_length=1, max_length=2000)
+
+
+class UpdateHarnessEndRequest(BaseModel):
+    mates: Optional[MatesRequest] = None
+    pinMap: Optional[dict[str, str]] = None
+    bootMm: Optional[float] = Field(default=None, ge=0)
+
+
+class WirePointRequest(BaseModel):
+    end: str = Field(min_length=1, max_length=100)
+    pin: str = Field(min_length=1, max_length=100)
+
+
+class WireRequest(BaseModel):
+    id: Optional[str] = Field(default=None, max_length=100)
+    source: WirePointRequest = Field(alias="from")
+    target: WirePointRequest = Field(alias="to")
+    signal: str = Field(default="", max_length=200)
+    gaugeAwg: Optional[int] = Field(default=None, ge=0, le=40)
+    colour: Optional[str] = Field(default=None, max_length=40)
+    label: Optional[str] = Field(default=None, max_length=100)
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    def as_input(self) -> dict:
+        return {"id": self.id, "from": self.source.model_dump(), "to": self.target.model_dump(), "signal": self.signal,
+                "gaugeAwg": self.gaugeAwg, "colour": self.colour, "label": self.label}
+
+
+class GenerateWiresRequest(BaseModel):
+    fromEnd: str = Field(min_length=1, max_length=100)
+    toEnd: str = Field(min_length=1, max_length=100)
+    generator: Literal["identity", "reverse", "offset", "net_name"]
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class HarnessFromLabelRequest(BaseModel):
+    label: str = Field(min_length=1, max_length=200)
+
+
+@router.get("/{system_id}/harnesses")
+async def list_harnesses(system_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    return await _run(system_id, lambda: system_service.service.list_harnesses(_caller(user), system_id))
+
+
+@router.post("/{system_id}/harnesses", dependencies=[Depends(require_designer)])
+async def create_harness(system_id: str, body: CreateHarnessRequest, request: Request, response: Response,
+                         user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    fields = body.model_dump()
+    result = await _run(system_id, lambda: system_service.service.create_harness(_caller(user), system_id, version, fields))
+    return _respond(result, response, 201)
+
+
+@router.post("/{system_id}/harnesses/from-label", dependencies=[Depends(require_designer)])
+async def harness_from_label(system_id: str, body: HarnessFromLabelRequest, request: Request, response: Response,
+                             user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.harness_from_label(
+        _caller(user), system_id, version, body.label))
+    return _respond(result, response, 201)
+
+
+@router.patch("/{system_id}/harnesses/{harness_id}", dependencies=[Depends(require_designer)])
+async def update_harness(system_id: str, harness_id: str, body: UpdateHarnessRequest, request: Request,
+                         response: Response, user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    fields = {key: getattr(body, key) for key in body.model_fields_set}
+    result = await _run(system_id, lambda: system_service.service.update_harness(
+        _caller(user), system_id, version, harness_id, fields))
+    return _respond(result, response)
+
+
+@router.delete("/{system_id}/harnesses/{harness_id}", dependencies=[Depends(require_designer)])
+async def delete_harness(system_id: str, harness_id: str, request: Request,
+                         user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.delete_harness(_caller(user), system_id, version, harness_id))
+    return _no_content(result)
+
+
+@router.post("/{system_id}/harnesses/{harness_id}/ends", dependencies=[Depends(require_designer)])
+async def add_harness_end(system_id: str, harness_id: str, body: HarnessEndRequest, request: Request,
+                          response: Response, user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    fields = body.model_dump()
+    result = await _run(system_id, lambda: system_service.service.add_harness_end(
+        _caller(user), system_id, version, harness_id, fields))
+    return _respond(result, response, 201)
+
+
+@router.patch("/{system_id}/harnesses/{harness_id}/ends/{end_id}", dependencies=[Depends(require_designer)])
+async def update_harness_end(system_id: str, harness_id: str, end_id: str, body: UpdateHarnessEndRequest,
+                             request: Request, response: Response, user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    fields = {key: getattr(body, key) for key in body.model_fields_set}
+    if "mates" in fields and fields["mates"] is not None:
+        fields["mates"] = body.mates.model_dump()
+    result = await _run(system_id, lambda: system_service.service.update_harness_end(
+        _caller(user), system_id, version, harness_id, end_id, fields))
+    return _respond(result, response)
+
+
+@router.delete("/{system_id}/harnesses/{harness_id}/ends/{end_id}", dependencies=[Depends(require_designer)])
+async def delete_harness_end(system_id: str, harness_id: str, end_id: str, request: Request, response: Response,
+                             user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.delete_harness_end(
+        _caller(user), system_id, version, harness_id, end_id))
+    return _respond(result, response)
+
+
+@router.put("/{system_id}/harnesses/{harness_id}/wires", dependencies=[Depends(require_designer)])
+async def replace_wires(system_id: str, harness_id: str, body: list[WireRequest], request: Request,
+                        response: Response, user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    wires = [wire.as_input() for wire in body]
+    result = await _run(system_id, lambda: system_service.service.replace_wires(
+        _caller(user), system_id, version, harness_id, wires))
+    return _respond(result, response)
+
+
+@router.post("/{system_id}/harnesses/{harness_id}/generate")
+async def generate_wires(system_id: str, harness_id: str, body: GenerateWiresRequest,
+                         user: AuthenticatedUser = Depends(require_viewer)):
+    return await _run(system_id, lambda: system_service.service.generate_wires(
+        _caller(user), system_id, harness_id, body.fromEnd, body.toEnd, body.generator, body.options))
+
+
+@router.post("/{system_id}/harnesses/{harness_id}/to-link", dependencies=[Depends(require_designer)])
+async def harness_to_link(system_id: str, harness_id: str, request: Request, response: Response,
+                          user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.harness_to_link(
+        _caller(user), system_id, version, harness_id))
+    return _respond(result, response, 201)
+
+
+@router.post("/{system_id}/links/{link_id}/to-harness", dependencies=[Depends(require_designer)])
+async def link_to_harness(system_id: str, link_id: str, request: Request, response: Response,
+                          user: AuthenticatedUser = Depends(require_viewer)):
+    version = _expected_version(request, system_id)
+    result = await _run(system_id, lambda: system_service.service.link_to_harness(
+        _caller(user), system_id, version, link_id))
+    return _respond(result, response, 201)
 
 
 # ---------------------------------------------------------------------------

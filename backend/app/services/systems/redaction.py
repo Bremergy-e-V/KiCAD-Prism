@@ -37,6 +37,25 @@ def redact_link(link: Mapping[str, Any], restricted: Collection[str]) -> dict:
     return out
 
 
+def redact_harness(harness: Mapping[str, Any], restricted: Collection[str]) -> dict:
+    """CONTRACTS_P2 §17: an end on a hidden board keeps its place but not its connector or nets."""
+    out = copy.deepcopy(dict(harness))
+    if not restricted:
+        return out
+    hidden = {end["id"] for end in out["ends"] if end["mates"] and end["mates"]["instanceId"] in restricted}
+    for end in out["ends"]:
+        if end["id"] in hidden:
+            end["mates"] = {"instanceId": end["mates"]["instanceId"], "portKey": None, "port": None,
+                            "redacted": True, "resolved": None}
+            end["pins"] = []
+    for wire in out["wires"]:
+        sides = [side for side in ("from", "to") if wire[side]["end"] in hidden]
+        for side in sides:
+            wire["netFrom" if side == "from" else "netTo"] = None
+        wire["redactedEnds"] = sorted(set(wire.get("redactedEnds") or []) | set(sides))
+    return out
+
+
 def redact_findings(report: Mapping[str, Any], restricted: Collection[str]) -> dict:
     out = copy.deepcopy(dict(report))
     for finding in out.get("findings") or []:
@@ -63,6 +82,7 @@ def redact_document(document: Mapping[str, Any], restricted: Collection[str]) ->
         for e in out.get("exports") or []
     ]
     out["links"] = [redact_link(link, restricted) for link in out["links"]]
+    out["harnesses"] = [redact_harness(h, restricted) for h in out.get("harnesses") or []]
     if out.get("validation") is not None:
         out["validation"] = redact_findings(out["validation"], restricted)
     return out
