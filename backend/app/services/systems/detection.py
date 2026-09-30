@@ -95,7 +95,7 @@ def apply_evaluation(
     evaluation replaces both. Returns ``(outcome, review_id)``.
     """
 
-    links = store.list_links(instance["system_id"])
+    links = store.drift_links(instance["system_id"])  # harness ends drift like link ends (P2 §17.2)
     outcome = drift.evaluate(links, instance["id"], candidate)
     open_review = store.open_source_review(instance["id"])
     if open_review is not None:

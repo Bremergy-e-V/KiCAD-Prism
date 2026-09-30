@@ -49,6 +49,11 @@ def _finding(rule: str, *, instance_id: Optional[str] = None, link_id: Optional[
             "detail": dict(detail or {})}
 
 
+def make_finding(rule: str, **fields: Any) -> dict:
+    """``_finding`` for rule modules outside this file (harnesses, CONTRACTS_P2 §17.2)."""
+    return _finding(rule, **fields)
+
+
 def _sort_key(finding: Mapping[str, Any]) -> tuple:
     return (_SEVERITY_ORDER[finding["severity"]], finding["rule"], finding["linkId"] or "",
             finding["rowId"] or "", finding["end"] or "", finding["instanceId"] or "",

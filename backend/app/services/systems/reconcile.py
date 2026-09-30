@@ -64,7 +64,7 @@ def is_stale(store: SystemStore, review: Mapping[str, Any]) -> bool:
     recorded = (review.get("pending_changes") or {}).get("basis")
     if recorded is None:
         return False  # opened before reviews recorded their basis
-    return drift.basis(store.list_links(review["system_id"]), review["instance_id"]) != recorded
+    return drift.basis(store.drift_links(review["system_id"]), review["instance_id"]) != recorded
 
 
 def candidate_interface(store: SystemStore, review: Mapping[str, Any],
@@ -163,7 +163,7 @@ def apply_review(store: SystemStore, change: Mutation, review: Mapping[str, Any]
     """§7.1: atomically apply every decision and move the baseline to ``to_commit``."""
 
     pending = review.get("pending_changes") or {}
-    links = {link["id"]: link for link in store.list_links(change.system_id)}
+    links = {link["id"]: link for link in store.drift_links(change.system_id)}
     for update in pending.get("portUpdates") or []:
         if update["linkId"] in links:
             store.set_link_port(change, update["linkId"], update["end"], update["port"])
@@ -171,7 +171,7 @@ def apply_review(store: SystemStore, change: Mutation, review: Mapping[str, Any]
         if silent["linkId"] in links:
             change.audit(silent["kind"], {"instanceId": review["instance_id"], **silent})
 
-    links = {link["id"]: link for link in store.list_links(change.system_id)}
+    links = {link["id"]: link for link in store.drift_links(change.system_id)}
     for item in review["items"]:
         link = links.get(item["link_id"])
         if link is None:

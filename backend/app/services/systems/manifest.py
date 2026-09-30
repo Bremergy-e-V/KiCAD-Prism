@@ -33,6 +33,16 @@ def _port(baseline: Mapping[str, Any]) -> dict:
     }
 
 
+def _manifest_end(kinds: Mapping[str, str], instance_id: str, baseline: Mapping[str, Any]) -> dict:
+    """A link or harness-end mate: a port end, or an export end on an assembly (§6.1)."""
+    port = _port(baseline)
+    if kinds.get(instance_id, "board") == "assembly":
+        return {"instanceId": instance_id, "exportId": port["portKey"],
+                "export": {"exportId": port["portKey"], "name": port["reference"], "reference": port["reference"],
+                           "libId": port["libId"], "footprint": port["footprint"], "pinCount": port["pinCount"]}}
+    return {"instanceId": instance_id, "portKey": port["portKey"], "port": port}
+
+
 def build(
     store: SystemStore, system_id: str, *, created_by: str, created_at: Any,
     snapshot: Optional[Mapping[str, str]] = None,
@@ -70,16 +80,7 @@ def build(
     kinds = {i["id"]: i["kind"] for i in store.list_instances(system_id, kinds=SystemStore.ALL_KINDS)}
     links = []
     for link in sorted(store.list_links(system_id), key=lambda item: item["id"]):
-        ends = {}
-        for end in ("a", "b"):
-            port = _port(link[f"{end}_port"])
-            if kinds.get(link[f"{end}_instance_id"], "board") == "assembly":
-                ends[end] = {"instanceId": link[f"{end}_instance_id"], "exportId": port["portKey"],
-                             "export": {"exportId": port["portKey"], "name": port["reference"],
-                                        "reference": port["reference"], "libId": port["libId"],
-                                        "footprint": port["footprint"], "pinCount": port["pinCount"]}}
-            else:
-                ends[end] = {"instanceId": link[f"{end}_instance_id"], "portKey": port["portKey"], "port": port}
+        ends = {end: _manifest_end(kinds, link[f"{end}_instance_id"], link[f"{end}_port"]) for end in ("a", "b")}
         links.append({
             "id": link["id"], "name": link["name"], "type": link.get("type") or "unspecified",
             "stackHeightMm": link.get("stack_height_mm"),
@@ -98,6 +99,23 @@ def build(
             target = {"instanceId": export["target_instance_id"], "exportId": export["target_export_id"]}
         exports.append({"id": export["id"], "name": export["name"], "description": export["description"],
                         "target": target})
+    harnesses = [{
+        "id": harness["id"], "name": harness["name"], "label": harness["label"],
+        "cutLengthMm": harness["cut_length_mm"], "serviceAllowancePct": harness["service_allowance_pct"],
+        "ends": [{"id": end["id"], "ordinal": end["ordinal"],
+                  "mates": (_manifest_end(kinds, end["mates_instance_id"], end["mates_port"])
+                            if end["mates_instance_id"] and end["mates_port"] else None),
+                  "part": ({"componentId": end["catalog_component_id"], "revisionId": end["catalog_revision_id"]}
+                           if end["catalog_component_id"] else None),
+                  "pinCount": end["pin_count"], "pinMap": end["pin_map"], "bootMm": end["boot_mm"]}
+                 for end in harness["ends"]],
+        "wires": [{"id": wire["id"], "from": {"end": wire["from_end"], "pin": wire["from_pin"]},
+                   "to": {"end": wire["to_end"], "pin": wire["to_pin"]}, "signal": wire["signal"],
+                   "gaugeAwg": wire["gauge_awg"], "colour": wire["colour"], "label": wire["label"],
+                   "netFrom": sorted(wire["net_from"]), "netTo": sorted(wire["net_to"])}
+                  for wire in sorted(harness["wires"], key=lambda w: w["id"])],
+        "nodes": [],
+    } for harness in sorted(store.list_harnesses(system_id), key=lambda h: h["id"])]
     mating = [
         {"instanceId": instance["id"], "portKey": port_key, "mode": record["mode"],
          "frame": {"axis": record["axis"], "quarterTurns": record["quarterTurns"]},
@@ -117,7 +135,7 @@ def build(
         "instances": instances,
         "exports": exports,
         "links": links,
-        "harnesses": [],
+        "harnesses": harnesses,
         "mating": mating,
         "placement": {"poses": [], "drivingMates": []},
         "layout": {"positions": {key: {"x": float(p["x"]), "y": float(p["y"])}
@@ -145,7 +163,9 @@ def import_manifest(
     Runs inside the caller's transaction; a clash with an existing ID fails it.
     """
 
-    unsupported = [name for name in ("harnesses",) if getattr(manifest, name)]
+    unsupported = []
+    if any(harness.nodes for harness in manifest.harnesses):
+        unsupported.append("harness nodes")
     if manifest.placement.poses or manifest.placement.drivingMates:
         unsupported.append("placement")
     if unsupported:
@@ -191,6 +211,22 @@ def import_manifest(
                 store.create_export(change, name=export.name, description=export.description,
                                     instance_id=target.instanceId, child_export_id=target.exportId,
                                     export_id=export.id)
+        for harness in manifest.harnesses:
+            store.create_harness(change, name=harness.name, label=harness.label, harness_id=harness.id,
+                                 cut_length_mm=harness.cutLengthMm, service_allowance_pct=harness.serviceAllowancePct)
+            for end in sorted(harness.ends, key=lambda e: e.ordinal):
+                store.add_harness_end(
+                    change, harness.id, end_id=end.id, ordinal=end.ordinal, pin_count=end.pinCount,
+                    mates_instance_id=end.mates.instanceId if end.mates else None,
+                    mates_port=_end_baseline(end.mates) if end.mates else None,
+                    pin_map=end.pinMap, boot_mm=end.bootMm,
+                    catalog_component_id=end.part.componentId if end.part else None,
+                    catalog_revision_id=end.part.revisionId if end.part else None)
+            store.replace_wires(change, harness.id, [
+                {"id": w.id, "from": {"end": w.source.end, "pin": w.source.pin},
+                 "to": {"end": w.target.end, "pin": w.target.pin}, "signal": w.signal, "gaugeAwg": w.gaugeAwg,
+                 "colour": w.colour, "label": w.label, "netFrom": w.netFrom, "netTo": w.netTo}
+                for w in harness.wires], keep_new_ids=True)
         for record in manifest.mating:
             store.set_mating(change, record.instanceId, record.portKey, {
                 "mode": record.mode, "axis": record.frame.axis, "quarterTurns": record.frame.quarterTurns,

@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.14 · 2026-09-30 · tickets SB2-00 to SB2-13.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.15 · 2026-09-30 · tickets SB2-00 to SB2-14.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -645,6 +645,15 @@ Errors: 409 `mating_not_inferable` when confirming a `low` inference (use overri
 
 All take If-Match and bump the system version. Audits `harness_created`, `harness_updated`, `harness_deleted`.
 
+**As built (SB2-14).**
+- `POST …/harnesses` takes `{name, label?, ends: [{instanceId, portKey} | {pinCount}], identity?}`; `identity` needs two mated ends and runs the `identity` generator. An unmated end's pins are `1…pinCount`.
+- `POST …/harnesses/{hid}/generate` returns `{wires, skipped}` for `{fromEnd, toEnd, generator, options}`; skipped pairs carry `existing` or `unconnected`.
+- Documents gain `harnesses[]`: `{id, name, label, cutLengthMm, serviceAllowancePct, linkable, ends: [{id, ordinal, mates: {instanceId, portKey, port, resolved, redacted} | null, part, pinCount, pinMap, bootMm, pins}], wires: [{id, from, to, signal, gaugeAwg, colour, label, netFrom, netTo, redactedEnds}]}`. An end on a hidden board keeps its place with `mates.port` null, no pins, and that side's wire nets null. Editing a harness with such an end is 404.
+- Drift reads each mated end as a link-shaped view (`store.drift_links`): the item's `linkId` is the end ID, `rowIds` are wire IDs and `pins` are connector pads. Accept rewrites the wire's net on that side; Remap writes the end's `pinMap`; Remove rows deletes wires; a port update re-mates the end.
+- Re-mating an end or editing its pin map recaptures every wire's nets. Converting links keeps their accepted row baselines as wire baselines.
+- Harness findings carry `detail.harnessId` with `endId` or `wireId` (and `rowId` = the wire ID); duplicate wires report `duplicateOf`.
+- Manifests export and import harnesses; `nodes` stay empty and an import carrying nodes is refused until M5.
+
 ### 17.4 ICD and CSV (SB2-19)
 
 - ICD gains a **Harnesses** section per harness: ends (mated connector, block part or "Generic", pin map), the wire table (from end/pin/net → to end/pin/net, signal, gauge, colour, label) and splices. A `b2b` table lists each pair with mating frames and stack height.
@@ -670,6 +679,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.15 | 2026-09-30 | SB2-14: migration 38 (harnesses, ends, wires); harness store, service and API (§17.3); link↔harness and label conversions (§16.1); a port mated once across b2b links and harness ends (T6); drift and reviews through harness ends; wire validation (V01, V03, V04, V09 opt-in, V10); document, redaction and manifest harnesses. "As built" notes in §17.3. |
 | P2-1.14 | 2026-09-30 | SB2-13: migration 37 (`system_links.type` default `unspecified`, `stack_height_mm` b2b-only); `POST …/links` and `PATCH …/links/{lid}` take `type` and `stackHeightMm`; leaving `b2b` drops the stack height; `port_already_mated` between `b2b` links (harness ends join the check in SB2-14); audits `link_type_changed`; documents and manifests carry both fields. UI: Link details type and stack height, a Mating section for `b2b` links (confirm, set by hand, reset), diagram **B** mode and heavier B2B wires. Link↔harness conversions land with harnesses (SB2-14). |
 | P2-1.13 | 2026-09-30 | SB2-12: placement library `frames` pair (Python `systems/placement/frames.py`, TypeScript `placement/frames.ts`) with shared goldens `placement_cases.json` (14 cases from KiCad stock footprints); migration 36 `system_port_mating`; mating API (§15.3, response shape fixed); `SYS-V17 mating_stale`; manifest mating import and export. |
 | P2-1.12 | 2026-09-30 | SB2-11: extractor v6 implemented as §14.6 (`EXTRACTOR_VERSION` 6, every board re-extracts once). Goldens compare pad centres and footprint poses with `kicad-cli` 10.0.6 IPC-D-356 and position-file exports (`fixtures/system_builder/p2/evidence/geometry`). |
