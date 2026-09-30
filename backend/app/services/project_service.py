@@ -479,6 +479,24 @@ def _find_cli_path():
 
     return kicad_jobset_service.find_kicad_cli_path()
 
+def webgpu_artifact_key(row: dict, commit: str | None, *, force: bool = False) -> str:
+    """The ``webgpu_3d`` job key for a project row at ``commit`` (or its workspace)."""
+    source_selector = commit or f"workspace:{row.get('last_modified') or ''}"
+    return hashlib.sha256(
+        json.dumps(
+            {
+                "project": str(row.get("id") or ""),
+                "projectFileRel": str(row.get("project_file_rel") or ""),
+                "source": source_selector,
+                "force": bool(force),
+                "generator": semantic_index_service.generator_cache_tag(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
 def start_workflow_job(
     project_id: str,
     workflow_type: str,
@@ -495,20 +513,7 @@ def start_workflow_job(
     project_file_rel = str(row.get("project_file_rel") or "")
 
     if workflow_type == "webgpu_3d":
-        source_selector = commit or f"workspace:{row.get('last_modified') or ''}"
-        artifact_key = hashlib.sha256(
-            json.dumps(
-                {
-                    "project": project_id,
-                    "projectFileRel": project_file_rel,
-                    "source": source_selector,
-                    "force": bool(force),
-                    "generator": semantic_index_service.generator_cache_tag(),
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+        artifact_key = webgpu_artifact_key(row, commit, force=force)
         queued = v3_jobs.enqueue(
             "webgpu_3d",
             {

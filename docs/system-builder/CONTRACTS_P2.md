@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.22 · 2026-10-01 · tickets SB2-00 to SB2-21.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.23 · 2026-10-01 · tickets SB2-00 to SB2-22.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -465,6 +465,7 @@ All routes are under `/api/systems/{id}` and follow P1 conventions (If-Match, 41
 | `GET …/hierarchy` | Occurrence tree: `{occurrences: [{path, displayPath, kind, instanceId, systemId?, revision?, restricted}]}` |
 | `GET …/nets?search=&occurrence=&limit=`, `GET …/nets/{groupId}` | §8.2 |
 | `GET …/icd.{csv,html}?depth=all` | §10 |
+| `GET …/scene` | §20: every occurrence placed, with the board bundles that draw it |
 | Catalog: `GET /api/catalog/components?kind=part\|module\|assembly` | Filter by kind. Component payloads carry `kind`, `interface` and `source_ref` |
 
 **Viewer browsing (D-P2-24, [S8]).** The dependency `require_catalog_browser` (roles `CATALOG_BROWSE_ROLES` = reader roles + `viewer`) guards exactly these 26 routes:
@@ -513,13 +514,13 @@ languages with a tolerance of 1e-6 mm and 1e-9 on quaternion components.
 - **x** = KiCad x. **y** = −KiCad y (KiCad's y points down; the board frame's points up). **z** points out of the **front** (F.Cu) side.
 - **z = 0 is the board mid-plane.** The front surface is `z = +t/2`, the back `z = −t/2`, where `t` is the board thickness from the board setup (`general (thickness …)`), recorded by extractor v6.
 - A KiCad rotation angle (counter-clockwise on screen, degrees) is a positive rotation about +z in the board frame, unchanged in value.
-- The 3D bundle of a board (M2) is mapped into this frame by a per-asset offset computed in SB2-22; nothing in the placement library depends on how `kicad-cli` centres its GLB.
+- The 3D bundle of a board is mapped into this frame by its asset's `bundleToBoard` matrix (§20.2); nothing in the placement library depends on how `kicad-cli` centres its GLB.
 
 ### 14.3 Parent frame and poses
 
 - A system's frame is the frame its poses are expressed in. A pose `P = T(translationMm)·R(rotation)` maps an instance's own frame (board frame, or the child system's frame for an assembly) into the parent's.
 - A board occurrence's world matrix is the product of poses along its occurrence path, root first.
-- Default poses (`source: "default"`): instances in creation order along +x on the XY plane, each placed so its board-outline bounding box starts 20 mm after the previous one's ends, bottoms aligned at y = 0 (PLAN §5.3). Stored only when the user moves an instance.
+- Default poses (`source: "default"`): the instances of one system, in **label order** (case-insensitive, then instance ID), along +x on the XY plane. Each is placed so its bounding box starts 20 mm after the previous one's ends (the first at x = 0), bottoms aligned at y = 0, with no rotation. A board's box is its `boardOutlineMm` (§14.6) with z = ±t/2; an assembly's is the union of its members' boxes after their own default poses. An instance without a box takes an empty slot (the next one starts 20 mm on). Stored only when the user moves an instance (SB2-28). *(P2-1.23: the plan said creation order, which snapshot manifests don't record.)*
 
 ### 14.4 Connector frame `F_c`
 
@@ -563,6 +564,7 @@ B_world = A_world · F_a · T(0, 0, h) · Rx(180°) · Rz(k · 90°) · F_b⁻¹
 - `model` is the first enabled 3D model reference, unresolved (variables kept); null when none. M1 never loads it.
 - Numbers are rounded to 1e-4 mm. Pads are listed in natural pad order; duplicate pad numbers keep every pad.
 - `geometry` joins the interface digest, so a moved connector produces a new artifact but **never** a drift item by itself (drift compares pins and nets only, P1 §5).
+- **v8 (SB2-22)** adds `boardOutlineMm`: `{"minMm": [x, y], "maxMm": [x, y], "source": "edge_cuts" | "items"}` in the board frame, or null without a PCB. It bounds the **board-level** Edge.Cuts graphics by their line centres (arcs by their true extent; curves by their control points). A board with none falls back to the extent of all its items (`source: "items"`, strokes included), as KiCad does. It joins the digest and never drifts, like `geometry`.
 
 ## 15. Mating frames (SB2-12)
 
@@ -712,6 +714,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.23 | 2026-10-01 | SB2-22: §20 system scene (`GET …/scene`, `prism.system_scene.a0`): occurrences with default poses and world matrices, board assets per (project, commit) with `bundleToBoard`, bundle builds queued for designers, restricted boards and child systems as boxes. Extractor **v8** `boardOutlineMm` (§14.6; every board re-extracts once). §14.3 default row: label order instead of creation order, assembly boxes, empty slots. Placement library gains `poses` (Python; the TypeScript twin comes with SB2-28). |
 | P2-1.22 | 2026-10-01 | SB2-21: geometry fixtures (plan §8, M1 set): `mezz_base`, `mezz_top` F0/F1, `edge_a`, `edge_b`, `ambiguous`, built through KiCad's IPC API (not SWIG) and clean on ERC, DRC with schematic parity and library checks, netlist, STEP and GLB with 10.0.6. Goldens: DF12(3.0) mated height 3.0 mm from Hirose EDC-390687-51-77, top pose (0, 0, 4.6) mm over the base, V11 shift 1.5 mm, frames per connector. Vendor models are not redistributed. No contract rule changes. |
 | P2-1.21 | 2026-10-01 | SB2-20: §8.2 as built for harness wires: edges through pin maps, splices, export ends, subsystem manifests' harnesses, unmated ends as internal nodes; wire hop shape; 3-end splice golden. |
 | P2-1.20 | 2026-10-01 | SB2-19: §17.4 as built. CSV wire rows and seven harness columns (`from_end_pin`/`to_end_pin` renamed from the plan's `from_pin`/`to_pin`, which collide with P1 pad columns); import of wire rows into existing or new harnesses with conflicts named; ICD Board-to-board mating and Harnesses sections; link documents gain end `mating`; renderer 3. |
@@ -735,3 +738,43 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 | P2-1.2 | 2026-09-30 | SB2-02: catalog kinds (migration 3); IPN via `provisional_ipn` + source `prism` instead of a new identity kind; `source_ref` carries the gate facts; assembly gates; integrity guards v5; hash stability; `?kind=`; viewer browse routes. |
 | P2-1.1 | 2026-09-30 | SB2-01: snapshots store the manifest and both digests (`digest` = full); `GET …/manifest` is whole-or-403; `import_manifest` keeps IDs; migration 30. §0 signed off. |
 | P2-1.0 | 2026-09-30 | First draft for sign-off (SB2-00). Adds catalog kinds and publishing, exports, hierarchy, child drift, system nets V09–V15, manifest v1 with digests, API, errors and audit kinds. P1 changes: snapshots store a manifest (§9.4); instances gain `kind` (§5.1); extractor v5 adds `powerNet` (§8.4). S6 revised by the user: canvas layout is part of the manifest and snapshots (§9.5, revises P1 invariant 6). |
+
+## 20. System scene (SB2-22)
+
+### 20.1 `GET …/scene` → `prism.system_scene.a0`
+
+Open to every reader of the system, redacted as `GET …/hierarchy` (§5.4). Lengths in mm; matrices are 4×4, column-major (WebGPU's layout), `T·R`.
+
+```json
+{"schema": "prism.system_scene.a0", "systemId": "sys_…", "systemVersion": 12, "units": "mm",
+ "assets": [{"assetId": "sba_…", "projectId": "prj_…", "commit": "<sha>", "status": "ready",
+             "bundleUrl": "/api/projects/prj_…/webgpu-3d/assets/<source>/<build>/bundle.json",
+             "sourceRevisionKey": "<source>", "generatorBuild": "<build>", "jobId": null,
+             "bundleToBoard": [1000, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 1000, 0, 0, 0, -0.8, 1]}],
+ "occurrences": [{"path": "/sin_b", "parentPath": null, "displayPath": "OBC-1",
+                  "labels": ["OBC-1"], "instanceId": "sin_b", "kind": "board", "depth": 1,
+                  "restricted": false, "assetId": "sba_…",
+                  "pose": {"translationMm": [-6.5, 59.11, 0], "rotation": [0, 0, 0, 1], "source": "default"},
+                  "worldMatrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -6.5, 59.11, 0, 1],
+                  "boundsMm": {"minMm": [6.5, -59.11, -0.8], "maxMm": [96.65, -6.5, 0.8]}}]}
+```
+
+- **Occurrences** are the hierarchy's, parents before members: boards and assemblies (M6 adds modules). `pose` is in the parent's frame (§14.3; only `default` until SB2-28 stores poses); `worldMatrix` is the product of poses from the root. An assembly is a rigid group: its members' poses are inside its frame. `boundsMm` is the occurrence's box in its **own** frame, or null when unknown (no PCB, no v8 interface yet, or an unresolved assembly).
+- **Assets** are board bundles, one per (project, commit), however many occurrences use it: `assetId = "sba_" + sha256(project \0 commit)[:16]`. Two copies of an assembly draw from the same assets.
+- **Restricted** (§5.4): a hidden board keeps its path, labels, pose and box, with `assetId: null`; no project, commit or bundle of it appears anywhere in the response. A hidden child system is one occurrence with its box (the union of its contents); its members are left out. The box is the only thing either leaks.
+- Reading the scene queues the v8 interface extraction of any board without one, so its box arrives on a later read.
+
+### 20.2 Bundles
+
+A board asset reuses the single-board pipeline and its readiness cache (`semantic_visualizer_service.get_status_fast`) at the board's baseline commit. Nothing about bundles changes.
+
+| `status` | Meaning |
+|---|---|
+| `ready` | The bundle is complete; `bundleUrl` loads it. |
+| `building` | A partial bundle is available (`bundleUrl` set), or a build was just queued (`jobId` set). |
+| `missing` | No bundle, and the reader may not queue one (below). |
+| `failed` | The project or its status could not be read. |
+
+- **Builds.** A missing bundle is queued as the `webgpu_3d` job for that commit when the reader is a designer or admin, the same roles that can generate a board's 3D view on its own tab. The job's artifact key deduplicates concurrent requests.
+- **`bundleToBoard`** maps the bundle's runtime frame (metres; x right, y up, z out of the front; z = 0 at the bottom face of the substrate) into the board frame (§14.2): scale by 1000, then lower by the mid-plane height `h`. `h` is half the substrate between the inner faces of the outer copper layers in the bundle's layer table (the pipeline's `_set_canonical_board_y_range`), or 0 with fewer than two copper layers. It is null until the bundle's layer table exists.
+- A renderer draws a board occurrence with `worldMatrix · bundleToBoard`.

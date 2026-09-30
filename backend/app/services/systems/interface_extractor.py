@@ -16,7 +16,9 @@ Sources, all from the pinned kicad-monkey:
 * ``pcbNets`` from board pad nets, matched by reference and pad number;
 * v6 ``geometry`` (CONTRACTS_P2 §14.6) from the board footprint with that
   reference: pose, pads and courtyard in the board frame (§14.2), and the
-  first 3D model reference, unresolved.
+  first 3D model reference, unresolved;
+* v8 ``boardOutlineMm`` (CONTRACTS_P2 §14.6) from the board's Edge.Cuts
+  graphics, or the extent of all board items when there are none.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from app.services import semantic_index_variants
 from app.services.systems import connector_detection
 
 SCHEMA = "prism.system_interface.v1"
-EXTRACTOR_VERSION = "7"
+EXTRACTOR_VERSION = "8"
 _UNCONNECTED_PREFIX = "unconnected-("
 
 
@@ -260,6 +262,65 @@ def _board_geometry(board: Any) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _arc_points(item: Any) -> list[tuple[float, float]]:
+    """The ends of a three-point arc plus every axis extreme it sweeps through."""
+    (ax, ay), (mx, my), (bx, by) = (item.start_x, item.start_y), (item.mid_x, item.mid_y), (item.end_x, item.end_y)
+    points = [(ax, ay), (mx, my), (bx, by)]
+    d = 2.0 * (ax * (my - by) + mx * (by - ay) + bx * (ay - my))
+    if abs(d) < 1e-12:
+        return points  # collinear: a straight segment
+    ux = ((ax * ax + ay * ay) * (my - by) + (mx * mx + my * my) * (by - ay) + (bx * bx + by * by) * (ay - my)) / d
+    uy = ((ax * ax + ay * ay) * (bx - mx) + (mx * mx + my * my) * (ax - bx) + (bx * bx + by * by) * (mx - ax)) / d
+    radius = math.hypot(ax - ux, ay - uy)
+
+    def angle(x: float, y: float) -> float:
+        return math.atan2(y - uy, x - ux) % math.tau
+
+    start, mid, end = angle(ax, ay), angle(mx, my), angle(bx, by)
+    sweep = (end - start) % math.tau
+    if (mid - start) % math.tau > sweep:  # the arc runs the other way round
+        start, sweep = end, math.tau - sweep
+    for quarter in range(4):
+        theta = quarter * math.pi / 2.0
+        if (theta - start) % math.tau <= sweep:
+            points.append((ux + radius * math.cos(theta), uy + radius * math.sin(theta)))
+    return points
+
+
+def _outline_points(item: Any) -> list[tuple[float, float]]:
+    kind = type(item).__name__
+    if kind in ("GrLine", "GrRect"):
+        return [(item.start_x, item.start_y), (item.end_x, item.end_y)]
+    if kind == "GrCircle":
+        radius = math.hypot(item.end_x - item.center_x, item.end_y - item.center_y)
+        return [(item.center_x - radius, item.center_y - radius), (item.center_x + radius, item.center_y + radius)]
+    if kind == "GrArc":
+        return _arc_points(item)
+    if kind in ("GrPoly", "GrCurve"):  # a Bézier lies inside its control points' hull
+        return [(float(x), float(y)) for x, y in getattr(item, "points", ()) or ()]
+    return []
+
+
+def _board_outline(board: Any) -> dict[str, Any] | None:
+    """v8 ``boardOutlineMm``: bounds of the board-level Edge.Cuts graphics in the board frame (§14.2).
+
+    Line centres, not stroke edges. A board without them falls back to the
+    extent of all its items (KiCad's own fallback), marked ``source: "items"``.
+    """
+    points: list[tuple[float, float]] = []
+    for carrier in board.board_outline_carriers() if hasattr(board, "board_outline_carriers") else ():
+        if carrier.owner_kind == "board":
+            points += _outline_points(carrier.item)
+    source = "edge_cuts"
+    if not points:
+        bounds = board.get_bounds() if hasattr(board, "get_bounds") else None
+        if bounds is None or bounds.max_x < bounds.min_x:
+            return None
+        points, source = [(bounds.min_x, bounds.min_y), (bounds.max_x, bounds.max_y)], "items"
+    xs, ys = [x for x, _ in points], [-y for _, y in points]  # KiCad y points down; the board frame's up
+    return {"minMm": [_round(min(xs)), _round(min(ys))], "maxMm": [_round(max(xs)), _round(max(ys))], "source": source}
+
+
 def _power_net_names(design: Any) -> set[str]:
     """Names of nets set by power symbols (lib symbol ``power`` flag): the symbol's value is the net."""
 
@@ -395,6 +456,7 @@ def extract_interface(
         "extractor": {"version": EXTRACTOR_VERSION, "kicadMonkeyVersion": _kicad_monkey_version()},
         "hasPcb": board is not None,
         "boardThicknessMm": _round(board.thickness) if board is not None and getattr(board, "thickness", None) else None,
+        "boardOutlineMm": _board_outline(board) if board is not None else None,
         "components": components,
         "diagnostics": sorted(
             diagnostics, key=lambda d: (d["code"], d["portKey"] or "", d["pad"] or "")

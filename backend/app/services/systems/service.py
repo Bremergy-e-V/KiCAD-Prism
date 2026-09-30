@@ -27,8 +27,9 @@ from app.core.roles import Role
 from app.services.systems import (
     child_drift, csv_import, drift, exports as exports_module, exposure, generators, hierarchy, icd,
     harnesses as harnesses_module, manifest as manifest_io, mating as mating_module, reconcile, redaction, sources, system_nets, validation,
-    visibility,
+    scene as scene_module, visibility,
 )
+from app.services.systems.bundles import BundleSource
 from app.services.systems.manifest_schema import digests as manifest_digests
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
 from app.services.systems.jobs import (
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 MAX_LAYOUT_ENTRIES = 1000
 _FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+_ACTIVE_JOB_STATES = frozenset({"queued", "running", "retry_wait", "cancel_requested"})
+_BUNDLE_BUILDERS = frozenset({"admin", "designer"})  # who may queue a board's 3D bundle (as on its 3D tab)
 
 
 @dataclass(frozen=True)
@@ -107,8 +110,10 @@ class SystemService:
         enqueue: Callable[..., Mapping[str, Any]] = enqueue_extraction,
         enqueue_check: Callable[..., Mapping[str, Any]] | None = None,
         catalog: Callable[[], Any] = _default_catalog,
+        bundles: Any = None,
     ) -> None:
         self._catalog = catalog
+        self._bundles = bundles or BundleSource()
         self._connect = connect
         self._load_project = project_loader
         self._enqueue = enqueue
@@ -1022,6 +1027,69 @@ class SystemService:
             out.append(entry)
         return {"systemId": system_id, "occurrences": out,
                 "boardCount": sum(1 for o in tree.occurrences if o.kind == "board")}
+
+    def scene(self, caller: Caller, system_id: str) -> dict:
+        """``GET …/scene`` (§20): every occurrence placed, with the board bundles to draw them.
+
+        A visible board whose bundle is missing gets a build queued when the reader
+        may generate bundles (designer or admin, as on the board's 3D tab).
+        """
+
+        shown = {o["path"]: o for o in self.hierarchy(caller, system_id)["occurrences"]}
+        with self._tx() as store:
+            version = int(self._system(store, system_id, caller)["version"])
+            tree = self._tree(store, system_id)
+            interfaces = {(o.project_id, o.baseline_commit): store.get_interface(o.project_id, o.baseline_commit,
+                                                                                 EXTRACTOR_VERSION)
+                          for o in tree.boards if o.project_id and o.baseline_commit}
+        for (project_id, commit), found in interfaces.items():
+            if found is None:  # not extracted yet, or by an older extractor: the bounds come with it
+                self._enqueue_quietly(project_id, commit, caller)
+        assets: dict[tuple[str, str], dict] = {}
+
+        def asset(occurrence: hierarchy.Occurrence) -> dict:
+            key = (occurrence.project_id, occurrence.baseline_commit)
+            if key not in assets:
+                assets[key] = self._scene_asset(caller, *key)
+            return assets[key]
+
+        return scene_module.build(system_id, version, tree.occurrences, shown,
+                                  lambda o: interfaces.get((o.project_id, o.baseline_commit)), asset)
+
+    def _scene_asset(self, caller: Caller, project_id: str, commit: str) -> dict:
+        entry = {"assetId": scene_module.asset_id(project_id, commit), "projectId": project_id, "commit": commit,
+                 "status": "missing", "bundleUrl": None, "sourceRevisionKey": None, "generatorBuild": None,
+                 "jobId": None, "error": None, "bundleToBoard": None}
+        project = self._load_project(project_id)
+        if project is None:
+            return {**entry, "status": "failed"}
+        try:
+            status = self._bundles.status(project, commit)
+        except Exception:
+            logger.exception("Could not read the 3D bundle status of %s@%s", project_id, commit)
+            return {**entry, "status": "failed"}
+        if status.get("available"):
+            entry.update(status="ready" if status.get("status") == "ready" else "building",
+                         bundleUrl=status.get("bundle_url"), sourceRevisionKey=status.get("sourceRevisionKey"),
+                         generatorBuild=status.get("build_fingerprint"),
+                         bundleToBoard=scene_module.bundle_to_board(self._bundles.mid_plane_mm(project_id, status)))
+            return entry
+        try:
+            last = self._bundles.last_build(project_id, commit)
+        except Exception:
+            logger.exception("Could not read the 3D bundle jobs of %s@%s", project_id, commit)
+            last = None
+        if last and last["status"] in _ACTIVE_JOB_STATES:
+            return {**entry, "status": "building", "jobId": last["jobId"]}
+        if last and last["status"] in ("failed", "cancelled"):
+            # Never re-queued by a read: a retry is a deliberate Regenerate on the board's 3D tab.
+            return {**entry, "status": "failed", "jobId": last["jobId"], "error": last["error"]}
+        if caller.role in _BUNDLE_BUILDERS:
+            try:
+                entry.update(status="building", jobId=self._bundles.build(project_id, commit, requested_by=caller.email))
+            except Exception:
+                logger.exception("Could not queue a 3D bundle for %s@%s", project_id, commit)
+        return entry
 
     def update_instance(
         self, caller: Caller, system_id: str, version: int, instance_id: str,
