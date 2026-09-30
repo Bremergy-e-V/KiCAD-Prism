@@ -1,6 +1,6 @@
 /** Pure helpers for the CSV import wizard (§9.3). */
 
-import type { ImportTarget, ImportUpload, SystemInstance } from "@/types/system";
+import type { ImportEntry, ImportTarget, ImportUpload, SystemInstance } from "@/types/system";
 
 export const SKIP = "skip";
 
@@ -15,6 +15,13 @@ export const TARGETS: { target: ImportTarget; label: string; required: boolean }
   { target: "harness", label: "Harness", required: false },
   { target: "link_name", label: "Link name", required: false },
   { target: "row_id", label: "Row ID", required: false },
+  { target: "from_end", label: "From harness end", required: false },
+  { target: "from_end_pin", label: "From end pin", required: false },
+  { target: "to_end", label: "To harness end", required: false },
+  { target: "to_end_pin", label: "To end pin", required: false },
+  { target: "gauge_awg", label: "Wire gauge (AWG)", required: false },
+  { target: "colour", label: "Wire colour", required: false },
+  { target: "wire_label", label: "Wire label", required: false },
 ];
 
 export type ColumnMap = Partial<Record<ImportTarget, string>>;
@@ -73,4 +80,24 @@ export const REASON_LABELS: Record<string, string> = {
   duplicate_existing: "Already connected",
   duplicate_upload: "Repeats an earlier row",
   signal_mismatch: "Signal matches no net on either pin",
+  end_label_invalid: "Harness end is not \"End 1\" … \"End 32\"",
+  gauge_invalid: "Wire gauge is not a whole number from 0 to 40",
+  same_end: "Both ends of the wire are the same harness end",
+  wire_in_other_harness: "Wire ID belongs to another harness",
+  harness_ambiguous: "More than one harness has this name",
+  end_not_found: "The harness has no end in that position",
+  end_mate_mismatch: "The harness end mates a different connector",
+  pin_map_mismatch: "The end pin lands on a different pad",
+  port_already_mated: "Another harness end or board-to-board link mates this connector",
 };
+
+/** How a preview or review names one side of an entry: a board pin, or a harness end pin. */
+export function entrySide(entry: Pick<ImportEntry, "kind" | "fromEnd" | "fromPin" | "toEnd" | "toPin" | "from" | "to">, side: "from" | "to"): string {
+  const end = entry[side];
+  const pad = end ? `${end.label}/${end.reference}.${end.pin}` : "";
+  if (entry.kind !== "wire") return pad;
+  const ordinal = side === "from" ? entry.fromEnd : entry.toEnd;
+  const pin = side === "from" ? entry.fromPin : entry.toPin;
+  const name = `End ${ordinal == null ? "?" : ordinal + 1}.${pin ?? "?"}`;
+  return end ? `${name} (${pad})` : `${name} (not mated)`;
+}

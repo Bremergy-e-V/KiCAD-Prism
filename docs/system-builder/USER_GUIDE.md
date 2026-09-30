@@ -143,6 +143,14 @@ one already exists. A connector that was not exposed yet is promoted
 automatically. Importing a file exported from the same system changes nothing,
 so the ICD CSV works as a round trip through a spreadsheet.
 
+Harness wires are rows too. They fill the **from_end**, **from_end_pin**,
+**to_end** and **to_end_pin** columns (ends are named "End 1", "End 2", …) and
+may set **gauge_awg**, **colour** and **wire_label**; the board columns name
+the connector pad each end pin lands on. Rows for a harness name that does not
+exist yet create that harness, with Generic ends and pin maps taken from the
+rows. Rows that disagree with an existing harness (a different connector on an
+end, or a pin landing on another pad) are listed as conflicts, never applied.
+
 ### Board-to-board links and harnesses
 
 - **Board-to-board.** Press **B** on the diagram (or use the toolbar button),
@@ -255,7 +263,9 @@ From a snapshot, or from the live system, you can:
 
 - open the **ICD** as a printable page (use the browser's *Print to PDF*). It
   has a title block, a board table with commits, a block diagram, one table per
-  link, and the findings. If reviews were open, every page says so.
+  link, the board-to-board pairs with their mating frames and stack heights,
+  each harness (ends, wires and splices), and the findings. If reviews were
+  open, every page says so.
 - download the **ICD CSV**, which is also the import format;
 - **compare** with the live system or another snapshot, which lists boards
   rebased, added or removed, and rows added, removed or changed with their

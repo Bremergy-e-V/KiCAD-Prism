@@ -16,14 +16,17 @@ from typing import Any, Mapping, Optional, Sequence
 from app.services.systems import layout as system_layout
 from app.services.systems.drift import pad_sort_key
 
-RENDERER_VERSION = "2"
+RENDERER_VERSION = "3"
 
 CSV_COLUMNS = (
     "row_id", "link_id", "link_name", "harness", "signal",
     "a_board", "a_connector", "a_pin", "a_pin_name", "a_net",
     "b_board", "b_connector", "b_pin", "b_pin_name", "b_net",
     "status", "a_commit", "b_commit",
+    # Harness wires (CONTRACTS_P2 §17.4); empty on link rows.
+    "from_end", "from_end_pin", "to_end", "to_end_pin", "gauge_awg", "colour", "wire_label",
 )
+WIRE_COLUMNS = CSV_COLUMNS[-7:]
 
 _ROW_ERROR_RULES = ("SYS-V01", "SYS-V04")
 _END_ERROR_RULES = ("SYS-V03",)
@@ -82,6 +85,63 @@ def csv_records(document: Mapping[str, Any]) -> list[dict[str, str]]:
                     f"{end}_commit": instance["baselineCommit"] or "",
                 })
             record["status"] = _row_status(row, link, validation, review_rows)
+            records.append({**record, **{c: "" for c in WIRE_COLUMNS}})
+    return records + wire_records(document)
+
+
+def end_name(end: Mapping[str, Any]) -> str:
+    """Ends are named by position, as the harness editor shows them."""
+    return f"End {end['ordinal'] + 1}"
+
+
+def _wire_status(wire: Mapping[str, Any], harness: Mapping[str, Any], validation: Mapping[str, Any],
+                 review_rows: set[str]) -> str:
+    for finding in validation.get("findings") or []:
+        detail = finding.get("detail") or {}
+        if finding["severity"] != "error" or detail.get("harnessId") != harness["id"]:
+            continue
+        if detail.get("wireId") == wire["id"] or detail.get("endId") in (wire["from"]["end"], wire["to"]["end"]):
+            return "error"
+    return "review" if wire["id"] in review_rows else "ok"
+
+
+def wire_records(document: Mapping[str, Any]) -> list[dict[str, str]]:
+    """§17.4: one CSV row per harness wire. ``a_*``/``b_*`` name the connector and pad each end mates
+    (empty while unmated or restricted); ``*_end_pin`` is the end pin, which a pin map may put on another pad."""
+
+    instances = {i["id"]: i for i in document["instances"]}
+    validation = document.get("validation") or {}
+    review_rows = set(document.get("reviewRowIds") or [])
+    records = []
+    for harness in sorted(document.get("harnesses") or [], key=lambda h: (h["name"], h["id"])):
+        ends = {end["id"]: end for end in harness["ends"]}
+        order = sorted(harness["wires"], key=lambda w: (ends[w["from"]["end"]]["ordinal"], pad_sort_key(w["from"]["pin"]),
+                                                        ends[w["to"]["end"]]["ordinal"], pad_sort_key(w["to"]["pin"]), w["id"]))
+        for wire in order:
+            record = {"row_id": wire["id"], "link_id": harness["id"], "link_name": harness["name"],
+                      "harness": harness.get("label") or "", "signal": wire.get("signal") or "",
+                      "a_pin_name": "", "b_pin_name": ""}
+            for side, point, nets in (("a", wire["from"], wire.get("netFrom")), ("b", wire["to"], wire.get("netTo"))):
+                end = ends[point["end"]]
+                mates = end.get("mates") or {}
+                port = mates.get("port") or {}
+                instance = instances.get(mates.get("instanceId") or "", {})
+                visible = bool(port) and not mates.get("redacted")
+                record.update({
+                    f"{side}_board": instance.get("label") or "" if mates else "",
+                    f"{side}_connector": port.get("reference") or "" if visible else "",
+                    f"{side}_pin": str((end.get("pinMap") or {}).get(point["pin"], point["pin"])) if visible else "",
+                    f"{side}_net": _join(nets) if visible else "",
+                    f"{side}_commit": instance.get("baselineCommit") or "" if mates else "",
+                })
+            gauge = wire.get("gaugeAwg")
+            record.update({
+                "status": _wire_status(wire, harness, validation, review_rows),
+                "from_end": end_name(ends[wire["from"]["end"]]), "from_end_pin": wire["from"]["pin"],
+                "to_end": end_name(ends[wire["to"]["end"]]), "to_end_pin": wire["to"]["pin"],
+                "gauge_awg": "" if gauge is None else str(gauge), "colour": wire.get("colour") or "",
+                "wire_label": wire.get("label") or "",
+            })
             records.append(record)
     return records
 
@@ -232,6 +292,116 @@ def _chip(status: str) -> str:
     return f'<span class="chip {_e(status)}">{_e(status)}</span>'
 
 
+AXIS_TEXT = {"top": "Vertical, top side", "bottom": "Vertical, bottom side", "+x": "Right-angle, footprint +X",
+             "-x": "Right-angle, footprint −X", "+y": "Right-angle, footprint +Y", "-y": "Right-angle, footprint −Y"}
+
+
+def _mm(value: Any) -> str:
+    return f"{float(value):g}"
+
+
+def _frame(end: Mapping[str, Any]) -> str:
+    """A link end's mating frame as the ICD states it (CONTRACTS_P2 §15)."""
+    if end.get("redacted"):
+        return '<span class="meta">restricted</span>'
+    mating = end.get("mating")
+    if not mating:
+        return '<span class="meta">not confirmed</span>'
+    turns = f" · turned {mating['quarterTurns'] * 90}°" if mating.get("quarterTurns") else ""
+    how = "confirmed" if mating["mode"] == "confirmed" else "set by hand"
+    return f"{_e(AXIS_TEXT.get(mating['axis'], mating['axis']))}{turns} <span class=\"meta\">({how})</span>"
+
+
+def _b2b_section(links: Sequence[Mapping[str, Any]], labels: Mapping[str, str]) -> list[str]:
+    """§17.4: each board-to-board pair with both mating frames and the stack height."""
+    pairs = [link for link in links if link.get("type") == "b2b"]
+    if not pairs:
+        return []
+    out = ["<h2>Board-to-board mating</h2><table><thead><tr><th>Link</th><th>End A</th><th>Frame A</th>"
+           "<th>End B</th><th>Frame B</th><th>Stack height</th></tr></thead><tbody>"]
+    for link in pairs:
+        a, b = (_end_label(labels, link[e]) for e in ("a", "b"))
+        height = link.get("stackHeightMm")
+        out.append(f"<tr><td><b>{_e(link['name'] or f'{a} ↔ {b}')}</b></td><td>{_e(a)}</td><td>{_frame(link['a'])}</td>"
+                   f"<td>{_e(b)}</td><td>{_frame(link['b'])}</td>"
+                   f"<td>{_mm(height) + ' mm' if height is not None else '<span class=\"meta\">not entered</span>'}</td></tr>")
+    out.append("</tbody></table>")
+    return out
+
+
+def _end_mates(end: Mapping[str, Any], labels: Mapping[str, str]) -> str:
+    mates = end.get("mates")
+    if not mates:
+        return "Not mated"
+    port = mates.get("port") or {}
+    if mates.get("redacted") or not port:
+        return f"{labels.get(mates['instanceId'], '?')} (restricted)"
+    return f"{labels.get(mates['instanceId'], '?')} {port.get('reference') or ''}"
+
+
+def _block(end: Mapping[str, Any]) -> str:
+    part = end.get("part")
+    if not part:
+        return f"Generic · {end['pinCount']} pins"
+    name = " · ".join(v for v in (part.get("mpn"), part.get("manufacturer")) if v) or part.get("name") or part["componentId"]
+    return f"{name} · {end['pinCount']} pins"
+
+
+def _harness_section(document: Mapping[str, Any], labels: Mapping[str, str],
+                     records: Sequence[Mapping[str, str]]) -> list[str]:
+    """§17.4: per harness, its ends (mate, block, pin map), its wires and its splices."""
+    harnesses = sorted(document.get("harnesses") or [], key=lambda h: (h["name"], h["id"]))
+    if not harnesses:
+        return []
+    out = ["<h2>Harnesses</h2>"]
+    for harness in harnesses:
+        rows = [r for r in records if r["link_id"] == harness["id"]]
+        meta = [f"{len(harness['ends'])} ends", f"{len(rows)} wire{'s' if len(rows) != 1 else ''}"]
+        if harness.get("label"):
+            meta.append(f"label {harness['label']}")
+        if harness.get("cutLengthMm"):
+            meta.append(f"cut {_mm(harness['cutLengthMm'])} mm")
+        errors = sum(1 for r in rows if r["status"] == "error")
+        if errors:
+            meta.append(f"{errors} error")
+        out.append('<section class="link">')
+        out.append(f'<div class="link-head"><h3>{_e(harness["name"])}</h3><span class="meta">{_e(" · ".join(meta))}</span></div>')
+        out.append("<table><thead><tr><th>End</th><th>Mates</th><th>Mating block</th><th>Pin map</th>"
+                   "<th>Boot (mm)</th></tr></thead><tbody>")
+        for end in sorted(harness["ends"], key=lambda e: e["ordinal"]):
+            pin_map = end.get("pinMap") or {}
+            mapped = ", ".join(f"{pin} → {pad}" for pin, pad in sorted(pin_map.items(), key=lambda p: pad_sort_key(p[0])))
+            out.append(f"<tr><td><b>{_e(end_name(end))}</b></td><td>{_e(_end_mates(end, labels))}</td>"
+                       f"<td>{_e(_block(end))}</td><td class=\"mono\">{_e(mapped) if mapped else 'One to one'}</td>"
+                       f"<td>{_mm(end['bootMm']) if end.get('bootMm') is not None else ''}</td></tr>")
+        out.append("</tbody></table>")
+        out.append("<table><thead><tr><th>From</th><th>Pin</th><th>Pad</th><th>Net</th><th>Signal</th>"
+                   "<th class=\"side-b\">Net</th><th class=\"side-b\">Pad</th><th class=\"side-b\">Pin</th>"
+                   "<th class=\"side-b\">To</th><th>AWG</th><th>Colour</th><th>Label</th><th>Status</th></tr></thead><tbody>")
+        for r in rows:
+            out.append(f"<tr><td>{_e(r['from_end'])}</td><td class=\"mono num\"><b>{_e(r['from_end_pin'])}</b></td>"
+                       f"<td class=\"mono\">{_e(r['a_pin'])}</td><td class=\"mono\">{_e(r['a_net'])}</td>"
+                       f"<td class=\"sig\">{_e(r['signal'])}</td><td class=\"mono side-b\">{_e(r['b_net'])}</td>"
+                       f"<td class=\"mono side-b\">{_e(r['b_pin'])}</td>"
+                       f"<td class=\"mono num side-b\"><b>{_e(r['to_end_pin'])}</b></td><td class=\"side-b\">{_e(r['to_end'])}</td>"
+                       f"<td>{_e(r['gauge_awg'])}</td><td>{_e(r['colour'])}</td><td>{_e(r['wire_label'])}</td>"
+                       f"<td>{_chip(r['status'])}</td></tr>")
+        if not rows:
+            out.append('<tr><td colspan="13" class="meta">No wires.</td></tr>')
+        out.append("</tbody></table>")
+        uses: dict[tuple[str, str], int] = {}
+        for r in rows:
+            for end, pin in ((r["from_end"], r["from_end_pin"]), (r["to_end"], r["to_end_pin"])):
+                uses[(end, pin)] = uses.get((end, pin), 0) + 1
+        splices = sorted(((end, pin, n) for (end, pin), n in uses.items() if n > 1),
+                         key=lambda s: (int(s[0].split()[-1]), pad_sort_key(s[1])))
+        if splices:
+            out.append('<p class="meta">Splices: ' + _e("; ".join(f"{end} pin {pin} joins {n} wires" for end, pin, n in splices))
+                       + "</p>")
+        out.append("</section>")
+    return out
+
+
 def render_html(document: Mapping[str, Any], *, source: str, generated_at: str,
                 levels: Optional[Sequence[Mapping[str, Any]]] = None) -> str:
     """§9.5: the printable ICD. ``source`` is the snapshot name or ``live``; ``levels`` adds the subsystems' own links."""
@@ -270,6 +440,8 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str,
                f'<div class="stat"><b>{len(boards)}</b><span>Boards</span></div>'
                + (f'<div class="stat"><b>{len(subsystems)}</b><span>Subsystems</span></div>' if subsystems else "") +
                f'<div class="stat"><b>{len(document["links"])}</b><span>Links</span></div>'
+               + (f'<div class="stat"><b>{len(document.get("harnesses") or [])}</b><span>Harnesses</span></div>'
+                  if document.get("harnesses") else "") +
                f'<div class="stat"><b>{len(records)}</b><span>Connections</span></div>'
                f'<div class="stat{" err" if errors else ""}"><b>{errors}</b><span>Errors</span></div>'
                f'<div class="stat{" warn" if warnings else ""}"><b>{warnings}</b><span>Warnings</span></div>'
@@ -317,6 +489,8 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str,
                    f"<h3>{index}. {_e(title)}</h3><span class=\"ends\">{_e(ends[0])} ↔ {_e(ends[1])}</span>"
                    f'<span class="meta">{len(rows)} pin{"s" if len(rows) != 1 else ""}'
                    + (f" · harness {_e(link['harness'])}" if link["harness"] else "")
+                   + (" · board-to-board" if link.get("type") == "b2b" else "")
+                   + (f" · stack {_mm(link['stackHeightMm'])} mm" if link.get("stackHeightMm") is not None else "")
                    + "".join(f" · {count} {status}" for status, count in statuses.items() if count)
                    + "</span></div>")
         out.append(f"<table><thead><tr><th>{_e(ends[0])}</th><th>Pin name</th><th>Net</th><th>Signal</th>"
@@ -335,6 +509,9 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str,
         if not rows:
             out.append('<tr><td colspan="8" class="meta">No pins mapped.</td></tr>')
         out.append("</tbody></table></section>")
+
+    out.extend(_b2b_section(ordered, labels))
+    out.extend(_harness_section(document, labels, records))
 
     if levels:
         out.append("<h2>Inside subsystems</h2>")
@@ -364,7 +541,9 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str,
             entry = groups.setdefault(key, {"finding": finding, "pins": []})
             if finding["pin"]:
                 entry["pins"].append(finding["pin"])
-        link_names = {l["id"]: l["name"] or l["id"] for l in document["links"]}
+        link_names = {l["id"]: l["name"] or " ↔ ".join(_end_label(labels, l[e]) for e in ("a", "b"))
+                      for l in document["links"]}
+        link_names.update({h["id"]: h["name"] for h in document.get("harnesses") or []})
         order = {"error": 0, "warning": 1, "info": 2}
         out.append("<table><thead><tr><th>Severity</th><th>Rule</th><th>Board</th><th>Connector</th><th>Pins</th>"
                    "<th>Link</th></tr></thead><tbody>")

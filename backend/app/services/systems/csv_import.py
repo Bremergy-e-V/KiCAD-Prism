@@ -10,6 +10,12 @@ Three steps share this module:
   same unordered port pair and harness or creating one (commit, and an
   ``import`` review once its accepted items are applied).
 
+A row that names harness ends (``from_end``/``to_end``) is a harness wire
+(CONTRACTS_P2 §17.4): its ``a_*``/``b_*`` columns name the connectors the
+ends mate (empty for an unmated end) and ``from_end_pin``/``to_end_pin`` the
+end pins. Wires find their harness by wire ID, else by name (``link_name``);
+an unknown name creates a harness with Generic ends.
+
 ``classify`` is pure. ``apply_rows`` runs inside a caller's
 ``SystemStore.mutation``.
 """
@@ -22,8 +28,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
-from app.services.systems import exposure
-from app.services.systems.store import MAX_ROWS, Conflict, Invalid, Mutation, SystemStore
+from app.services.systems import exposure, harnesses as harnesses_module
+from app.services.systems.drift import pad_sort_key
+from app.services.systems.store import MAX_HARNESS_ENDS, MAX_ROWS, Conflict, Invalid, Mutation, SystemStore
 
 MAX_UPLOAD_BYTES = 5_000_000
 SAMPLE_ROWS = 20
@@ -31,7 +38,8 @@ MAX_BOARD_VALUES = 100
 DELIMITERS = (",", ";", "\t", "|")
 
 ENDPOINT_TARGETS = ("from_board", "from_connector", "from_pin", "to_board", "to_connector", "to_pin")
-TARGETS = ENDPOINT_TARGETS + ("signal", "harness", "link_name", "row_id")
+WIRE_TARGETS = ("from_end", "from_end_pin", "to_end", "to_end_pin", "gauge_awg", "colour", "wire_label")
+TARGETS = ENDPOINT_TARGETS + ("signal", "harness", "link_name", "row_id") + WIRE_TARGETS
 SKIP = "skip"
 
 BUCKETS = ("matched", "needsReview", "unresolved", "conflict")
@@ -48,6 +56,13 @@ _ALIASES = {
     "harness": ("harness", "cable"),
     "link_name": ("link_name", "link"),
     "row_id": ("row_id",),
+    "from_end": ("from_end",),
+    "from_end_pin": ("from_end_pin",),
+    "to_end": ("to_end",),
+    "to_end_pin": ("to_end_pin",),
+    "gauge_awg": ("gauge_awg", "awg", "gauge"),
+    "colour": ("colour", "color", "wire_colour", "wire_color"),
+    "wire_label": ("wire_label",),
 }
 
 
@@ -228,16 +243,22 @@ def _resolve_end(values: Mapping[str, str], side: str, board_map: Mapping[str, s
 
 def classify(parsed: Parsed, column_map: Mapping[str, str], board_map: Mapping[str, str], *,
              instances: Mapping[str, Mapping[str, Any]], interfaces: Mapping[str, Optional[dict]],
-             overrides: Mapping[str, Mapping[str, str]], links: Sequence[Mapping[str, Any]]) -> dict:
+             overrides: Mapping[str, Mapping[str, str]], links: Sequence[Mapping[str, Any]],
+             harnesses: Sequence[Mapping[str, Any]] = ()) -> dict:
     """§9.3 buckets for every uploaded row, in upload order."""
 
     row_links = {row["id"]: link["id"] for link in links for row in link["rows"]}
     seen: set[tuple] = set()
     updated: set[str] = set()
     buckets: dict[str, list[dict]] = {b: [] for b in BUCKETS}
+    wires = _WireState(harnesses, links, interfaces)
 
     for line, row in parsed.rows:
         values = {t: row.get(column_map[t], "") if column_map.get(t) else "" for t in TARGETS}
+        if values["from_end"] or values["to_end"]:
+            bucket, entry = wires.classify(line, values, board_map, instances, overrides)
+            buckets[bucket].append(entry)
+            continue
         entry: dict[str, Any] = {
             "line": line, "values": values, "reason": None, "from": None, "to": None,
             "signal": values["signal"], "harness": _harness(values["harness"]),
@@ -335,6 +356,9 @@ def resolve_proposal(proposal: Mapping[str, Any], interfaces: Mapping[str, Optio
     components = []
     for side in ("from", "to"):
         end = proposal[side]
+        if end is None:  # an unmated harness end
+            components.append(None)
+            continue
         interface = interfaces.get(end["instanceId"])
         component = exposure.component_by_key(interface, end["portKey"]) if interface else None
         if component is None:
@@ -348,8 +372,10 @@ def resolve_proposal(proposal: Mapping[str, Any], interfaces: Mapping[str, Optio
 def proposal(entry: Mapping[str, Any]) -> dict:
     """The part of a classified entry an ``import`` review item stores (``observed``)."""
 
-    return {k: entry[k] for k in ("line", "from", "to", "signal", "harness", "linkName", "linkId", "rowId",
-                                  "action")}
+    keys = ("line", "from", "to", "signal", "harness", "linkName", "linkId", "rowId", "action")
+    if entry.get("kind") == "wire":
+        keys += ("kind", "fromEnd", "fromPin", "toEnd", "toPin", "gaugeAwg", "colour", "wireLabel")
+    return {k: entry[k] for k in keys}
 
 
 def apply_rows(store: SystemStore, change: Mutation, proposals: Sequence[Mapping[str, Any]],
@@ -362,6 +388,8 @@ def apply_rows(store: SystemStore, change: Mutation, proposals: Sequence[Mapping
     """
 
     created, updated, unchanged, links_created = 0, 0, 0, []
+    wire_report = apply_wires(store, change, [p for p in proposals if p.get("kind") == "wire"], interfaces)
+    proposals = [p for p in proposals if p.get("kind") != "wire"]
     plans: dict[str, dict[str, Any]] = {}
     for proposal in proposals:
         components = resolve_proposal(proposal, interfaces)
@@ -424,4 +452,291 @@ def apply_rows(store: SystemStore, change: Mutation, proposals: Sequence[Mapping
         if len(set(pairs)) != len(pairs):
             raise Conflict(f"link {link['name'] or link_id} would hold the same pin pair twice; re-run the preview")
         store.replace_rows(change, link_id, rows)
-    return {"created": created, "updated": updated, "unchanged": unchanged, "linksCreated": links_created}
+    return {"created": created + wire_report["created"], "updated": updated + wire_report["updated"],
+            "unchanged": unchanged + wire_report["unchanged"], "linksCreated": links_created,
+            "harnessesCreated": wire_report["harnessesCreated"]}
+
+
+# ---------------------------------------------------------------------------
+# Harness wires (CONTRACTS_P2 §17.4)
+
+
+_END_LABEL = re.compile(r"^\s*end\s*(\d{1,2})\s*$", re.IGNORECASE)
+
+
+def end_ordinal(label: str) -> Optional[int]:
+    """``"End 3"`` → 2 (the ICD and CSV name ends by position)."""
+    match = _END_LABEL.match(label or "")
+    ordinal = int(match.group(1)) - 1 if match else -1
+    return ordinal if 0 <= ordinal < MAX_HARNESS_ENDS else None
+
+
+def _gauge(value: str) -> tuple[Optional[int], bool]:
+    if not value:
+        return None, True
+    try:
+        gauge = int(value)
+    except ValueError:
+        return None, False
+    return gauge, 0 <= gauge <= 40
+
+
+class _WireState:
+    """What wire classification needs across rows: existing harnesses, and ends of harnesses the
+    upload creates (the first row naming an end fixes its mate; the rows fix its pin map)."""
+
+    def __init__(self, harnesses: Sequence[Mapping[str, Any]], links: Sequence[Mapping[str, Any]],
+                 interfaces: Mapping[str, Optional[dict]]) -> None:
+        self.harnesses = list(harnesses)
+        self.by_wire = {w["id"]: h for h in self.harnesses for w in h["wires"]}
+        self.interfaces = interfaces
+        # Ports already mated by a harness end or a b2b link: (instance, portKey) -> harness ID or "b2b".
+        self.mated: dict[tuple[str, str], str] = {}
+        for harness in self.harnesses:
+            for end in harness["ends"]:
+                if end["mates_instance_id"] and end["mates_port"]:
+                    self.mated[(end["mates_instance_id"], end["mates_port"]["portKey"])] = harness["id"]
+        for link in links:
+            if link.get("type") == "b2b":
+                for side in ("a", "b"):
+                    self.mated[(link[f"{side}_instance_id"], link[f"{side}_port"]["portKey"])] = "b2b"
+        self.new_ends: dict[tuple[str, int], dict] = {}  # (harness name, ordinal) -> {mate, pins}
+        self.seen: set[tuple] = set()
+        self.updated: set[str] = set()
+
+    def _harness(self, name: str, row_id: Optional[str]) -> tuple[Optional[dict], Optional[str]]:
+        """``(existing harness or None to create, conflict reason)``."""
+        if row_id and row_id in self.by_wire:
+            harness = self.by_wire[row_id]
+            if name and name != harness["name"]:
+                return None, "wire_in_other_harness"
+            return harness, None
+        found = [h for h in self.harnesses if h["name"] == name]
+        if len(found) > 1:
+            return None, "harness_ambiguous"
+        return (found[0] if found else None), None
+
+    def _component(self, end: Mapping[str, Any]) -> Optional[dict]:
+        interface = self.interfaces.get(end["mates_instance_id"]) if end["mates_instance_id"] else None
+        return exposure.component_by_key(interface, end["mates_port"]["portKey"]) if interface else None
+
+    def _existing_end(self, harness: Mapping[str, Any], ordinal: int, mate: Optional[dict],
+                      pin: str) -> tuple[Optional[dict], Optional[tuple[str, str]]]:
+        """The harness's end at ``ordinal``, checked against the row: ``(end, (bucket, reason))``."""
+        end = next((e for e in harness["ends"] if e["ordinal"] == ordinal), None)
+        if end is None:
+            return None, ("conflict", "end_not_found")
+        mated = end["mates_instance_id"] and end["mates_port"]
+        if bool(mated) != (mate is not None) or (mate is not None and (
+                end["mates_instance_id"] != mate["instanceId"]
+                or not _port_matches(end["mates_port"], {"memberKeys": [mate["portKey"]]}))):
+            return None, ("conflict", "end_mate_mismatch")
+        if pin not in harnesses_module.end_pins(end, self._component(end) if mated else None):
+            return None, ("unresolved", "pin_not_found")
+        if mate is not None and SystemStore.end_pad(end, pin) != mate["pin"]:
+            return None, ("conflict", "pin_map_mismatch")
+        return end, None
+
+    def _new_end(self, name: str, ordinal: int, mate: Optional[dict], pin: str) -> Optional[tuple[str, str]]:
+        """Record an end of a harness the upload creates; the reason when the row contradicts earlier rows."""
+        key = (mate["instanceId"], mate["portKey"]) if mate else None
+        if key is not None and key in self.mated:
+            return "conflict", "port_already_mated"
+        state = self.new_ends.setdefault((name, ordinal), {"mate": key, "pins": {}})
+        if state["mate"] != key:
+            return "conflict", "end_mate_mismatch"
+        pad = mate["pin"] if mate else pin
+        if mate is None and not (pin.isdigit() and int(pin) >= 1):
+            return "unresolved", "pin_not_found"  # an unmated end's pins are 1…pinCount
+        if mate is not None:
+            interface = self.interfaces.get(mate["instanceId"]) or {}
+            if pin not in exposure.pins_by_pad(exposure.component_by_key(interface, mate["portKey"]) or {}):
+                return "unresolved", "pin_not_found"  # a Generic end's pins are the connector's pads
+        if state["pins"].get(pin, pad) != pad or (pad in state["pins"].values() and state["pins"].get(pin) != pad):
+            return "conflict", "pin_map_mismatch"
+        state["pins"][pin] = pad
+        return None
+
+    def classify(self, line: int, values: Mapping[str, str], board_map: Mapping[str, str],
+                 instances: Mapping[str, Mapping[str, Any]],
+                 overrides: Mapping[str, Mapping[str, str]]) -> tuple[str, dict]:
+        name = values["link_name"]
+        entry: dict[str, Any] = {
+            "line": line, "values": dict(values), "reason": None, "from": None, "to": None, "kind": "wire",
+            "signal": values["signal"], "harness": _harness(values["harness"]), "linkName": name,
+            "linkId": None, "rowId": None, "action": None,
+            "fromEnd": end_ordinal(values["from_end"]), "fromPin": values["from_end_pin"],
+            "toEnd": end_ordinal(values["to_end"]), "toPin": values["to_end_pin"],
+            "gaugeAwg": None, "colour": values["colour"] or None, "wireLabel": values["wire_label"] or None,
+        }
+
+        def put(bucket: str, reason: Optional[str] = None) -> tuple[str, dict]:
+            entry["reason"] = reason
+            return bucket, entry
+
+        if not name or not values["from_end_pin"] or not values["to_end_pin"]:
+            return put("unresolved", "missing_value")
+        if entry["fromEnd"] is None or entry["toEnd"] is None:
+            return put("unresolved", "end_label_invalid")
+        entry["gaugeAwg"], valid = _gauge(values["gauge_awg"])
+        if not valid:
+            return put("unresolved", "gauge_invalid")
+        if entry["fromEnd"] == entry["toEnd"]:
+            return put("conflict", "same_end")
+        for side in ("from", "to"):
+            if not any(values[f"{side}_{k}"] for k in ("board", "connector", "pin")):
+                continue  # an unmated end
+            mate, why = _resolve_end(values, side, board_map, instances, self.interfaces, overrides)
+            if why:
+                return put("unresolved", why)
+            entry[side] = mate
+
+        harness, why = self._harness(name, values["row_id"] or None)
+        if why:
+            return put("conflict", why)
+        points = []
+        for side, key in (("from", "fromEnd"), ("to", "toEnd")):
+            pin = entry[f"{side}Pin"]
+            if harness is not None:
+                end, problem = self._existing_end(harness, entry[key], entry[side], pin)
+                if problem:
+                    return put(*problem)
+                points.append((end["id"], pin))
+            else:
+                problem = self._new_end(name, entry[key], entry[side], pin)
+                if problem:
+                    return put(*problem)
+                points.append((entry[key], pin))
+
+        key = (harness["id"] if harness else f"new:{name}", frozenset(points))
+        if harness is not None:
+            entry["linkId"] = harness["id"]
+            existing = {frozenset({(w["from_end"], w["from_pin"]), (w["to_end"], w["to_pin"])}): w["id"]
+                        for w in harness["wires"]}
+            row_id = values["row_id"] or None
+            if row_id and row_id in self.by_wire:
+                taken = existing.get(frozenset(points))
+                if taken is not None and taken != row_id:
+                    return put("conflict", "pin_pair_taken")
+                if row_id in self.updated:
+                    return put("conflict", "duplicate_upload")
+                entry["rowId"], entry["action"] = row_id, "update"
+            elif frozenset(points) in existing:
+                return put("conflict", "duplicate_existing")
+        if entry["action"] is None:
+            entry["action"] = "create"
+        if key in self.seen:
+            return put("conflict", "duplicate_upload")
+        self.seen.add(key)
+        if entry["rowId"]:
+            self.updated.add(entry["rowId"])
+
+        nets = [n for side in ("from", "to") for n in ((entry[side] or {}).get("nets") or [])]
+        if not values["signal"]:
+            entry["signal"] = leaf(nets[0]) if nets else ""
+            return put("matched")
+        if not nets or values["signal"].casefold() in {leaf(n).casefold() for n in nets}:
+            return put("matched")
+        return put("needsReview", "signal_mismatch")
+
+
+def apply_wires(store: SystemStore, change: Mutation, proposals: Sequence[Mapping[str, Any]],
+                interfaces: Mapping[str, Optional[dict]]) -> dict:
+    """Write wire proposals: new harnesses first (Generic ends, pin maps from the rows), then each
+    touched harness's whole wire list with nets captured at the current baselines."""
+
+    report = {"created": 0, "updated": 0, "unchanged": 0, "harnessesCreated": []}
+    if not proposals:
+        return report
+    by_name: dict[str, list[Mapping[str, Any]]] = {}
+    for proposal in proposals:
+        resolve_proposal(proposal, interfaces)
+        by_name.setdefault(proposal["linkName"], []).append(proposal)
+
+    for name, group in by_name.items():
+        harnesses = store.list_harnesses(change.system_id)
+        harness = next((h for h in harnesses if h["id"] == group[0].get("linkId")), None) \
+            or next((h for h in harnesses if h["name"] == name), None)
+        if harness is None:
+            harness = _create_harness(store, change, name, group, interfaces)
+            report["harnessesCreated"].append(harness["id"])
+        ends = {end["ordinal"]: end for end in harness["ends"]}
+        wires = {w["id"]: {"id": w["id"], "from": {"end": w["from_end"], "pin": w["from_pin"]},
+                           "to": {"end": w["to_end"], "pin": w["to_pin"]}, "signal": w["signal"],
+                           "gaugeAwg": w["gauge_awg"], "colour": w["colour"], "label": w["label"]}
+                 for w in harness["wires"]}
+        creates, changed = [], False
+        for proposal in group:
+            if proposal["fromEnd"] not in ends or proposal["toEnd"] not in ends:
+                raise Conflict(f"harness {name} no longer has the ends this import names; re-run the preview")
+            wire = {"from": {"end": ends[proposal["fromEnd"]]["id"], "pin": proposal["fromPin"]},
+                    "to": {"end": ends[proposal["toEnd"]]["id"], "pin": proposal["toPin"]},
+                    "signal": proposal["signal"], "gaugeAwg": proposal.get("gaugeAwg"),
+                    "colour": proposal.get("colour"), "label": proposal.get("wireLabel")}
+            if proposal.get("rowId"):
+                current = wires.get(proposal["rowId"])
+                if current is None:
+                    raise Conflict("a wire this import updates no longer exists; re-run the preview")
+                if {**current, "id": None} == {**wire, "id": None}:
+                    report["unchanged"] += 1
+                    continue
+                wires[proposal["rowId"]] = {"id": proposal["rowId"], **wire}
+                report["updated"] += 1
+                changed = True
+            else:
+                creates.append(wire)
+                report["created"] += 1
+                changed = True
+        if not changed:
+            continue  # nothing changes on this harness: no write, no audit
+        rows = list(wires.values()) + creates
+        pairs = [frozenset({(w["from"]["end"], w["from"]["pin"]), (w["to"]["end"], w["to"]["pin"])}) for w in rows]
+        if len(set(pairs)) != len(pairs):
+            raise Conflict(f"harness {name} would hold the same wire twice; re-run the preview")
+        harness = store.get_harness(change.system_id, harness["id"])
+        components = {end["id"]: _end_component(end, interfaces) for end in harness["ends"] if end["mates_instance_id"]}
+        store.replace_wires(change, harness["id"], harnesses_module.capture(
+            rows, {end["id"]: end for end in harness["ends"]}, components))
+    return report
+
+
+def _end_component(end: Mapping[str, Any], interfaces: Mapping[str, Optional[dict]]) -> Optional[dict]:
+    interface = interfaces.get(end["mates_instance_id"])
+    if interface is None:
+        raise Conflict("interface_not_ready: a mated board's interface is still being extracted")
+    return exposure.component_by_key(interface, end["mates_port"]["portKey"])
+
+
+def _create_harness(store: SystemStore, change: Mutation, name: str, group: Sequence[Mapping[str, Any]],
+                    interfaces: Mapping[str, Optional[dict]]) -> dict:
+    """A harness the upload names but the system lacks: Generic ends in ordinal order, each mating the
+    connector its rows name, with a pin map wherever an end pin lands on another pad."""
+
+    first = group[0]
+    ends: dict[int, dict] = {}
+    for proposal in group:
+        for side, key, pin in (("from", "fromEnd", "fromPin"), ("to", "toEnd", "toPin")):
+            state = ends.setdefault(proposal[key], {"mate": proposal[side], "pins": {}})
+            mate = proposal[side]
+            state["pins"][proposal[pin]] = mate["pin"] if mate else proposal[pin]
+    harness = store.create_harness(change, name=name, label=first.get("harness"), audit={"fromImport": True})
+    for ordinal in sorted(ends):
+        state = ends[ordinal]
+        mate = state["mate"]
+        if mate is None:
+            count = max(int(p) for p in state["pins"])
+            harness = store.add_harness_end(change, harness["id"], pin_count=count, ordinal=ordinal)
+            continue
+        interface = interfaces.get(mate["instanceId"])
+        component = exposure.component_by_key(interface, mate["portKey"]) if interface else None
+        if component is None:
+            raise Conflict(f"{mate['label']}/{mate['reference']} no longer resolves at its baseline")
+        override = store.list_overrides(mate["instanceId"]).get(component["portKey"])
+        if not exposure.is_exposed(component, override):
+            store.set_override(change, mate["instanceId"], component["portKey"], "promoted")
+        pin_map = {pin: pad for pin, pad in sorted(state["pins"].items(), key=lambda p: pad_sort_key(p[0]))
+                   if pin != pad} or None
+        harness = store.add_harness_end(change, harness["id"], mates_instance_id=mate["instanceId"],
+                                        mates_port=exposure.port_baseline(component), pin_map=pin_map,
+                                        pin_count=max(1, len(exposure.pins_by_pad(component))), ordinal=ordinal)
+    return harness

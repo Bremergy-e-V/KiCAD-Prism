@@ -68,6 +68,10 @@ class Result:
         return visibility.etag(self.system_id, self.version)
 
 
+def _mating_summary(record: Optional[Mapping[str, Any]]) -> Optional[dict]:
+    return None if record is None else {k: record[k] for k in ("mode", "axis", "quarterTurns")}
+
+
 def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
 
@@ -273,8 +277,9 @@ class SystemService:
             for doc in catalog_docs
         ]))
         stale = []
+        mating = {instance["id"]: store.list_mating(instance["id"]) for instance in instances}
         for instance in instances:
-            stored = store.list_mating(instance["id"])
+            stored = mating[instance["id"]]
             if not stored or instance["id"] not in interfaces:
                 continue
             for port_key, record in sorted(stored.items()):
@@ -301,7 +306,7 @@ class SystemService:
                                    job_state.get(artifact_key(i["project_id"], i["baseline_commit"])))
                 for i in instances
             ] + catalog_docs,
-            "links": [self._link_doc(link, interfaces, overrides) for link in links],
+            "links": [self._link_doc(link, interfaces, overrides, mating) for link in links],
             "exports": [self._export_doc(export, interfaces, overrides) for export in exports],
             "harnesses": harness_docs,
             "openReviewCount": system["openReviewCount"],
@@ -415,6 +420,7 @@ class SystemService:
 
     def _link_doc(
         self, link: dict, interfaces: Mapping[str, dict], overrides: Mapping[str, Mapping[str, str]],
+        mating: Optional[Mapping[str, Mapping[str, dict]]] = None,
     ) -> dict:
         ends: dict[str, dict] = {}
         pins: dict[str, Optional[dict]] = {}
@@ -433,6 +439,8 @@ class SystemService:
                 "exposed": None if component is None else exposure.is_exposed(
                     component, overrides.get(instance_id, {}).get(component["portKey"])
                 ),
+                # The port's stored mating frame (CONTRACTS_P2 §15.2), for the ICD's board-to-board table.
+                "mating": _mating_summary(((mating or {}).get(instance_id) or {}).get(port["portKey"])),
             }
             pins[end] = exposure.pins_by_pad(component) if component is not None else None
 
@@ -1559,7 +1567,8 @@ class SystemService:
                 if found is not None:
                     interfaces[instance["id"]] = found
                     overrides[instance["id"]] = store.list_overrides(instance["id"])
-        return self._link_doc(link, interfaces, overrides)
+        return self._link_doc(link, interfaces, overrides, {
+            iid: store.list_mating(iid) for iid in {link["a_instance_id"], link["b_instance_id"]}})
 
     def create_link(
         self, caller: Caller, system_id: str, version: int, *, a: Mapping[str, str],
@@ -1677,7 +1686,7 @@ class SystemService:
             pins = sorted({rows[rid][f"pin_{end}"] for rid in item["row_ids"] if rid in rows},
                           key=drift.pad_sort_key) if end else []
             if review["kind"] == "import" and hidden and {
-                (item["observed"] or {}).get(side, {}).get("instanceId") for side in ("from", "to")
+                ((item["observed"] or {}).get(side) or {}).get("instanceId") for side in ("from", "to")
             } & set(hidden):
                 items.append({"id": item["id"], "ordinal": item["ordinal"], "kind": item["kind"],
                               "linkId": None, "end": None, "rowIds": [], "pins": [], "expected": None,
@@ -1727,7 +1736,7 @@ class SystemService:
         if review["kind"] != "import":
             return
         item = next((i for i in review["items"] if i["id"] == item_id), None)
-        touched = {(item["observed"] or {}).get(side, {}).get("instanceId") for side in ("from", "to")} if item else set()
+        touched = {((item["observed"] or {}).get(side) or {}).get("instanceId") for side in ("from", "to")} if item else set()
         if touched & self._restricted_instances(store, system_id, caller):
             raise NotFound("Review item not found")
 
@@ -2144,7 +2153,8 @@ class SystemService:
         interfaces = csv_import.baseline_interfaces(store, system_id)
         overrides = {iid: store.list_overrides(iid) for iid in instances}
         return csv_import.classify(parsed, column_map, board_map, instances=instances, interfaces=interfaces,
-                                   overrides=overrides, links=store.list_links(system_id))
+                                   overrides=overrides, links=store.list_links(system_id),
+                                   harnesses=store.list_harnesses(system_id))
 
     def preview_import(
         self, caller: Caller, system_id: str, import_id: str, column_map: Mapping[str, str],
@@ -2184,7 +2194,7 @@ class SystemService:
                             "kind": "signal_mismatch", "linkId": entry["linkId"],
                             "rowIds": [entry["rowId"]] if entry["rowId"] else [],
                             "expected": {"leaves": sorted({csv_import.leaf(n) for side in ("from", "to")
-                                                           for n in entry[side]["nets"]})},
+                                                           for n in (entry[side] or {}).get("nets") or []})},
                             "observed": csv_import.proposal(entry),
                         } for entry in buckets["needsReview"]],
                     )

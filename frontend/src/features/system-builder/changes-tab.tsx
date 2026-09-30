@@ -15,7 +15,7 @@ import {
   rebaseSubsystem,
 } from "@/lib/systems-api";
 import { cn } from "@/lib/utils";
-import type { AuditEvent, Decision, Review, ReviewItem, SystemDocument, SystemInstance } from "@/types/system";
+import type { AuditEvent, Decision, ImportEntry, Review, ReviewItem, SystemDocument, SystemInstance } from "@/types/system";
 
 import {
   DECISION_LABELS,
@@ -26,6 +26,7 @@ import {
   groupItems,
   progress,
 } from "./review-model";
+import { entrySide } from "./import-model";
 import type { SystemTabProps } from "./system-tab-content";
 import { shortSha } from "./system-format";
 import { useSystemMutation } from "./use-system-mutation";
@@ -40,7 +41,9 @@ interface Loaded {
 
 function linkName(document: SystemDocument, linkId: string | null): string {
   const link = document.links.find((candidate) => candidate.id === linkId);
-  return link ? link.name || `${link.a.port?.reference ?? "?"} ↔ ${link.b.port?.reference ?? "?"}` : "deleted link";
+  if (link) return link.name || `${link.a.port?.reference ?? "?"} ↔ ${link.b.port?.reference ?? "?"}`;
+  const harness = (document.harnesses ?? []).find((candidate) => candidate.id === linkId);
+  return harness ? harness.name : "deleted link";
 }
 
 export function ChangesTab({ systemId, document, etag, canEdit, reload, onNavigate }: SystemTabProps) {
@@ -267,12 +270,15 @@ interface ItemRowProps {
   onOpenLink: (linkId: string) => void;
 }
 
+/** An import item's stored proposal: a link row, or a harness wire (§17.4). */
+type ImportProposal = Pick<ImportEntry, "from" | "to" | "signal" | "linkName" | "kind" | "fromEnd" | "fromPin" | "toEnd" | "toPin">;
+
 function ItemRow({ systemId, document, review, item, etag, editable, busy, run, onOpenLink }: ItemRowProps) {
   const [pad, setPad] = useState("");
   const [candidate, setCandidate] = useState(item.candidates?.[0]?.portKey ?? "");
   const [signal, setSignal] = useState("");
   const allowed = allowedDecisions(review, item.kind);
-  const proposal = review.kind === "import" ? (item.observed as { from?: { label: string; reference: string; pin: string }; to?: { label: string; reference: string; pin: string }; signal?: string } | null) : null;
+  const proposal = review.kind === "import" ? (item.observed as ImportProposal | null) : null;
 
   const decide = (decision: Decision, payload?: Record<string, unknown>) =>
     run("decide", () => decideReviewItem(systemId, etag, review.id, item.id, decision, payload),
@@ -286,11 +292,11 @@ function ItemRow({ systemId, document, review, item, etag, editable, busy, run, 
     <li className="space-y-2 px-3 py-2 text-sm">
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-medium">{KIND_LABELS[item.kind]}</span>
-        {item.linkId && (
+        {item.linkId && (document.links.some((link) => link.id === item.linkId) ? (
           <button type="button" className="text-primary hover:underline" onClick={() => onOpenLink(item.linkId as string)}>
             {linkName(document, item.linkId)}
           </button>
-        )}
+        ) : <span>{linkName(document, item.linkId)}</span>)}
         {item.end && <span className="text-muted-foreground">end {item.end.toUpperCase()}</span>}
         {item.pins.length > 0 && <span className="font-mono text-xs text-muted-foreground">pins {item.pins.join(", ")}</span>}
         {item.decision && (
@@ -303,7 +309,7 @@ function ItemRow({ systemId, document, review, item, etag, editable, busy, run, 
 
       {proposal ? (
         <p className="font-mono text-xs">
-          {proposal.from?.label}/{proposal.from?.reference}.{proposal.from?.pin} ↔ {proposal.to?.label}/{proposal.to?.reference}.{proposal.to?.pin}
+          {proposal.kind === "wire" && `${proposal.linkName}: `}{entrySide(proposal, "from")} ↔ {entrySide(proposal, "to")}
           {" · signal "}<span className="text-warning">{proposal.signal}</span>
           {" · nets "}{describeValue((item.expected as { leaves?: string[] } | null)?.leaves)}
         </p>
