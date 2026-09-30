@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from app.services.catalog import system_items
 from app.services.catalog.collaborators import build_catalog_collaborators
 from app.services.catalog.component_history import CatalogComponentHistoryReads
 from app.services.catalog.component_read_models import (
@@ -836,6 +837,7 @@ class ComponentCatalogDomainService:
         workflow_stage: str | None = None,
         validation_status: str | None = None,
         category: str | None = None,
+        kind: str | None = None,
         include_inactive: bool = False,
         page: int = 1,
         page_size: int = 50,
@@ -846,6 +848,7 @@ class ComponentCatalogDomainService:
     ) -> dict[str, Any]:
         self.initialize()
         plan = self._component_queries.prepare_list_components(
+            kind=kind,
             query=query,
             source=source,
             availability_state=availability_state,
@@ -1050,6 +1053,58 @@ class ComponentCatalogDomainService:
             )
             conn.commit()
         return self.get_component(component_id) or {}
+
+    def create_system_item(
+        self, *, kind: str, ipn: str, name: str, description: str, manufacturer: str,
+        datasheet_url: str, interface: dict[str, Any], source_ref: dict[str, Any],
+        actor: str = "", change_summary: str = "Publish",
+    ) -> dict[str, Any]:
+        """Create a ``module`` or ``assembly`` component with its first revision (CONTRACTS_P2 §3)."""
+
+        self.initialize()
+        metadata = system_items.item_metadata(
+            kind=kind, ipn=ipn, name=name, description=description, manufacturer=manufacturer,
+            datasheet_url=datasheet_url,
+        )
+        with self._connect() as conn:
+            component_id, revision_id = self._component_writer.upsert_metadata_row(
+                conn, self._runtime_for_compat(), component_id=str(uuid.uuid4()), metadata=metadata,
+                now=_utc_now_iso(), existing_component_id=None, actor=actor, change_summary=change_summary,
+                finalize_revision=False, change_kind="publish",
+            )
+            conn.execute("UPDATE components SET kind = %s WHERE id = %s", (kind, component_id))
+            system_items.set_payload(conn, revision_id, interface=interface, source_ref=source_ref)
+            self._revision_finalizer.finalize_revision(
+                conn, self._runtime_for_compat(), component_id=component_id, revision_id=revision_id,
+                event_type="component.created", actor=actor,
+                details={"change_kind": "publish", "change_summary": change_summary, "kind": kind},
+            )
+            conn.commit()
+        return {"componentId": component_id, "revisionId": revision_id}
+
+    def add_system_revision(
+        self, component_id: str, *, interface: dict[str, Any], source_ref: dict[str, Any],
+        actor: str = "", change_summary: str = "Publish",
+    ) -> dict[str, Any]:
+        """A new revision of a ``module``/``assembly``: metadata carried over, payload replaced."""
+
+        self.initialize()
+        with self._connect() as conn:
+            kind = system_items.component_kind(conn, component_id)
+            if kind not in system_items.SYSTEM_KINDS:
+                raise ValueError("only module and assembly components take published revisions")
+            revision = self._revision_kernel.clone_revision(
+                conn, component_id, actor=actor, change_kind="publish", change_summary=change_summary,
+            )
+            revision_id = str(revision["id"])
+            system_items.set_payload(conn, revision_id, interface=interface, source_ref=source_ref)
+            self._revision_finalizer.finalize_revision(
+                conn, self._runtime_for_compat(), component_id=component_id, revision_id=revision_id,
+                event_type="revision.created", actor=actor,
+                details={"change_kind": "publish", "change_summary": change_summary},
+            )
+            conn.commit()
+        return {"componentId": component_id, "revisionId": revision_id}
 
     def _upsert_component_metadata_row(
         self,
@@ -1981,7 +2036,8 @@ class ComponentCatalogDomainService:
         return [
             component
             for component in self.list_components_flat(released_only=True, include_inactive=False)
-            if component["place_enabled"]
+            # Modules and assemblies are never KiCad library parts (CONTRACTS_P2 §3.1).
+            if component["place_enabled"] and component.get("kind", "part") == "part"
         ]
 
     def _dbl_row_for_component(

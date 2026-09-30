@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.1 · 2026-09-30 · tickets SB2-00, SB2-01.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
+**Version P2-1.2 · 2026-09-30 · tickets SB2-00 to SB2-02.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §14.
@@ -100,15 +100,20 @@ display_path    = " ▸ ".join(labels)                 e.g. CNDH-A ▸ CMBD
 | Kind | Identity | Revision payload | DBL export / KLC |
 |---|---|---|---|
 | `part` | MPN or provisional IPN (unchanged) | unchanged | unchanged |
-| `module` | MPN (bought) or `ipn` | `interface` (units = connectors) + STEP model (M6) | excluded |
-| `assembly` | `ipn` | `interface` (units = exports) + `source_ref` | excluded |
+| `module` | MPN (bought) or IPN | `interface` (units = connectors) + STEP model (M6) | excluded |
+| `assembly` | IPN | `interface` (units = exports) + `source_ref` | excluded |
 
-- A new identity kind `ipn` is allowed only for `module` and `assembly`.
-- The `kind` of a component never changes after creation.
+- **IPN identity (P2-1.2):** an IPN is stored as the catalog's existing `provisional_ipn` identity, with `identity_source = "prism"` and the IPN as the internal part number. This reuses identity uniqueness without touching the catalog's 34 identity checks.
+  - For `module` and `assembly`, approval and release accept that identity, in both the Python gate and the database trigger (integrity guards v5).
+  - The UI shows such items by kind and never labels them "provisional".
+- **Required metadata:** `value` = IPN, `category` = `Assemblies` or `Modules`, and `manufacturer` and `datasheet_url` are required as for parts. Publish passes the organisation name and the system's Prism URL.
+- The `kind` of a component never changes after creation (`components.kind`, catalog migration 3, `CHECK` constrained).
+- **Hash stability:** the revision payload is stored in `interface_json` and `source_ref_json` (JSON text). Both are left out of the revision manifest hash while empty, so every revision hashed before migration 3 keeps its hash.
 
 ### 3.2 Assembly revision payload
 
-- `source_ref`: `{"kind": "system_snapshot", "systemId", "snapshotId", "fullDigest", "connectivityDigest"}`. M7 adds `{"kind": "git_commit", …}`.
+- `source_ref`: `{"kind": "system_snapshot", "systemId", "snapshotId", "fullDigest", "connectivityDigest", "openReviewCount", "hierarchyValid", "children": [{"componentId", "revisionId"}]}`. M7 adds `{"kind": "git_commit", …}`.
+  - The last three are copied at publish so release gates read **only catalog data**. In CI, and possibly in deployments, the catalog lives in another database than `system_snapshots`. Snapshots are immutable, so the copy never goes stale.
 - `interface`: the snapshot's **export interface** (§4.3), computed once at publish and immutable.
 
 A revision **never copies** the manifest. Readers load the snapshot through `source_ref`.
@@ -123,10 +128,14 @@ A revision **never copies** the manifest. Readers load the snapshot through `sou
   - The normal catalog workflow then applies (`open → in_progress → qa_review → done → released`).
 - **Idempotent:** a unique constraint on (component, snapshotId). Re-publishing a snapshot returns the existing revision with 200; a new publish returns 201.
 - **Two stores, retry-safe:** the catalog and workspace schemas share one database, but are written by different services. The order is: catalog revision first, then the audit event `snapshot_published` on the system. A crash between the two is repaired by re-publishing, because of the idempotency above.
-- **Release gates** for `assembly`, added to `release_workflow.py`. Each is fail-closed.
-  - `assembly_no_open_reviews`: the snapshot's `openReviewCount` is 0.
-  - `assembly_hierarchy_valid`: the snapshot's hierarchy resolves within §5.3 limits.
-  - `assembly_children_released`: every child assembly or module revision it pins is `released`.
+- **Release gates** for `assembly` (`catalog/system_items.assert_release_gates`), each fail-closed, replacing the part gates (default representation, KLC):
+  - the source snapshot is present (`source_ref.kind = "system_snapshot"`);
+  - `source_ref.openReviewCount` is 0;
+  - `source_ref.hierarchyValid` is true;
+  - every `source_ref.children` revision is `released` (checked in the catalog);
+  - the interface is non-empty.
+
+  A `module` needs only a non-empty interface until M6 adds its model gates.
 
 ### 3.4 "Mates with" (M1; shape frozen here)
 
@@ -401,7 +410,14 @@ All routes are under `/api/systems/{id}` and follow P1 conventions (If-Match, 41
 | `GET …/hierarchy` | Occurrence tree: `{occurrences: [{path, displayPath, kind, instanceId, systemId?, revision?, restricted}]}` |
 | `GET …/nets?search=&occurrence=&limit=`, `GET …/nets/{groupId}` | §8.2 |
 | `GET …/icd.{csv,html}?depth=all` | §10 |
-| Catalog: `GET /api/catalog/components?kind=` | Filter by kind; viewers may read (D-P2-24) |
+| Catalog: `GET /api/catalog/components?kind=part\|module\|assembly` | Filter by kind. Component payloads carry `kind`, `interface` and `source_ref` |
+
+**Viewer browsing (D-P2-24, [S8]).** The dependency `require_catalog_browser` (roles `CATALOG_BROWSE_ROLES` = reader roles + `viewer`) guards exactly these 22 routes:
+- components list, detail, revisions (list, compare, one), audit (and verify), usage, reviews, releases and validation;
+- categories, workflow summary, release queue, asset search, previews and asset content;
+- metadata fields, grid, grid preferences (GET and PUT, per user) and `export.csv`.
+
+Everything else stays on reader or writer roles, including inventory export, health, imports, jobs, validation runs and metadata batches. `test_catalog_system_items.ViewerBrowseRoutesTest` pins the list. The frontend `view_catalog` authority includes `viewer`.
 
 ## 12. Error codes (additions)
 
@@ -423,5 +439,6 @@ All routes are under `/api/systems/{id}` and follow P1 conventions (If-Match, 41
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.2 | 2026-09-30 | SB2-02: catalog kinds (migration 3); IPN via `provisional_ipn` + source `prism` instead of a new identity kind; `source_ref` carries the gate facts; assembly gates; integrity guards v5; hash stability; `?kind=`; viewer browse routes. |
 | P2-1.1 | 2026-09-30 | SB2-01: snapshots store the manifest and both digests (`digest` = full); `GET …/manifest` is whole-or-403; `import_manifest` keeps IDs; migration 30. §0 signed off. |
 | P2-1.0 | 2026-09-30 | First draft for sign-off (SB2-00). Adds catalog kinds and publishing, exports, hierarchy, child drift, system nets V09–V15, manifest v1 with digests, API, errors and audit kinds. P1 changes: snapshots store a manifest (§9.4); instances gain `kind` (§5.1); extractor v5 adds `powerNet` (§8.4). S6 revised by the user: canvas layout is part of the manifest and snapshots (§9.5, revises P1 invariant 6). |

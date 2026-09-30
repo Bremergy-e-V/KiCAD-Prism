@@ -27,6 +27,10 @@ REVISION_MANIFEST_A2 = "prism.revision_manifest_a2"
 REVISION_MANIFEST_A3 = "prism.revision_manifest_a3"
 
 
+
+# Revision columns added by later catalog migrations; see revision_manifest_hash.
+_LATE_REVISION_COLUMNS = ("interface_json", "source_ref_json")
+
 class CatalogRevisionKernel:
     """Persist revision, manifest, audit, and validation-link state.
 
@@ -138,6 +142,11 @@ class CatalogRevisionKernel:
             "created_by",
         }
         metadata = {key: revision[key] for key in sorted(revision) if key not in excluded}
+        # Columns added after revisions were hashed join the manifest only when
+        # set, so every existing revision keeps its recorded hash (migration 3).
+        for key in _LATE_REVISION_COLUMNS:
+            if metadata.get(key) in (None, "", "{}"):
+                metadata.pop(key, None)
         assets = [
             {
                 "asset_type": str(asset["asset_type"]),

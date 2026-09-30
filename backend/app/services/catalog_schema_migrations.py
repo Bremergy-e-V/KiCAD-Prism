@@ -78,9 +78,43 @@ def _import_proposal_draft_column(conn: Any) -> None:
     )
 
 
+def _component_kinds(conn: Any) -> None:
+    """System Builder P2 (CONTRACTS_P2 §3): ``part`` | ``module`` | ``assembly``.
+
+    Every existing component is a ``part``. Module and assembly revisions carry
+    their connector ``interface`` and (assemblies) the ``source_ref`` of the
+    system snapshot they were published from, both as JSON text like the rest
+    of the catalog's JSON columns.
+    """
+    conn.execute(
+        "ALTER TABLE components ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'part'"
+    )
+    conn.execute(
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'components_kind_check'
+            ) THEN
+                ALTER TABLE components
+                    ADD CONSTRAINT components_kind_check CHECK (kind IN ('part', 'module', 'assembly'));
+            END IF;
+        END $$
+        """
+    )
+    conn.execute(
+        "ALTER TABLE component_revisions ADD COLUMN IF NOT EXISTS interface_json TEXT NOT NULL DEFAULT '{}'"
+    )
+    conn.execute(
+        "ALTER TABLE component_revisions ADD COLUMN IF NOT EXISTS source_ref_json TEXT NOT NULL DEFAULT '{}'"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS components_kind_idx ON components (kind)")
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "portable_column_types", _portable_column_types),
     (2, "import_proposal_draft_column", _import_proposal_draft_column),
+    (3, "component_kinds", _component_kinds),
 )
 
 
