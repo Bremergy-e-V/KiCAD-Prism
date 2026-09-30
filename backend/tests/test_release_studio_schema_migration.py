@@ -1793,6 +1793,7 @@ class ReleaseStudioPostgresSchemaTests(unittest.TestCase):
                 (29, "system_import_sessions"),
                 (30, "system_snapshot_manifest"),
                 (31, "system_exports"),
+                (32, "system_catalog_binding"),
             ],
         )
 

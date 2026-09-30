@@ -204,6 +204,19 @@ class SystemStore:
         ).fetchone()
         change.version = int(bumped["version"])
 
+    def bind_catalog_component(self, change: Mutation, component_id: str) -> None:
+        """First publish (CONTRACTS_P2 §3.3): the system's assembly, set once."""
+        row = self.conn.execute(
+            """
+            UPDATE system_projects SET catalog_component_id = %s
+            WHERE id = %s AND (catalog_component_id IS NULL OR catalog_component_id = %s)
+            RETURNING id
+            """,
+            (component_id, change.system_id, component_id),
+        ).fetchone()
+        if row is None:
+            raise Conflict("this system already publishes to another catalog component")
+
     def update_system(
         self, change: Mutation, *, name: Optional[str] = None,
         description: Optional[str] = None, folder_id: Any = ...,

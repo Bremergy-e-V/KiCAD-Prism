@@ -45,7 +45,7 @@ export function ExportDialog({ title, description, initial, existingNames, busy,
   const problem = !name.trim() ? "Give the export a name." : taken ? "Another export already has this name." : null;
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>

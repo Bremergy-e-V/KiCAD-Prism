@@ -15,6 +15,8 @@ export interface SystemSummary {
   etag: string;
   instanceCount: number;
   openReviewCount: number;
+  /** The catalog `assembly` this system publishes to, bound on first publish (CONTRACTS_P2 §3.3). */
+  catalogComponentId?: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -280,6 +282,15 @@ export interface SnapshotMeta {
   manifestSchema?: string | null;
   openReviewCount: number;
   rendererVersion: string;
+  /** The catalog revision this snapshot was published as, if any. */
+  publication?: SnapshotPublication | null;
+}
+
+export interface SnapshotPublication {
+  componentId: string;
+  revisionId: string;
+  version: number | null;
+  releaseStatus: string | null;
 }
 
 export interface Snapshot extends SnapshotMeta {

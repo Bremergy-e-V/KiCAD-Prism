@@ -95,4 +95,39 @@ describe("HistoryTab", () => {
     expect(link.getAttribute("download")).toBe("CDR.manifest.json");
     expect(screen.queryByRole("link", { name: "Manifest of PDR" })).toBeNull();
   });
+  it("publishes a snapshot, asking for the IPN on the first publish, and badges published ones", async () => {
+    const meta = { note: "", createdBy: "user:a@x", createdAt: "2026-09-30T10:00:00Z", digest: "sha256:abcdef0123456789abcdef",
+      openReviewCount: 0, rendererVersion: "2", manifestSchema: "prism.system_manifest.v1", connectivityDigest: "sha256:c" };
+    const calls: [string, RequestInit][] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
+      calls.push([url, init]);
+      const body = url.includes("/history") ? { events: [], nextCursor: null }
+        : url.endsWith("/publish") ? { componentId: "cmp_1", revisionId: "rev_1", version: 1, releaseStatus: "open" }
+          : [{ ...meta, id: "ssn_cdr", name: "CDR", publication: null },
+            { ...meta, id: "ssn_pdr", name: "PDR", publication: { componentId: "cmp_1", revisionId: "rev_0", version: 1, releaseStatus: "released" } }];
+      return new Response(JSON.stringify(body), { status: url.endsWith("/publish") ? 201 : 200, headers: { "Content-Type": "application/json" } });
+    }));
+    render(<HistoryTab systemId="sys_1" document={doc} etag="e" canEdit user={{ role: "designer" } as never} reload={vi.fn(async () => undefined)} onNavigate={vi.fn()} />);
+    const badge = await screen.findByRole("link", { name: /Catalog v1 · released/ });
+    expect(badge.getAttribute("href")).toBe("/?section=library-manager&component=cmp_1");
+    expect(screen.queryByRole("button", { name: "Publish PDR" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Publish CDR" }));
+    const publish = await screen.findByRole("button", { name: "Publish" });
+    expect((publish as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Internal part number"), { target: { value: "IPN-7" } });
+    fireEvent.click(publish);
+    await waitFor(() => expect(calls.some(([url]) => url.endsWith("/publish"))).toBe(true));
+    const [, init] = calls.find(([url]) => url.endsWith("/publish"))!;
+    expect(JSON.parse(String(init.body))).toEqual({ ipn: "IPN-7", name: "Stack" });
+  });
+
+  it("hides publishing from designers without catalog write access", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("/history") ? { events: [], nextCursor: null }
+      : [{ id: "ssn_cdr", name: "CDR", note: "", createdBy: "u", createdAt: "2026-09-30T10:00:00Z", digest: "sha256:abcdef0123456789abcdef",
+        openReviewCount: 0, rendererVersion: "2", manifestSchema: "prism.system_manifest.v1", publication: null }]),
+    { status: 200, headers: { "Content-Type": "application/json" } })));
+    render(<HistoryTab systemId="sys_1" document={doc} etag="e" canEdit user={{ role: "qa" } as never} reload={vi.fn()} onNavigate={vi.fn()} />);
+    await screen.findByText("CDR");
+    expect(screen.queryByRole("button", { name: "Publish CDR" })).toBeNull();
+  });
 });

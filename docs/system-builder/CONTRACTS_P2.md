@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.3 · 2026-09-30 · tickets SB2-00 to SB2-03.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
+**Version P2-1.4 · 2026-09-30 · tickets SB2-00 to SB2-04.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §14.
@@ -127,7 +127,21 @@ A revision **never copies** the manifest. Readers load the snapshot through `sou
   - On the first publish it creates the `assembly` component and binds `system_projects.catalog_component_id` **[S2]**.
   - The normal catalog workflow then applies (`open → in_progress → qa_review → done → released`).
 - **Idempotent:** a unique constraint on (component, snapshotId). Re-publishing a snapshot returns the existing revision with 200; a new publish returns 201.
-- **Two stores, retry-safe:** the catalog and workspace schemas share one database, but are written by different services. The order is: catalog revision first, then the audit event `snapshot_published` on the system. A crash between the two is repaired by re-publishing, because of the idempotency above.
+- **Two stores, retry-safe:** the catalog and workspace schemas share one database, but are written by different services. The order, under the system lock (no version bump):
+  1. the catalog revision;
+  2. the binding (`system_projects.catalog_component_id`, workspace migration 32);
+  3. the audit event `snapshot_published`.
+
+  If the system is unbound, publish first looks for an active assembly whose revisions name this `systemId` and adopts it. So a first publish that crashed after step 1 is never duplicated.
+- **Refusals:**
+  - 403 when the caller lacks `CATALOG_WRITE_ROLES`, or when the snapshot names a board the caller cannot see (a published interface must be complete);
+  - 422 for a P1 snapshot without a manifest, a snapshot with no exports, an unresolved export, or a first publish without an IPN;
+  - 409 when the IPN is already taken;
+  - 409 `interface_not_ready` while a board is extracting.
+- **Response:** 201 with `{componentId, revisionId, version, releaseStatus}` for a new revision, 200 with the existing one on a re-publish.
+- **Assembly metadata:** `value` = IPN, `name` (default: the system name), `manufacturer` (default `In-house`), `description` (default: the system description), and `datasheet_url = /systems/{id}` (the in-app link).
+- **Snapshot metadata** gains `publication: {componentId, revisionId, version, releaseStatus} | null`, read from the catalog on a best-effort basis (a catalog failure never breaks the listing). The system summary gains `catalogComponentId`.
+- **`source_ref` also carries `snapshotName`.** Until SB2-05, `hierarchyValid` is true and `children` is empty.
 - **Release gates** for `assembly` (`catalog/system_items.assert_release_gates`), each fail-closed, replacing the part gates (default representation, KLC):
   - the source snapshot is present (`source_ref.kind = "system_snapshot"`);
   - `source_ref.openReviewCount` is 0;
@@ -452,6 +466,7 @@ Everything else stays on reader or writer roles, including inventory export, hea
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.4 | 2026-09-30 | SB2-04: publishing. Migration 32 binding; write order and orphan adoption; refusals; 201/200; assembly metadata defaults; snapshot `publication`; summary `catalogComponentId`; `source_ref.snapshotName`. |
 | P2-1.3 | 2026-09-30 | SB2-03: exports. Migration 31; rules 6–8; SYS-V16; refresh on baseline advance; document `exports`; export interface `resolved`, 409 `interface_not_ready`, snapshot variant, redaction; manifest export port targets carry their baseline. |
 | P2-1.2 | 2026-09-30 | SB2-02: catalog kinds (migration 3); IPN via `provisional_ipn` + source `prism` instead of a new identity kind; `source_ref` carries the gate facts; assembly gates; integrity guards v5; hash stability; `?kind=`; viewer browse routes. |
 | P2-1.1 | 2026-09-30 | SB2-01: snapshots store the manifest and both digests (`digest` = full); `GET …/manifest` is whole-or-403; `import_manifest` keeps IDs; migration 30. §0 signed off. |
