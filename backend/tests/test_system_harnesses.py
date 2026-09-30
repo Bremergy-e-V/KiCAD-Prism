@@ -114,7 +114,11 @@ class ConversionTest(HarnessCase):
         wires = [{k: w[k] for k in ("id", "from", "to", "signal")} for w in harness["wires"]] + [duplicate]
         self.service.replace_wires(DESIGNER, self.sid, self.version(), harness["id"], wires)
         v01 = [f for f in self.service.validation_report(DESIGNER, self.sid).body["findings"] if f["rule"] == "SYS-V01"]
-        self.assertEqual([f["detail"]["duplicateOf"] for f in v01], [first["id"]])
+        # Either wire of the pair may be the one reported (wires carry no order); the pair is what matters.
+        [finding] = v01
+        self.conn.commit()
+        added = next(w["id"] for w in self.store.get_harness(self.sid, harness["id"])["wires"] if w["signal"] == "again")
+        self.assertEqual({finding["detail"]["wireId"], finding["detail"]["duplicateOf"]}, {first["id"], added})
 
     def test_manifest_round_trips_harnesses(self) -> None:
         self.convert()
