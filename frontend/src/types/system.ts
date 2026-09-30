@@ -109,6 +109,8 @@ export interface LinkEnd {
   exposed: boolean | null;
   /** An end on a subsystem export: where it lands inside the child (CONTRACTS_P2 §6.1). */
   export?: { name: string; reference: string | null; occurrence: string | null; description: string } | null;
+  /** The port's stored mating frame (CONTRACTS_P2 §15.2); absent in documents from before SB2-19. */
+  mating?: { mode: "confirmed" | "override"; axis: MatingAxis; quarterTurns: number } | null;
 }
 
 export interface PinObservation {
@@ -405,7 +407,9 @@ export interface SnapshotDiff {
 
 export type ImportTarget =
   | "from_board" | "from_connector" | "from_pin" | "to_board" | "to_connector" | "to_pin"
-  | "signal" | "harness" | "link_name" | "row_id";
+  | "signal" | "harness" | "link_name" | "row_id"
+  // Harness wires (CONTRACTS_P2 §17.4)
+  | "from_end" | "from_end_pin" | "to_end" | "to_end_pin" | "gauge_awg" | "colour" | "wire_label";
 export type ImportBucket = "matched" | "needsReview" | "unresolved" | "conflict";
 
 export interface ImportUpload {
@@ -442,6 +446,12 @@ export interface ImportEntry {
   linkId: string | null;
   rowId: string | null;
   action: "create" | "update" | null;
+  /** A harness wire (§17.4): `linkName` is the harness, `linkId` its ID once it exists; ends by position. */
+  kind?: "wire";
+  fromEnd?: number | null;
+  fromPin?: string;
+  toEnd?: number | null;
+  toPin?: string;
 }
 
 export interface ImportPreview extends Record<ImportBucket, ImportEntry[]> {
@@ -456,6 +466,7 @@ export interface ImportCommitReport {
   updated: number;
   unchanged: number;
   linksCreated: string[];
+  harnessesCreated?: string[];
   reviewId: string | null;
   counts: Record<ImportBucket, number>;
   unresolved: ImportEntry[];

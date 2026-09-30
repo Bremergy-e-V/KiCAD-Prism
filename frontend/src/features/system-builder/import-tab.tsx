@@ -43,7 +43,10 @@ function plural(count: number, noun: string): string {
 
 function endText(entry: ImportEntry, side: "from" | "to"): string {
   const v = entry.values;
-  return `${v[`${side}_board`]}/${v[`${side}_connector`]}.${v[`${side}_pin`]}`;
+  const pad = v[`${side}_board`] || v[`${side}_connector`] ? `${v[`${side}_board`]}/${v[`${side}_connector`]}.${v[`${side}_pin`]}` : "";
+  if (!v[`${side}_end`]) return pad;
+  // A harness wire (§17.4): the end pin, and the connector pad it lands on.
+  return `${v[`${side}_end`]}.${v[`${side}_end_pin`]} ${pad ? `(${pad})` : "(not mated)"}`;
 }
 
 export function ImportTab({ systemId, document, etag, canEdit, reload, onNavigate }: SystemTabProps) {
@@ -267,7 +270,7 @@ export function ImportTab({ systemId, document, etag, canEdit, reload, onNavigat
                     <td className="px-3 py-1.5">{entry.signal}</td>
                     <td className="px-3 py-1.5 text-xs">
                       {bucket === "matched"
-                        ? `${entry.action === "update" ? "update" : "create"}${entry.linkId ? "" : " (new link)"}`
+                        ? `${entry.action === "update" ? "update" : "create"}${entry.linkId ? "" : entry.kind === "wire" ? ` (new harness ${entry.linkName})` : " (new link)"}`
                         : REASON_LABELS[entry.reason ?? ""] ?? entry.reason}
                     </td>
                   </tr>
@@ -291,6 +294,9 @@ export function ImportTab({ systemId, document, etag, canEdit, reload, onNavigat
           <ul className="list-disc space-y-1 pl-5 text-sm">
             <li>{plural(report.created, "row")} created, {report.updated} updated, {report.unchanged} unchanged</li>
             <li>{report.linksCreated.length} new {report.linksCreated.length === 1 ? "link" : "links"}</li>
+            {(report.harnessesCreated?.length ?? 0) > 0 && (
+              <li>{plural(report.harnessesCreated?.length ?? 0, "new harness")}</li>
+            )}
             <li>{plural(report.unresolved.length + report.conflict.length, "row")} not imported</li>
           </ul>
           <div className="flex gap-2">

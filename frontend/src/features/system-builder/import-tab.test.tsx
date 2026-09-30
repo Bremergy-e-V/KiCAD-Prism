@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { chooseOption, openSelect } from "@/test/select";
 
 import { ImportTab } from "./import-tab";
-import { boardValues, missingTargets, suggestBoardMap, unmappedBoards } from "./import-model";
+import { boardValues, entrySide, missingTargets, suggestBoardMap, unmappedBoards } from "./import-model";
 import { instance, systemDocument } from "./test-fixtures";
 import type { ImportUpload } from "@/types/system";
 
@@ -31,6 +31,13 @@ describe("import model", () => {
     expect(map).toEqual({ "obc-a": obc.id, PWR: pwr.id });
     expect(unmappedBoards(values, map)).toEqual(["HARNESS", "SECRET"]);
     expect(missingTargets(upload.suggestedColumnMap)).toEqual(["To pin"]);
+  });
+
+  it("names a harness wire's sides by end, end pin and the pad it lands on", () => {
+    const pad = { instanceId: pwr.id, label: "PWR", reference: "J3", portKey: "k", exposed: true, pin: "2", pinNames: null, nets: [] };
+    const wire = { kind: "wire" as const, from: pad, to: null, fromEnd: 0, fromPin: "1", toEnd: 2, toPin: "4" };
+    expect([entrySide(wire, "from"), entrySide(wire, "to")]).toEqual(["End 1.1 (PWR/J3.2)", "End 3.4 (not mated)"]);
+    expect(entrySide({ from: pad, to: pad }, "to")).toBe("PWR/J3.2");
   });
 });
 

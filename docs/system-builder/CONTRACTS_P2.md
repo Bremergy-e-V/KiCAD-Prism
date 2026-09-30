@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.19 · 2026-09-30 · tickets SB2-00 to SB2-18.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.20 · 2026-10-01 · tickets SB2-00 to SB2-19.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -667,6 +667,12 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 - ICD gains a **Harnesses** section per harness: ends (mated connector, block part or "Generic", pin map), the wire table (from end/pin/net → to end/pin/net, signal, gauge, colour, label) and splices. A `b2b` table lists each pair with mating frames and stack height.
 - CSV export adds a harness column set: `harness`, `from_end`, `from_pin`, `to_end`, `to_pin`, `gauge_awg`, `colour`, `wire_label` (empty for link rows). Import accepts the same columns and round-trips an exported harness.
 
+**As built (SB2-19, P2-1.20).**
+- **Column names.** The end pins are `from_end_pin`/`to_end_pin`, not `from_pin`/`to_pin`: P1 import already reads `from_pin`/`to_pin` as board pads, and other tools' CSVs use those names. The seven columns `from_end, from_end_pin, to_end, to_end_pin, gauge_awg, colour, wire_label` follow the P1 columns; they are empty on link rows. `harness` keeps its P1 meaning (the drawing label).
+- **Wire rows.** One per wire, after the link rows, harnesses by name, wires by from end, pin, to end, pin. `row_id` = wire ID, `link_id` = harness ID, `link_name` = harness name, `harness` = harness label. `a_*`/`b_*` name the board, connector and **pad** each end mates (after the pin map), with the wire's captured nets; they are empty for an unmated end and board-only for a restricted one. Ends are named `End N` by position. `status` is `error` for an error finding on the wire or either end, `review` for an open review item, else `ok`. RENDERER_VERSION 3.
+- **Import.** A row with `from_end` or `to_end` is a wire. Its harness is the one owning `row_id`, else the one named `link_name` (an unknown name creates a harness with that name and the row's `harness` as label). For an existing harness each end must exist at that position and mate the connector the row names, and the row's pad must be where the end pin lands; otherwise the row is a conflict (`end_not_found`, `end_mate_mismatch`, `pin_map_mismatch`). A new harness gets Generic ends at the rows' positions, mating the rows' connectors (an end with no connector is unmated, pins `1…N`), with a pin map wherever an end pin lands on another pad; a connector already mated by a harness end or a `b2b` link is `port_already_mated`. Also: `end_label_invalid`, `gauge_invalid` (0–40), `same_end`, `wire_in_other_harness`, `harness_ambiguous`. Signals are checked against the pads' nets as for rows; mismatches go to the import review, whose items may now carry a wire (`observed.kind = "wire"`). Parts are not in the CSV: an imported end is Generic. The commit report adds `harnessesCreated`.
+- **ICD.** Stats count harnesses. Link headings say "board-to-board" and the stack height. **Board-to-board mating** lists each `b2b` link with both ends' stored frames (axis, quarter turns, confirmed or set by hand; "not confirmed" when none) and the stack height. **Harnesses** lists per harness its ends (mate, block with the part's MPN, pin map, boot), its wires and its splices. Link documents gain `a.mating`/`b.mating` (`{mode, axis, quarterTurns}` or null) for this.
+
 ## 18. Mating parts in the catalog: mates with (SB2-16) and models (SB2-17)
 
 ### 18.1 "Mates with" **[T7]**
@@ -699,6 +705,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.20 | 2026-10-01 | SB2-19: §17.4 as built. CSV wire rows and seven harness columns (`from_end_pin`/`to_end_pin` renamed from the plan's `from_pin`/`to_pin`, which collide with P1 pad columns); import of wire rows into existing or new harnesses with conflicts named; ICD Board-to-board mating and Harnesses sections; link documents gain end `mating`; renderer 3. |
 | P2-1.19 | 2026-09-30 | SB2-18: mating housings as parts. Migration 39 `part_pins` and `part_summary`; `PATCH …/ends/{eid} {part}` assigns or clears (404/422/409 refusals); end documents gain `matePads` and the part's name and MPN; manifest `HarnessEnd.partPins` and `PartRef` name/mpn/manufacturer; SYS-V19 lands; harness editor part picker, Make generic and a pin map over the connector's pads. |
 | P2-1.18 | 2026-09-30 | SB2-17: §18.2 catalog models. Catalog migration 5 (GLB cache by STEP sha256 + converter; per-part alignment); job `catalog_model_glb`; models, convert, alignment, preview and GLB routes; part page 3D models panel with a numeric alignment editor and a Geometer SVG preview, alone or mated. §18 renamed and split into 18.1/18.2. |
 | P2-1.17 | 2026-09-30 | SB2-16: catalog migration 4 `catalog_mates_with`, routes (GET for browse roles: the viewer list grows to 23), audit events on both parts; extractor v7 `mpn`; harness-end suggestions; SYS-V18 on b2b links and parted harness ends; catalog part page gains Mates with; the harness editor shows suggestions. |
