@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.15 · 2026-09-30 · tickets SB2-00 to SB2-14.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.16 · 2026-09-30 · tickets SB2-00 to SB2-15.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -679,6 +679,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.16 | 2026-09-30 | SB2-15 harness UI: the diagram lays out each harness as a board whose ports are its ends (mated ends are its links), drawn with a dashed border and a mating cap per end; **H** arms harness creation (identity wires between two ports); dragging from **Add an end**, or from an unmated end, to a port adds or mates an end; nodes without a saved position move clear of saved ones. Connections lists harnesses and opens the harness editor (ends, pin maps, wires with splices, generators per end pair, details, conversion, delete). Links offer Convert to a harness and Make harness from label. |
 | P2-1.15 | 2026-09-30 | SB2-14: migration 38 (harnesses, ends, wires); harness store, service and API (§17.3); link↔harness and label conversions (§16.1); a port mated once across b2b links and harness ends (T6); drift and reviews through harness ends; wire validation (V01, V03, V04, V09 opt-in, V10); document, redaction and manifest harnesses. "As built" notes in §17.3. |
 | P2-1.14 | 2026-09-30 | SB2-13: migration 37 (`system_links.type` default `unspecified`, `stack_height_mm` b2b-only); `POST …/links` and `PATCH …/links/{lid}` take `type` and `stackHeightMm`; leaving `b2b` drops the stack height; `port_already_mated` between `b2b` links (harness ends join the check in SB2-14); audits `link_type_changed`; documents and manifests carry both fields. UI: Link details type and stack height, a Mating section for `b2b` links (confirm, set by hand, reset), diagram **B** mode and heavier B2B wires. Link↔harness conversions land with harnesses (SB2-14). |
 | P2-1.13 | 2026-09-30 | SB2-12: placement library `frames` pair (Python `systems/placement/frames.py`, TypeScript `placement/frames.ts`) with shared goldens `placement_cases.json` (14 cases from KiCad stock footprints); migration 36 `system_port_mating`; mating API (§15.3, response shape fixed); `SYS-V17 mating_stale`; manifest mating import and export. |

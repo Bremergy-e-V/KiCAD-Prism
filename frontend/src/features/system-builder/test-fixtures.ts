@@ -1,4 +1,4 @@
-import type { SystemDocument, SystemExport, SystemInstance, SystemLink, SystemPort } from "@/types/system";
+import type { HarnessEnd, SystemDocument, SystemExport, SystemHarness, SystemInstance, SystemLink, SystemPort } from "@/types/system";
 
 export function port(reference: string, patch: Partial<SystemPort> = {}): SystemPort {
   return {
@@ -50,5 +50,26 @@ export function exportOf(name: string, instanceId: string, reference: string, pa
     id: `sxp_${name}`, name, description: "", instanceId, portKey: `key-${reference}`,
     port: { portKey: `key-${reference}`, memberKeys: [`key-${reference}`], reference, libId: null, footprint: null, pinCount: 4 },
     childExportId: null, resolved: true, redacted: false, updatedAt: "", ...patch,
+  };
+}
+
+/** A harness end mating `reference` on `instanceId` (or nothing), with pads `1…pins`. */
+export function harnessEnd(id: string, ordinal: number, mates: { instanceId: string; reference: string } | null, pins = 4): HarnessEnd {
+  return {
+    id, ordinal, part: null, pinCount: pins, pinMap: null, bootMm: null,
+    pins: Array.from({ length: pins }, (_, i) => String(i + 1)),
+    mates: mates && { instanceId: mates.instanceId, portKey: `key-${mates.reference}`, resolved: true, redacted: false,
+      port: { portKey: `key-${mates.reference}`, reference: mates.reference, libId: null, footprint: null, pinCount: pins } },
+  };
+}
+
+export function harness(id: string, ends: HarnessEnd[], wires: [string, string, string, string][] = [], patch: Partial<SystemHarness> = {}): SystemHarness {
+  return {
+    id, name: id, label: null, cutLengthMm: null, serviceAllowancePct: null, linkable: false, ends, updatedAt: "",
+    wires: wires.map(([fromEnd, fromPin, toEnd, toPin], i) => ({
+      id: `${id}-w${i}`, from: { end: fromEnd, pin: fromPin }, to: { end: toEnd, pin: toPin }, signal: `S${i}`,
+      gaugeAwg: null, colour: null, label: null, netFrom: [`/N${i}`], netTo: [`/N${i}`], redactedEnds: [],
+    })),
+    ...patch,
   };
 }

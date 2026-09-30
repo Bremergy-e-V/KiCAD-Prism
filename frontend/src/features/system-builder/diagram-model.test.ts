@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { applyOverrides } from "./diagram-tab";
 import {
+  ADD_END_HANDLE,
   FALLBACK_HANDLE,
   buildDiagram,
+  connectionIntent,
   connectionToLink,
   handleId,
   layoutInputs,
@@ -12,7 +14,7 @@ import {
   portKeyOf,
   subsystemContents,
 } from "./diagram-model";
-import { exportOf, instance, link, port, systemDocument } from "./test-fixtures";
+import { exportOf, harness, harnessEnd, instance, link, port, systemDocument } from "./test-fixtures";
 import type { SystemOccurrence } from "@/types/system";
 
 const obc = instance("OBC", { ports: [port("J7"), port("J10"), port("J2", { exposed: false, override: "hidden" })] });
@@ -145,5 +147,44 @@ describe("nextLinkMode", () => {
     expect(nextLinkMode("Escape", "b2b", false)).toBeNull();
     expect(nextLinkMode("x", "b2b", false)).toBe("b2b");
     expect(nextLinkMode("b", null, true)).toBeNull();
+  });
+});
+
+describe("harnesses on the diagram (CONTRACTS_P2 §17)", () => {
+  const a = instance("OBC");
+  const b = instance("PAY");
+  const wh = harness("shn_1", [harnessEnd("she_a", 0, { instanceId: a.id, reference: "J1" }),
+    harnessEnd("she_b", 1, { instanceId: b.id, reference: "J2" }), harnessEnd("she_c", 2, null)],
+  [["she_a", "1", "she_b", "1"], ["she_a", "2", "she_b", "2"]]);
+  const doc = { ...systemDocument([a, b]), harnesses: [wh] };
+
+  it("places a harness like a board, one row per end, with wires to the mated ports", () => {
+    const diagram = buildDiagram(doc, {});
+    const [node] = diagram.harnesses;
+    expect(node.data.rows.map((row) => [row.label, row.partner, row.block, row.wires])).toEqual([
+      ["End 1", "OBC J1", "Generic · 4 pins", 2], ["End 2", "PAY J2", "Generic · 4 pins", 2], ["End 3", null, "Generic · 4 pins", 0]]);
+    expect(diagram.edges.map((edge) => [edge.id, edge.data.harnessId])).toEqual([["she_a", "shn_1"], ["she_b", "shn_1"]]);
+    const obc = diagram.nodes.find((n) => n.id === a.id)!;
+    expect(obc.data.rows.map((row) => [row.reference, row.partners])).toEqual([["J1", ["shn_1 End 1"]]]);
+  });
+
+  it("reads what a drawn connection means", () => {
+    const port = (id: string, key: string) => ({ source: id, sourceHandle: `r:${key}` });
+    const to = (id: string, key: string) => ({ target: id, targetHandle: `l:${key}` });
+    expect(connectionIntent({ ...port(a.id, "key-J2"), ...to(b.id, "key-J1") }, doc, "harness"))
+      .toEqual({ kind: "harness", a: { instanceId: a.id, portKey: "key-J2" }, b: { instanceId: b.id, portKey: "key-J1" } });
+    expect(connectionIntent({ ...port(a.id, "key-J2"), ...to(b.id, "key-J1") }, doc, null).kind).toBe("link");
+    expect(connectionIntent({ ...port("shn_1", ADD_END_HANDLE), ...to(b.id, "key-J1") }, doc, null))
+      .toEqual({ kind: "add_end", harnessId: "shn_1", port: { instanceId: b.id, portKey: "key-J1" } });
+    expect(connectionIntent({ ...port(a.id, "key-J2"), ...to("shn_1", "she_c") }, doc, null))
+      .toEqual({ kind: "mate_end", harnessId: "shn_1", endId: "she_c", port: { instanceId: a.id, portKey: "key-J2" } });
+    expect(connectionIntent({ ...port(a.id, "key-J2"), ...to("shn_1", "she_a") }, doc, null))
+      .toEqual({ kind: "error", error: "End 1 already mates a connector." });
+  });
+
+  it("H arms a harness the same way B arms board-to-board", () => {
+    expect(nextLinkMode("h", null, false)).toBe("harness");
+    expect(nextLinkMode("b", "harness", false)).toBe("b2b");
+    expect(nextLinkMode("H", "harness", false)).toBeNull();
   });
 });

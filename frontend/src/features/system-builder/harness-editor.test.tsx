@@ -1,0 +1,126 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { chooseOption } from "@/test/select";
+
+import { HarnessEditor, draftFromHarness, splices, wireProblems } from "./harness-editor";
+import { harness, harnessEnd, instance, systemDocument } from "./test-fixtures";
+
+afterEach(() => vi.unstubAllGlobals());
+
+const obc = instance("OBC");
+const pwr = instance("PWR");
+const pay = instance("PAY");
+const cam = instance("CAM");
+
+/**
+ * The merge, split and swap example (SB2-15): OBC J1 and J2 merge into PAY J1;
+ * PWR J1 splits to CAM J1 and PAY J1; OBC J1 pins 3 and 4 cross over to PAY 4 and 3.
+ */
+const five = harness("shn_5", [
+  harnessEnd("she_a", 0, { instanceId: obc.id, reference: "J1" }),
+  harnessEnd("she_b", 1, { instanceId: obc.id, reference: "J2" }),
+  harnessEnd("she_c", 2, { instanceId: pwr.id, reference: "J1" }, 2),
+  harnessEnd("she_d", 3, { instanceId: cam.id, reference: "J1" }, 2),
+  harnessEnd("she_e", 4, { instanceId: pay.id, reference: "J1" }, 8),
+], [
+  ["she_a", "1", "she_e", "1"], ["she_b", "1", "she_e", "2"], // merge
+  ["she_c", "1", "she_d", "1"], ["she_c", "1", "she_e", "5"], // split: a splice on PWR J1 pin 1
+  ["she_a", "3", "she_e", "4"], ["she_a", "4", "she_e", "3"], // swap
+]);
+const doc = { ...systemDocument([obc, pwr, pay, cam]), harnesses: [five] };
+
+function stubApi() {
+  const calls: [string, RequestInit][] = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => {
+    calls.push([url, init]);
+    const json = (body: unknown) => new Response(JSON.stringify(body), {
+      status: 200, headers: { "Content-Type": "application/json", ETag: '"sys:sys_1:2"' },
+    });
+    if (url.endsWith("/generate")) {
+      return json({ wires: [{ from: { end: "she_b", pin: "2" }, to: { end: "she_e", pin: "6" }, signal: "G", netFrom: [], netTo: [] }], skipped: [] });
+    }
+    return json(five);
+  }));
+  return calls;
+}
+
+function renderEditor(target = five) {
+  const run = vi.fn(async (_label: string, action: () => Promise<unknown>) => action());
+  render(<HarnessEditor systemId="sys_1" document={{ ...doc, harnesses: [target] }} harness={target} etag='"sys:sys_1:1"'
+    canEdit findings={[]} busy={null} run={run as never} onDeleted={vi.fn()} onConverted={vi.fn()} />);
+}
+
+describe("harness drafts", () => {
+  it("finds splices and refuses impossible wires", () => {
+    const draft = draftFromHarness(five);
+    expect([...splices(draft)]).toEqual(["she_c#1"]);
+    expect(wireProblems(draft, five).size).toBe(0);
+    const bad = [...draft, { key: "x", from: { end: "she_a", pin: "1" }, to: { end: "she_a", pin: "2" } },
+      { key: "y", from: { end: "she_c", pin: "9" }, to: { end: "she_e", pin: "1" } }];
+    expect([...wireProblems(bad, five).values()]).toEqual(["A wire joins two different ends.", "That pin does not exist on the end."]);
+  });
+});
+
+describe("HarnessEditor", () => {
+  it("shows every end with its mate and block, and marks the splice", () => {
+    stubApi();
+    renderEditor();
+    const ends = screen.getByRole("region", { name: "Ends" });
+    for (const text of ["OBC J1", "OBC J2", "PWR J1", "CAM J1", "PAY J1"]) expect(ends.textContent).toContain(text);
+    expect(ends.textContent).toContain("Generic · 8 pins");
+    expect(screen.getAllByTestId("wire-row")).toHaveLength(6);
+    expect(screen.getAllByText("splice")).toHaveLength(2);
+    expect(screen.getByText(/1 spliced pin/)).toBeTruthy();
+  });
+
+  it("adds a wire and saves the whole list", async () => {
+    const calls = stubApi();
+    renderEditor();
+    fireEvent.click(screen.getByRole("button", { name: /Add wire/ }));
+    await chooseOption("Wire 7 from end", "End 2"); // a new wire joins the bottom and stays there
+    await chooseOption("Wire 7 from pin", "3");
+    await chooseOption("Wire 7 to end", "End 5");
+    await chooseOption("Wire 7 to pin", "7");
+    fireEvent.click(screen.getByRole("button", { name: "Save wires" }));
+    await waitFor(() => expect(calls.some(([, init]) => init.method === "PUT")).toBe(true));
+    const [url, init] = calls.find(([, i]) => i.method === "PUT")!;
+    const body = JSON.parse(String(init.body)) as { id?: string; from: unknown; to: unknown }[];
+    expect(url).toBe("/api/systems/sys_1/harnesses/shn_5/wires");
+    expect(body).toHaveLength(7);
+    expect(body.filter((wire) => wire.id).length).toBe(6);
+    expect(body.find((wire) => !wire.id)).toMatchObject({ from: { end: "she_b", pin: "3" }, to: { end: "she_e", pin: "7" } });
+  });
+
+  it("generates wires for an end pair into the draft", async () => {
+    const calls = stubApi();
+    renderEditor();
+    await chooseOption("Generate from end", "End 2");
+    await chooseOption("Generate to end", "End 5");
+    fireEvent.click(screen.getByRole("button", { name: /Generate/ }));
+    await waitFor(() => expect(screen.getAllByTestId("wire-row")).toHaveLength(7));
+    const [, init] = calls.find(([url]) => url.endsWith("/generate"))!;
+    expect(JSON.parse(String(init.body))).toEqual({ fromEnd: "she_b", toEnd: "she_e", generator: "identity" });
+    expect(screen.getByText(/Unsaved changes: 7 wires/)).toBeTruthy();
+  });
+
+  it("edits an end's pin map", async () => {
+    const calls = stubApi();
+    renderEditor();
+    fireEvent.click(screen.getAllByRole("button", { name: "One to one" })[0]);
+    await chooseOption("Pad for end pin 3", "4");
+    await chooseOption("Pad for end pin 4", "3");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(calls.some(([, init]) => init.method === "PATCH")).toBe(true));
+    const [url, init] = calls.find(([, i]) => i.method === "PATCH")!;
+    expect([url, JSON.parse(String(init.body))]).toEqual(["/api/systems/sys_1/harnesses/shn_5/ends/she_a", { pinMap: { 3: "4", 4: "3" } }]);
+  });
+
+  it("offers conversion to a link only for a simple harness", async () => {
+    stubApi();
+    renderEditor();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Harness actions" }), { key: "Enter" });
+    const item = await screen.findByRole("menuitem", { name: /Convert to a link/ });
+    expect(item.getAttribute("aria-disabled") ?? item.getAttribute("data-disabled")).not.toBeNull();
+  });
+});

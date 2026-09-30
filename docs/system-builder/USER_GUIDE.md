@@ -143,6 +143,28 @@ one already exists. A connector that was not exposed yet is promoted
 automatically. Importing a file exported from the same system changes nothing,
 so the ICD CSV works as a round trip through a spreadsheet.
 
+### Board-to-board links and harnesses
+
+- **Board-to-board.** Press **B** on the diagram (or use the toolbar button),
+  then draw a link: it is a mate between two connectors. Link details show each
+  connector's mating frame (vertical, top or bottom side, or a right-angle
+  direction), inferred from the footprint. **Confirm** it, or **Set by hand**.
+  3D placement only uses confirmed frames. You can also enter the stack height
+  from the connector datasheet.
+- **Harnesses.** Press **H** and draw between two ports to create a cable with
+  a Generic mating connector at each end and one wire per shared pin. Drag
+  from a harness's **Add an end** row to another port to add an end; a harness
+  can have up to 32 ends. The harness editor on **Connections** lists the ends
+  (what each mates, its mating block, and a pin map when a pin lands on a
+  different pad) and the wires. Several wires on one pin form a splice.
+- **Converting.** A link's menu offers **Convert to a harness**. A link with a
+  P1 harness label offers **Make harness … from its links**, which turns every
+  link with that label into one harness. A harness with two ends, no splices
+  and no pin map converts back to a link.
+- A connector mates once: one board-to-board link or one harness end.
+- When a board changes, harness wires are reviewed like link rows. **Remap**
+  on a wire edits that end's pin map.
+
 ## When a board changes
 
 After Prism fetches a repository (every five minutes by default, or on a

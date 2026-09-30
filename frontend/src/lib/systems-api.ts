@@ -18,6 +18,7 @@ import type {
   ImportTarget,
   ImportUpload,
   InstanceInterface,
+  HarnessWire,
   InstanceMating,
   LinkType,
   MatingAxis,
@@ -31,6 +32,7 @@ import type {
   SnapshotPublication,
   SystemDocument,
   SystemExport,
+  SystemHarness,
   SystemHierarchy,
   SystemInstance,
   SystemLink,
@@ -398,4 +400,81 @@ export function setMating(
 export function clearMating(systemId: string, etag: string, instanceId: string, portKey: string) {
   return versioned<PortMating>(path(systemId, "instances", instanceId, "mating", portKey),
     { method: "DELETE", etag }, "Could not clear the mating frame");
+}
+
+// ---------------------------------------------------------------------------
+// Harnesses (CONTRACTS_P2 §17.3)
+
+export type HarnessEndInput = { instanceId: string; portKey: string } | { pinCount: number };
+export type WireInput = Pick<HarnessWire, "from" | "to"> & Partial<Pick<HarnessWire, "id" | "signal" | "gaugeAwg" | "colour" | "label">>;
+
+export function createHarness(
+  systemId: string, etag: string, input: { name?: string; label?: string | null; ends: HarnessEndInput[]; identity?: boolean },
+) {
+  return versioned<SystemHarness>(path(systemId, "harnesses"), { method: "POST", etag, body: json(input) },
+    "Could not create the harness");
+}
+
+export function updateHarness(
+  systemId: string, etag: string, harnessId: string,
+  fields: { name?: string; label?: string | null; cutLengthMm?: number | null; serviceAllowancePct?: number | null },
+) {
+  return versioned<SystemHarness>(path(systemId, "harnesses", harnessId), { method: "PATCH", etag, body: json(fields) },
+    "Could not update the harness");
+}
+
+export function deleteHarness(systemId: string, etag: string, harnessId: string) {
+  return versioned<void>(path(systemId, "harnesses", harnessId), { method: "DELETE", etag }, "Could not delete the harness");
+}
+
+export function addHarnessEnd(systemId: string, etag: string, harnessId: string, end: HarnessEndInput) {
+  return versioned<SystemHarness>(path(systemId, "harnesses", harnessId, "ends"), { method: "POST", etag, body: json(end) },
+    "Could not add the end");
+}
+
+export function updateHarnessEnd(
+  systemId: string, etag: string, harnessId: string, endId: string,
+  fields: { mates?: { instanceId: string; portKey: string } | null; pinMap?: Record<string, string> | null; bootMm?: number | null },
+) {
+  return versioned<SystemHarness>(path(systemId, "harnesses", harnessId, "ends", endId),
+    { method: "PATCH", etag, body: json(fields) }, "Could not update the end");
+}
+
+export function deleteHarnessEnd(systemId: string, etag: string, harnessId: string, endId: string) {
+  return versioned<SystemHarness>(path(systemId, "harnesses", harnessId, "ends", endId), { method: "DELETE", etag },
+    "Could not remove the end");
+}
+
+export function replaceWires(systemId: string, etag: string, harnessId: string, wires: WireInput[]) {
+  return versioned<SystemHarness>(path(systemId, "harnesses", harnessId, "wires"), { method: "PUT", etag, body: json(wires) },
+    "Could not save the wires");
+}
+
+export interface WireProposal {
+  wires: (WireInput & { netFrom: string[]; netTo: string[] })[];
+  skipped: { fromPin: string; toPin: string; reason: "existing" | "unconnected" }[];
+}
+
+export async function generateWires(
+  systemId: string, harnessId: string,
+  input: { fromEnd: string; toEnd: string; generator: GeneratorKind; options?: Record<string, unknown> },
+): Promise<WireProposal> {
+  const { body } = await send<WireProposal>(path(systemId, "harnesses", harnessId, "generate"),
+    { method: "POST", body: json(input) }, "Could not generate wires");
+  return body;
+}
+
+export function linkToHarness(systemId: string, etag: string, linkId: string) {
+  return versioned<SystemHarness>(path(systemId, "links", linkId, "to-harness"), { method: "POST", etag },
+    "Could not convert the link");
+}
+
+export function harnessFromLabel(systemId: string, etag: string, label: string) {
+  return versioned<SystemHarness>(path(systemId, "harnesses", "from-label"), { method: "POST", etag, body: json({ label }) },
+    "Could not convert the harness label");
+}
+
+export function harnessToLink(systemId: string, etag: string, harnessId: string) {
+  return versioned<SystemLink>(path(systemId, "harnesses", harnessId, "to-link"), { method: "POST", etag },
+    "Could not convert the harness");
 }

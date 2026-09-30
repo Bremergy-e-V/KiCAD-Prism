@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   BOARD_WIDTH,
+  boardHeight,
   crossings,
   layoutSystem,
   routeWires,
@@ -99,6 +100,18 @@ describe("layoutSystem", () => {
     expect(wires.every((wire) => wire.kind === "lane")).toBe(true);
     expect(new Set(wires.map((wire) => wire.lane)).size).toBe(3);
     expect(crossings(paths(layout, links))).toBe(0);
+  });
+
+  it("moves a node without a saved position off a saved node sitting in its slot", () => {
+    const boards = [board("A", ["J1", "J2"]), board("B", ["J1"]), board("H", ["E1", "E2"])];
+    const links = [link("x", ["A", "J1"], ["B", "J1"]), link("e1", ["A", "J2"], ["H", "E1"]), link("e2", ["B", "J1"], ["H", "E2"])];
+    const free = layoutSystem(boards, links);
+    const h = free.get("H")!;
+    // Save A exactly where H would go by default.
+    const layout = layoutSystem(boards, links, { A: { x: h.x, y: h.y }, B: { x: h.x + 2 * BOARD_WIDTH, y: 0 } });
+    const [a, moved] = [layout.get("A")!, layout.get("H")!];
+    expect(moved.x).toBe(h.x);
+    expect(moved.y).toBeGreaterThanOrEqual(a.y + boardHeight(a.rows.length, a.hiddenPorts.length));
   });
 
   it("stacks unconnected boards and separate groups without overlap", () => {

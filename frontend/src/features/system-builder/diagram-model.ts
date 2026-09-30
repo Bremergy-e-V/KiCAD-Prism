@@ -6,7 +6,7 @@
  */
 
 import type { LayoutPositions } from "@/lib/systems-api";
-import type { SystemDocument, SystemInstance, SystemLink, SystemOccurrence } from "@/types/system";
+import type { HarnessEnd, SystemDocument, SystemHarness, SystemInstance, SystemLink, SystemOccurrence } from "@/types/system";
 
 import {
   BOARD_WIDTH,
@@ -54,12 +54,37 @@ export interface DiagramNode {
   data: DiagramNodeData;
 }
 
+/** One end of a harness as a row on its node (CONTRACTS_P2 §17.2). */
+export interface HarnessEndRow {
+  endId: string;
+  label: string;
+  /** The mating block: "Generic · 20 pins", or the catalog part. */
+  block: string;
+  /** "OBC-1 J14", "restricted", or null while the end mates nothing. */
+  partner: string | null;
+  wires: number;
+}
+
+export interface HarnessNodeData extends Record<string, unknown> {
+  harness: SystemHarness;
+  rows: HarnessEndRow[];
+}
+
+export interface HarnessDiagramNode {
+  id: string;
+  position: { x: number; y: number };
+  height: number;
+  data: HarnessNodeData;
+}
+
 export interface DiagramEdgeData extends Record<string, unknown> {
   wire: Pick<Wire, "kind" | "lane" | "loopOffset">;
   label: string;
   harness: string | null;
   /** CONTRACTS_P2 §16: mated connectors draw heavier. */
   b2b: boolean;
+  /** A harness end's cable from the board port to the harness node (§17); clicking opens the harness. */
+  harnessId: string | null;
 }
 
 export interface DiagramEdge {
@@ -120,20 +145,53 @@ function linkEnd(document: SystemDocument, link: SystemLink, end: "a" | "b") {
   return { board: link[end].instanceId, portKey: port?.portKey ?? null, reference: port?.reference ?? null };
 }
 
+export const endLabel = (end: HarnessEnd) => `End ${end.ordinal + 1}`;
+
+export function endWireCount(harness: SystemHarness, endId: string): number {
+  return harness.wires.filter((wire) => wire.from.end === endId || wire.to.end === endId).length;
+}
+
+/**
+ * Boards, plus each harness as a board whose ports are its ends and whose
+ * mated ends are links (§17): the layout places and routes them like boards.
+ */
 export function layoutInputs(document: SystemDocument): { boards: LayoutBoardInput[]; links: LayoutLinkInput[] } {
+  const harnesses = document.harnesses ?? [];
   return {
-    boards: document.instances.map((instance) => ({
-      id: instance.id,
-      label: instance.label,
-      ports: drawablePorts(document, instance).ports,
-    })),
-    links: document.links.map((link) => ({
-      id: link.id,
-      name: link.name,
-      a: linkEnd(document, link, "a"),
-      b: linkEnd(document, link, "b"),
-      rowCount: link.rows.length,
-    })),
+    boards: [
+      ...document.instances.map((instance) => ({
+        id: instance.id,
+        label: instance.label,
+        ports: drawablePorts(document, instance).ports,
+      })),
+      ...harnesses.map((harness) => ({
+        id: harness.id,
+        label: harness.name,
+        ports: harness.ends.map((end) => ({ portKey: end.id, reference: endLabel(end) })),
+      })),
+    ],
+    links: [
+      ...document.links.map((link) => ({
+        id: link.id,
+        name: link.name,
+        a: linkEnd(document, link, "a"),
+        b: linkEnd(document, link, "b"),
+        rowCount: link.rows.length,
+      })),
+      ...harnesses.flatMap((harness) => harness.ends.flatMap((end) => {
+        const mates = end.mates;
+        if (!mates) return [];
+        const instance = document.instances.find((candidate) => candidate.id === mates.instanceId);
+        const port = instance?.ports === null ? null : mates.port;
+        return [{
+          id: end.id,
+          name: harness.name,
+          a: { board: mates.instanceId, portKey: port?.portKey ?? null, reference: port?.reference ?? null },
+          b: { board: harness.id, portKey: end.id, reference: endLabel(end) },
+          rowCount: endWireCount(harness, end.id),
+        }];
+      })),
+    ],
   };
 }
 
@@ -155,7 +213,7 @@ export function buildDiagram(
   document: SystemDocument,
   positions: LayoutPositions,
   expanded: ReadonlySet<string> = new Set(),
-): { nodes: DiagramNode[]; edges: DiagramEdge[] } {
+): { nodes: DiagramNode[]; harnesses: HarnessDiagramNode[]; edges: DiagramEdge[] } {
   const inputs = layoutInputs(document);
   const layout = layoutSystem(inputs.boards, inputs.links, positions);
   const nodes = document.instances.map((instance) => {
@@ -193,8 +251,38 @@ export function buildDiagram(
       data: { instance, rows, hiddenCount: hidden.length, expanded: open },
     };
   });
+  const labelsOf = new Map(document.instances.map((instance) => [instance.id, instance.label]));
+  const harnessNodes = (document.harnesses ?? []).map((harness) => {
+    const placed = layout.get(harness.id)!;
+    const byEnd = new Map(harness.ends.map((end) => [end.id, end]));
+    const order = [...placed.rows.map((row) => row.portKey), ...placed.hiddenPorts.map((port) => port.portKey)];
+    const rows: HarnessEndRow[] = order.flatMap((endId) => {
+      const end = endId ? byEnd.get(endId) : undefined;
+      if (!end) return [];
+      const mates = end.mates;
+      const partner = !mates ? null : mates.redacted || !mates.port
+        ? "restricted" : `${labelsOf.get(mates.instanceId) ?? "?"} ${mates.port.reference}`;
+      return [{ endId: end.id, label: endLabel(end), block: end.part ? "Catalog part" : `Generic · ${end.pinCount} pins`,
+        partner, wires: endWireCount(harness, end.id) }];
+    });
+    return { id: harness.id, position: { x: placed.x, y: placed.y }, height: boardHeight(rows.length + 1, 0), data: { harness, rows } };
+  });
+  const harnessOfEnd = new Map((document.harnesses ?? []).flatMap((h) => h.ends.map((end) => [end.id, h] as const)));
   const labels = new Map(document.links.map((link) => [link.id, link]));
   const edges = routeWires(layout, inputs.links).map((wire) => {
+    const harness = harnessOfEnd.get(wire.linkId);
+    if (harness) {
+      const end = harness.ends.find((candidate) => candidate.id === wire.linkId)!;
+      const handle = (side: Wire["source"]) => handleId(side.side, side.rowKey === rowKey(null) ? null : side.rowKey);
+      const count = endWireCount(harness, end.id);
+      return {
+        id: end.id, source: wire.source.board, sourceHandle: handle(wire.source),
+        target: wire.target.board, targetHandle: handle(wire.target),
+        data: { wire: { kind: wire.kind, lane: wire.lane, loopOffset: wire.loopOffset },
+          label: `${harness.name} · ${endLabel(end)} · ${count} ${count === 1 ? "wire" : "wires"}`,
+          harness: harness.label, b2b: false, harnessId: harness.id },
+      };
+    }
     const link = labels.get(wire.linkId)!;
     const handle = (end: Wire["source"]) => handleId(end.side, end.rowKey === rowKey(null) ? null : end.rowKey);
     return {
@@ -208,10 +296,11 @@ export function buildDiagram(
         label: edgeLabel(link),
         harness: link.harness,
         b2b: link.type === "b2b",
+        harnessId: null,
       },
     };
   });
-  return { nodes, edges };
+  return { nodes, harnesses: harnessNodes, edges };
 }
 
 export interface ConnectionLike {
@@ -254,12 +343,55 @@ export function subsystemContents(occurrences: SystemOccurrence[], instanceId: s
     : []));
 }
 
-/** The diagram's link mode (CONTRACTS_P2 §16.2): **B** arms the next drawn link as board-to-board, Esc disarms. */
-export type LinkMode = "b2b" | null;
+/**
+ * The diagram's link mode (CONTRACTS_P2 §16.2): **B** arms the next drawn link
+ * as board-to-board, **H** makes it a harness; the same key or Esc disarms.
+ */
+export type LinkMode = "b2b" | "harness" | null;
 
 export function nextLinkMode(key: string, current: LinkMode, typing: boolean): LinkMode {
   if (typing) return current;
   if (key === "Escape") return null;
-  if (key === "b" || key === "B") return current === "b2b" ? null : "b2b";
-  return current;
+  const lower = key.toLowerCase();
+  const wanted: LinkMode = lower === "b" ? "b2b" : lower === "h" ? "harness" : null;
+  if (!wanted) return current;
+  return current === wanted ? null : wanted;
+}
+
+/** The handle on a harness node that adds an end when dragged to a port. */
+export const ADD_END_HANDLE = "__add_end__";
+
+type PortEnd = { instanceId: string; portKey: string };
+
+/** What a drawn connection means once harnesses are on the canvas (§17.2). */
+export type ConnectionIntent =
+  | { kind: "link"; a: PortEnd; b: PortEnd }
+  | { kind: "harness"; a: PortEnd; b: PortEnd }
+  | { kind: "add_end"; harnessId: string; port: PortEnd }
+  | { kind: "mate_end"; harnessId: string; endId: string; port: PortEnd }
+  | { kind: "error"; error: string };
+
+export function connectionIntent(connection: ConnectionLike, document: SystemDocument, mode: LinkMode): ConnectionIntent {
+  const harnesses = new Map((document.harnesses ?? []).map((harness) => [harness.id, harness]));
+  const { source, target } = connection;
+  if (!source || !target) return { kind: "error", error: "Connect one port to another." };
+  const sourceHarness = harnesses.get(source);
+  const targetHarness = harnesses.get(target);
+  if (sourceHarness && targetHarness) return { kind: "error", error: "Connect a harness to a board port, not to another harness." };
+  if (sourceHarness || targetHarness) {
+    const harness = (sourceHarness ?? targetHarness)!;
+    const endKey = portKeyOf(sourceHarness ? connection.sourceHandle : connection.targetHandle);
+    const boardId = sourceHarness ? target : source;
+    const portKey = portKeyOf(sourceHarness ? connection.targetHandle : connection.sourceHandle);
+    if (!portKey) return { kind: "error", error: "Drag the harness to a board port." };
+    const port = { instanceId: boardId, portKey };
+    if (endKey === ADD_END_HANDLE) return { kind: "add_end", harnessId: harness.id, port };
+    const end = harness.ends.find((candidate) => candidate.id === endKey);
+    if (!end) return { kind: "error", error: "Drag from a harness end." };
+    if (end.mates) return { kind: "error", error: `${endLabel(end)} already mates a connector.` };
+    return { kind: "mate_end", harnessId: harness.id, endId: end.id, port };
+  }
+  const request = connectionToLink(connection);
+  if ("error" in request) return { kind: "error", error: request.error };
+  return { kind: mode === "harness" ? "harness" : "link", ...request };
 }

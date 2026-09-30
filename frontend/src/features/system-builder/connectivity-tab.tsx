@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { FileUp, Network } from "lucide-react";
+import { Cable, FileUp, Network } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import type { ValidationReport } from "@/types/system";
 
 import { FindingCountBadge } from "./findings-ui";
+import { HarnessEditor } from "./harness-editor";
 import { ImportTab } from "./import-tab";
 import { LinkEditor, endLabel } from "./link-editor";
 import type { SystemTabProps } from "./system-tab-content";
@@ -18,8 +19,12 @@ export function ConnectivityTab(props: SystemTabProps) {
   const { systemId, document, etag, canEdit, reload, onNavigate } = props;
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get("link");
+  const requestedHarness = searchParams.get("harness");
   const importing = searchParams.get("tab") === "import";
-  const selected = document.links.find((link) => link.id === requested) ?? document.links[0] ?? null;
+  const harnesses = document.harnesses ?? [];
+  const selectedHarness = harnesses.find((harness) => harness.id === requestedHarness) ?? null;
+  const selected = selectedHarness ? null : document.links.find((link) => link.id === requested) ?? document.links[0] ?? null;
+  const shownHarness = selectedHarness ?? (!selected && harnesses.length ? harnesses[0] : null);
   const [report, setReport] = useState<{ etag: string; body: ValidationReport } | null>(null);
   const { busy, run } = useSystemMutation(reload);
 
@@ -42,7 +47,14 @@ export function ConnectivityTab(props: SystemTabProps) {
       change(params);
       return params;
     }, { replace: true });
-  const select = (linkId: string) => update((params) => params.set("link", linkId));
+  const select = (linkId: string) => update((params) => {
+    params.delete("harness");
+    params.set("link", linkId);
+  });
+  const selectHarness = (harnessId: string) => update((params) => {
+    params.delete("link");
+    params.set("harness", harnessId);
+  });
   const setImporting = (open: boolean) => update((params) => params.set("tab", open ? "import" : "connectivity"));
 
   const importSheet = canEdit && (
@@ -62,7 +74,7 @@ export function ConnectivityTab(props: SystemTabProps) {
     </Sheet>
   );
 
-  if (document.links.length === 0) {
+  if (document.links.length === 0 && harnesses.length === 0) {
     return (
       <div className="flex flex-col items-center gap-3 p-10 text-center">
         <Network className="h-8 w-8 text-muted-foreground" />
@@ -110,9 +122,34 @@ export function ConnectivityTab(props: SystemTabProps) {
             );
           })}
         </nav>
+        {harnesses.length > 0 && (
+          <>
+            <h2 className="border-y px-3 py-2 text-sm font-semibold">Harnesses <span className="font-normal text-muted-foreground">{harnesses.length}</span></h2>
+            <nav className="grid gap-0.5 p-2" aria-label="Harnesses">
+              {harnesses.map((harness) => (
+                <button key={harness.id} type="button" onClick={() => selectHarness(harness.id)}
+                  aria-current={shownHarness?.id === harness.id ? "true" : undefined}
+                  className={cn("grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-2 py-1.5 text-left text-sm",
+                    shownHarness?.id === harness.id ? "bg-muted" : "hover:bg-muted/50")}>
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1 truncate font-medium"><Cable className="h-3.5 w-3.5 shrink-0" /> {harness.name}</span>
+                    <span className="block truncate text-xs text-muted-foreground">{harness.ends.length} ends · {harness.wires.length} wires</span>
+                  </span>
+                  <FindingCountBadge findings={findings.filter((finding) => (finding.detail as { harnessId?: string } | null)?.harnessId === harness.id)} />
+                </button>
+              ))}
+            </nav>
+          </>
+        )}
       </aside>
       <section className="min-w-0 p-4 md:p-6">
-        {selected && (
+        {shownHarness && (
+          <HarnessEditor key={shownHarness.id} systemId={systemId} document={document} harness={shownHarness} etag={etag}
+            canEdit={canEdit} findings={findings} busy={busy} run={run}
+            onDeleted={() => update((params) => params.delete("harness"))}
+            onConverted={(linkId) => select(linkId)} />
+        )}
+        {!shownHarness && selected && (
           <LinkEditor
             key={selected.id}
             systemId={systemId}
@@ -124,6 +161,7 @@ export function ConnectivityTab(props: SystemTabProps) {
             busy={busy}
             run={run}
             onDeleted={() => update((params) => params.delete("link"))}
+            onHarness={selectHarness}
           />
         )}
       </section>

@@ -175,10 +175,57 @@ export interface SystemExport {
   updatedAt: string;
 }
 
+/** A harness end's mating block and what it mates (CONTRACTS_P2 §17.2). */
+export interface HarnessEnd {
+  id: string;
+  ordinal: number;
+  mates: {
+    instanceId: string;
+    portKey: string | null;
+    port: { portKey: string; reference: string; libId: string | null; footprint: string | null; pinCount: number } | null;
+    resolved: boolean | null;
+    redacted: boolean;
+  } | null;
+  part: { componentId: string; revisionId: string } | null;
+  pinCount: number;
+  pinMap: Record<string, string> | null;
+  bootMm: number | null;
+  /** End pin names: the mated connector's pads while Generic; `1…pinCount` while unmated. */
+  pins: string[];
+}
+
+export interface HarnessWire {
+  id: string;
+  from: { end: string; pin: string };
+  to: { end: string; pin: string };
+  signal: string;
+  gaugeAwg: number | null;
+  colour: string | null;
+  label: string | null;
+  netFrom: string[] | null;
+  netTo: string[] | null;
+  redactedEnds: ("from" | "to")[];
+}
+
+export interface SystemHarness {
+  id: string;
+  name: string;
+  label: string | null;
+  cutLengthMm: number | null;
+  serviceAllowancePct: number | null;
+  /** Two mated ends, no splices, identity pin maps: it can become a link (§16.1). */
+  linkable: boolean;
+  ends: HarnessEnd[];
+  wires: HarnessWire[];
+  updatedAt: string;
+}
+
 export interface SystemDocument {
   system: SystemSummary;
   instances: SystemInstance[];
   links: SystemLink[];
+  /** Absent in documents frozen before harness objects existed. */
+  harnesses?: SystemHarness[];
   /** Absent in documents frozen before exports existed. */
   exports?: SystemExport[];
   openReviewCount: number;
