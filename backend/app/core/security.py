@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.roles import (
+    CATALOG_BROWSE_ROLES,
     CATALOG_READ_ROLES,
     CATALOG_WRITE_ROLES,
     PROJECT_RELEASE_ACTOR_ROLES,
@@ -195,6 +196,14 @@ def _require_bearer_scope(user: AuthenticatedUser, *required_scopes: str) -> Non
 async def require_catalog_reader(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
     _require_bearer_scope(user, "api:read")
     if user.role not in CATALOG_READ_ROLES:
+        raise HTTPException(status_code=403, detail="Catalog read access required")
+    return user
+
+
+async def require_catalog_browser(user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
+    """Read-only browsing of the component database; viewers included (D-P2-24)."""
+    _require_bearer_scope(user, "api:read")
+    if user.role not in CATALOG_BROWSE_ROLES:
         raise HTTPException(status_code=403, detail="Catalog read access required")
     return user
 

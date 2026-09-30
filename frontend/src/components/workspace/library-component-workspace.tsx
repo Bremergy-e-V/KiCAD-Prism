@@ -196,7 +196,7 @@ function OverviewPanel({ component, canMutate, onEdit }: { component: CatalogCom
 
   return (
     <div className="space-y-4">
-      {component.identity_kind === "provisional_ipn" ? (
+      {isProvisionalPart(component) ? (
         <div className="border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
           <strong>Provisional component.</strong> Add the real manufacturer part number before approval, release, inventory synchronization, or placement.
         </div>
@@ -397,7 +397,7 @@ function RepresentationsPanel({ component, canMutate, onChanged }: { component: 
       description="Pair any attached symbol with any attached footprint. Placement and previews follow the selected pair."
       action={canMutate ? <Button size="sm" variant="outline" disabled={creating} onClick={() => void add()}>{creating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Layers3 className="h-3.5 w-3.5" />} Add representation</Button> : null}
     >
-      {component.identity_kind === "provisional_ipn" ? <div className="mb-3 border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">This provisional component cannot be completed or released until it has a real manufacturer and MPN.</div> : null}
+      {isProvisionalPart(component) ? <div className="mb-3 border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">This provisional component cannot be completed or released until it has a real manufacturer and MPN.</div> : null}
       <div className="space-y-2">
         {component.representations.map((representation) => <RepresentationRow key={representation.id} component={component} representation={representation} canMutate={canMutate} onChanged={onChanged} />)}
         {!component.representations.length ? <EmptyState icon={Layers3} title="No representations" detail="Attach symbol and footprint assets, then pair them here." /> : null}
@@ -520,6 +520,11 @@ function ErrorState({ message, onRetry }: { message: string; onRetry: () => void
       </div>
     </div>
   );
+}
+
+/** Modules and assemblies carry an IPN by design; only library parts are "provisional". */
+function isProvisionalPart(component: CatalogComponent): boolean {
+  return component.identity_kind === "provisional_ipn" && (component.kind ?? "part") === "part";
 }
 
 // react-doctor-disable-next-line no-giant-component - tabs, evidence, and release queue share one component resource
