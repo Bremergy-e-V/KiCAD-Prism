@@ -81,7 +81,7 @@ class EvidenceTest(unittest.TestCase):
             self.assertGreaterEqual(checked, 8, board)
 
     def test_thickness_and_boardless_projects(self) -> None:
-        self.assertEqual(EXTRACTOR_VERSION, "6")
+        self.assertGreaterEqual(int(EXTRACTOR_VERSION), 6)  # geometry arrived in v6
         self.assertAlmostEqual(extract("mini_obc/F0")["boardThicknessMm"], 1.6)
         payload = extract("mini_payload/F0")
         self.assertIsNone(payload["boardThicknessMm"])

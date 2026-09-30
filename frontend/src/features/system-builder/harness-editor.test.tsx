@@ -37,6 +37,11 @@ function stubApi() {
     const json = (body: unknown) => new Response(JSON.stringify(body), {
       status: 200, headers: { "Content-Type": "application/json", ETag: '"sys:sys_1:2"' },
     });
+    if (url.endsWith("/suggestions")) {
+      const endId = url.split("/")[7];
+      return json({ endId, connectorMpn: "X", connectorPart: { componentId: "p", name: "P", mpn: "FTSH-110", manufacturer: "Samtec" },
+        suggestions: endId === "she_a" ? [{ componentId: "h", name: "Housing", mpn: "FFSD-10", manufacturer: "Samtec" }] : [] });
+    }
     if (url.endsWith("/generate")) {
       return json({ wires: [{ from: { end: "she_b", pin: "2" }, to: { end: "she_e", pin: "6" }, signal: "G", netFrom: [], netTo: [] }], skipped: [] });
     }
@@ -72,6 +77,14 @@ describe("HarnessEditor", () => {
     expect(screen.getAllByTestId("wire-row")).toHaveLength(6);
     expect(screen.getAllByText("splice")).toHaveLength(2);
     expect(screen.getByText(/1 spliced pin/)).toBeTruthy();
+  });
+
+  it("suggests the catalog partners of a Generic end's connector without assigning them", async () => {
+    stubApi();
+    renderEditor();
+    expect(await screen.findByText("Mates with FFSD-10")).toBeTruthy();
+    expect(screen.getAllByText("No mating part recorded for FTSH-110").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: /Assign|Use/ })).toBeNull();
   });
 
   it("adds a wire and saves the whole list", async () => {

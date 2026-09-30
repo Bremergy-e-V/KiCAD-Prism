@@ -33,7 +33,7 @@ from app.services import semantic_index_variants
 from app.services.systems import connector_detection
 
 SCHEMA = "prism.system_interface.v1"
-EXTRACTOR_VERSION = "6"
+EXTRACTOR_VERSION = "7"
 _UNCONNECTED_PREFIX = "unconnected-("
 
 
@@ -275,6 +275,15 @@ def _power_net_names(design: Any) -> set[str]:
     return names
 
 
+_MPN_FIELDS = ("mpn", "manufacturer_part_number", "manufacturer part number", "mfr_pn", "mfr. no.", "mfr no")
+
+
+def _mpn(fields: Mapping[str, str]) -> str | None:
+    """The first non-empty MPN-style field (case-insensitive name), else None."""
+    by_name = {name.strip().lower(): value.strip() for name, value in fields.items()}
+    return next((by_name[name] for name in _MPN_FIELDS if by_name.get(name)), None)
+
+
 def _field_map(component: Any) -> dict[str, str]:
     fields = getattr(component, "fields", None) or {}
     return {str(key): _string(value) for key, value in dict(fields).items()}
@@ -369,6 +378,8 @@ def extract_interface(
                 "libId": lib_id,
                 "footprint": footprint,
                 "value": _string(getattr(netlist_component, "value", "")) if netlist_component else "",
+                # v7 (CONTRACTS_P2 §18): matches the connector to a catalog part.
+                "mpn": _mpn(fields),
                 "dnp": bool((default_components.get(reference) or {}).get("dnp", False)),
                 "candidate": candidate,
                 "candidateReason": reason,

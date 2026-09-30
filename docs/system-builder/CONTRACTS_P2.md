@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.16 · 2026-09-30 · tickets SB2-00 to SB2-15.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.17 · 2026-09-30 · tickets SB2-00 to SB2-16.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -460,8 +460,8 @@ All routes are under `/api/systems/{id}` and follow P1 conventions (If-Match, 41
 | `GET …/icd.{csv,html}?depth=all` | §10 |
 | Catalog: `GET /api/catalog/components?kind=part\|module\|assembly` | Filter by kind. Component payloads carry `kind`, `interface` and `source_ref` |
 
-**Viewer browsing (D-P2-24, [S8]).** The dependency `require_catalog_browser` (roles `CATALOG_BROWSE_ROLES` = reader roles + `viewer`) guards exactly these 22 routes:
-- components list, detail, revisions (list, compare, one), audit (and verify), usage, reviews, releases and validation;
+**Viewer browsing (D-P2-24, [S8]).** The dependency `require_catalog_browser` (roles `CATALOG_BROWSE_ROLES` = reader roles + `viewer`) guards exactly these 23 routes:
+- components list, detail, revisions (list, compare, one), audit (and verify), usage, mates-with (P2-1.17), reviews, releases and validation;
 - categories, workflow summary, release queue, asset search, previews and asset content;
 - metadata fields, grid, grid preferences (GET and PUT, per user) and `export.csv`.
 
@@ -661,13 +661,14 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 ## 18. "Mates with" (SB2-16) **[T7]**
 
-- `catalog.catalog_mates_with (part_a, part_b, created_by, created_at)`, stored once with `part_a < part_b`, read in both directions, only between `part` components (§3.4). API: `GET/POST/DELETE /api/catalog/components/{cid}/mates-with`; writers only; audited in the catalog history.
-- **Identifying a board connector's part:** the component's `MPN` (or `Manufacturer_Part_Number`, `MFR_PN`, `Mfr. No.`) field at the baseline, matched case-insensitively to a catalog `part`'s MPN. No match → the connector's part is unknown.
-- **Suggestion:** a Generic block whose mated connector's part is known lists that part's mates-with partners. It **never assigns** one by itself.
-- **Findings** (per harness end with a part, and per `b2b` link):
-  - `SYS-V18 mate_pair_unknown` (warning): both parts are known and the pair is not in mates-with.
-  - `SYS-V19 mate_pin_mismatch` (error): pin counts differ and wired pins lack a pin map (§17.2).
-  - Unknown part on either side: not evaluated, never a pass.
+- Catalog migration 4: `catalog_mates_with (part_a, part_b, created_by, created_at)`, stored once with `part_a < part_b`, read in both directions, only between active `part` components (§3.4).
+- API: `GET /api/catalog/components/{cid}/mates-with` (catalog browse roles, viewers included), `POST …/mates-with {componentId}` and `DELETE …/mates-with/{otherId}` (catalog writers). Each returns the part's current list. A change writes `component.mates_with_added` or `…_removed` into **both** parts' audit chains; re-adding an existing pair writes nothing. 404 for an unknown part, 422 for a non-part or a part paired with itself.
+- **Identifying a board connector's part:** extractor **v7** records `mpn` per component: the first non-empty field named `MPN`, `Manufacturer_Part_Number`, `Manufacturer Part Number`, `MFR_PN`, `Mfr. No.` or `Mfr No` (case-insensitive). It is matched case-insensitively to the MPN of an active `part`'s current revision. An MPN that two parts share matches neither. No match means the part is unknown.
+- **Suggestion:** `GET /api/systems/{id}/harnesses/{hid}/ends/{eid}/suggestions` returns `{connectorMpn, connectorPart, suggestions}` for a mated end. The harness editor shows the partners under a Generic block. It **never assigns** one; assignment is SB2-18.
+- **Findings** (per `b2b` link, and per harness end with a part):
+  - `SYS-V18 mate_pair_unknown` (warning): both parts are known and the pair is not in mates-with. Detail: `{partA, partB}` for a link; `{harnessId, endId, part, connectorPart}` for an end.
+  - `SYS-V19 mate_pin_mismatch` (error): pin counts differ and wired pins lack a pin map (§17.2); lands with part assignment in SB2-18.
+  - An unknown part on either side, or no catalog, is not evaluated and never counts as a pass.
 
 | Rule | Name | Severity |
 |---|---|---|
@@ -679,6 +680,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.17 | 2026-09-30 | SB2-16: catalog migration 4 `catalog_mates_with`, routes (GET for browse roles: the viewer list grows to 23), audit events on both parts; extractor v7 `mpn`; harness-end suggestions; SYS-V18 on b2b links and parted harness ends; catalog part page gains Mates with; the harness editor shows suggestions. |
 | P2-1.16 | 2026-09-30 | SB2-15 harness UI: the diagram lays out each harness as a board whose ports are its ends (mated ends are its links), drawn with a dashed border and a mating cap per end; **H** arms harness creation (identity wires between two ports); dragging from **Add an end**, or from an unmated end, to a port adds or mates an end; nodes without a saved position move clear of saved ones. Connections lists harnesses and opens the harness editor (ends, pin maps, wires with splices, generators per end pair, details, conversion, delete). Links offer Convert to a harness and Make harness from label. |
 | P2-1.15 | 2026-09-30 | SB2-14: migration 38 (harnesses, ends, wires); harness store, service and API (§17.3); link↔harness and label conversions (§16.1); a port mated once across b2b links and harness ends (T6); drift and reviews through harness ends; wire validation (V01, V03, V04, V09 opt-in, V10); document, redaction and manifest harnesses. "As built" notes in §17.3. |
 | P2-1.14 | 2026-09-30 | SB2-13: migration 37 (`system_links.type` default `unspecified`, `stack_height_mm` b2b-only); `POST …/links` and `PATCH …/links/{lid}` take `type` and `stackHeightMm`; leaving `b2b` drops the stack height; `port_already_mated` between `b2b` links (harness ends join the check in SB2-14); audits `link_type_changed`; documents and manifests carry both fields. UI: Link details type and stack height, a Mating section for `b2b` links (confirm, set by hand, reset), diagram **B** mode and heavier B2B wires. Link↔harness conversions land with harnesses (SB2-14). |

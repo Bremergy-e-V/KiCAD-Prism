@@ -35,6 +35,7 @@ from app.services.systems import service as service_module
 from app.services.systems.interface_extractor import extract_for_revision
 from app.services.systems.jobs import EXTRACT_JOB_KIND, artifact_key
 from app.services.systems.service import SystemService
+from app.services.systems.interface_extractor import EXTRACTOR_VERSION
 from app.services.systems.store import SystemStore
 
 POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL", "").strip().replace(
@@ -808,7 +809,7 @@ class SystemApiTest(unittest.TestCase):
             second = jobs.extract_and_store(project, f0, self.connect)
         self.assertEqual(extract.call_count, 1)
         self.assertEqual(first["digest"], second["digest"])
-        self.assertEqual(artifact_key("prj_obc", f0), f"system-interface:v6:prj_obc:{f0}")
+        self.assertEqual(artifact_key("prj_obc", f0), f"system-interface:v{EXTRACTOR_VERSION}:prj_obc:{f0}")
 
     def test_extraction_job_fails_permanently_without_a_source(self) -> None:
         from app.services.job_runtime import PermanentJobError

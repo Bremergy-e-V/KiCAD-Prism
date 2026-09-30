@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from app.services.catalog import system_items
+from app.services.catalog import mates as catalog_mates, system_items
 from app.services.catalog.collaborators import build_catalog_collaborators
 from app.services.catalog.component_history import CatalogComponentHistoryReads
 from app.services.catalog.component_read_models import (
@@ -1125,6 +1125,42 @@ class ComponentCatalogDomainService:
             "active": bool(row["is_active"]), "latestReleasedRevisionId": str(row["released_revision_id"] or "") or None,
             "interface": payload["interface"], "sourceRef": payload["sourceRef"],
         }
+
+    # "Mates with" (CONTRACTS_P2 §18) -------------------------------------------------
+
+    def list_mates_with(self, component_id: str) -> list[dict[str, Any]]:
+        self.initialize()
+        with self._connect() as conn:
+            catalog_mates.require_part(conn, component_id)
+            return catalog_mates.list_mates(conn, component_id)
+
+    def set_mate(self, component_id: str, other_id: str, *, mates: bool, actor: str = "") -> list[dict[str, Any]]:
+        """Add (``mates``) or remove the pair, audited on both components' histories."""
+        self.initialize()
+        with self._connect() as conn:
+            for part in (component_id, other_id):
+                catalog_mates.require_part(conn, part)
+            changed = (catalog_mates.add(conn, component_id, other_id, actor=actor, now=_utc_now_iso()) if mates
+                       else catalog_mates.remove(conn, component_id, other_id))
+            if changed:
+                for part, partner in ((component_id, other_id), (other_id, component_id)):
+                    _component, revision = self._active_revision_row(conn, part)
+                    self._append_audit_event(
+                        conn, component_id=part, revision_id=str((revision or {}).get("id") or ""),
+                        event_type="component.mates_with_added" if mates else "component.mates_with_removed",
+                        actor=actor, details={"partner": partner})
+            conn.commit()
+            return catalog_mates.list_mates(conn, component_id)
+
+    def parts_by_mpn(self, mpns: list[str]) -> dict[str, dict[str, Any]]:
+        self.initialize()
+        with self._connect() as conn:
+            return catalog_mates.parts_by_mpn(conn, mpns)
+
+    def mate_pairs(self, component_ids: list[str]) -> set[tuple[str, str]]:
+        self.initialize()
+        with self._connect() as conn:
+            return catalog_mates.pairs_among(conn, component_ids)
 
     def released_system_revision(self, component_id: str) -> dict[str, Any] | None:
         """The component's current released revision (for ``follow = latest_released``), or None."""

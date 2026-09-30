@@ -478,3 +478,17 @@ export function harnessToLink(systemId: string, etag: string, harnessId: string)
   return versioned<SystemLink>(path(systemId, "harnesses", harnessId, "to-link"), { method: "POST", etag },
     "Could not convert the harness");
 }
+
+/** `GET …/harnesses/{hid}/ends/{eid}/suggestions` (CONTRACTS_P2 §18): suggestions only; nothing is assigned. */
+export interface EndSuggestions {
+  endId: string;
+  connectorMpn: string | null;
+  connectorPart: { componentId: string; name: string; mpn: string; manufacturer: string } | null;
+  suggestions: { componentId: string; name: string; mpn: string; manufacturer: string }[];
+}
+
+export async function getEndSuggestions(systemId: string, harnessId: string, endId: string): Promise<EndSuggestions> {
+  const { body } = await send<EndSuggestions>(path(systemId, "harnesses", harnessId, "ends", endId, "suggestions"), {},
+    "Could not load suggestions");
+  return body;
+}
