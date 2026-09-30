@@ -879,7 +879,7 @@ class SystemService:
                 return None
             return hierarchy.ChildSystem(source["systemId"], source["snapshotId"], manifest["system"]["name"],
                                          manifest["instances"], manifest.get("exports") or [],
-                                         manifest.get("links") or [])
+                                         manifest.get("links") or [], manifest.get("harnesses") or [])
 
         return load
 
@@ -903,7 +903,7 @@ class SystemService:
             instances = store.list_instances(system_id, kinds=SystemStore.ALL_KINDS)
             root = system_nets.Level(
                 prefix="", kinds={i["id"]: i["kind"] for i in instances}, labels={i["id"]: i["label"] for i in instances},
-                links=store.list_links(system_id),
+                links=store.list_links(system_id), harnesses=store.list_harnesses(system_id),
                 exports=[{"id": e["id"], "target": ({"instanceId": e["target_instance_id"], "portKey": e["target_port"]["portKey"],
                                                      "port": e["target_port"]} if e["target_port"]
                                                     else {"instanceId": e["target_instance_id"], "exportId": e["target_export_id"]})}
@@ -912,8 +912,13 @@ class SystemService:
             system_nets.attach_children(root, self._tree(store, system_id))
         visible = {path for path, o in occurrences.items() if not o["restricted"]}
 
-        def shown(path: str) -> bool:
+        def shown(path: Optional[str]) -> bool:
             return path in visible
+
+        def side(point: dict) -> dict:
+            # An unmated harness end has no board: nothing to hide, and no path to show.
+            path = point["occurrence"]
+            return {**point, "displayPath": occurrences[path]["displayPath"] if path else None}
 
         out = []
         for group in system_nets.build(root):
@@ -923,10 +928,9 @@ class SystemService:
                        for m in group.members]
             hops = []
             for hop in group.hops:
-                if not (shown(hop["from"]["occurrence"]) and shown(hop["to"]["occurrence"])):
+                if not all(hop[s]["occurrence"] is None or shown(hop[s]["occurrence"]) for s in ("from", "to")):
                     continue
-                hops.append({**hop, "from": {**hop["from"], "displayPath": occurrences[hop["from"]["occurrence"]]["displayPath"]},
-                             "to": {**hop["to"], "displayPath": occurrences[hop["to"]["occurrence"]]["displayPath"]}})
+                hops.append({**hop, "from": side(hop["from"]), "to": side(hop["to"])})
             if not any(not m["redacted"] for m in members):
                 continue  # nothing of it is visible to this reader
             aliases = sorted({system_nets.leaf(m["net"]) for m in members if m["net"] and not system_nets.is_auto(m["net"])})

@@ -3,7 +3,9 @@
 A node is ``(occurrence path, net)``: one net on one physical board somewhere
 in the hierarchy. Every link row joins the nets of its two pins; an end on a
 subsystem export is followed down to the child's physical board (and further
-through re-exports). Connected components of that graph are system nets.
+through re-exports). Every harness wire joins the pads its two end pins land
+on (through each end's pin map), so wires sharing an end pin splice their
+nets (SB2-20). Connected components of that graph are system nets.
 
 Also here: the net-name tokens and the two join checks each system runs on
 its own rows (SYS-V09 name mismatch, SYS-V10 power meets signal).
@@ -141,12 +143,14 @@ class Level:
     labels: dict[str, str]
     links: Sequence[Mapping[str, Any]]
     exports: Sequence[Mapping[str, Any]] = ()
+    harnesses: Sequence[Mapping[str, Any]] = ()  # store rows or manifest harnesses
     children: dict[str, "Level"] = field(default_factory=dict)  # assembly instance ID -> its level
 
 
 def level_from_child(prefix: str, child: ChildSystem) -> Level:
     return Level(prefix=prefix, kinds={i["id"]: i.get("kind", "board") for i in child.instances},
-                 labels={i["id"]: i["label"] for i in child.instances}, links=child.links, exports=child.exports)
+                 labels={i["id"]: i["label"] for i in child.instances}, links=child.links, exports=child.exports,
+                 harnesses=child.harnesses)
 
 
 def attach_children(root: Level, tree: Tree) -> None:
@@ -179,6 +183,41 @@ def _resolve_export(level: Level, export_id: str, depth: int = 0) -> Optional[tu
     return _resolve_export(child, target["exportId"], depth + 1) if child else None
 
 
+def _harness(harness: Mapping[str, Any]) -> tuple[dict[str, dict], list[dict]]:
+    """``(end ID -> {ordinal, mates, pinMap}, wires)`` for store rows or manifest harnesses; ``mates`` is
+    ``(instance ID, port key or export ID, reference)`` or None."""
+    ends = {}
+    for end in harness["ends"]:
+        if "mates_instance_id" in end:
+            port = end["mates_port"]
+            mates = (end["mates_instance_id"], port["portKey"], port.get("reference") or "") if port else None
+            pin_map = end.get("pin_map")
+        else:
+            raw = end.get("mates")
+            baseline = (raw or {}).get("port") or (raw or {}).get("export") or {}
+            mates = ((raw["instanceId"], raw.get("portKey") or raw.get("exportId"),
+                      baseline.get("reference") or baseline.get("name") or "") if raw else None)
+            pin_map = end.get("pinMap")
+        ends[end["id"]] = {"ordinal": end["ordinal"], "mates": mates, "pinMap": pin_map or {}}
+    wires = []
+    for wire in harness["wires"]:
+        if "from_end" in wire:
+            wires.append({"id": wire["id"], "from": (wire["from_end"], str(wire["from_pin"])),
+                          "to": (wire["to_end"], str(wire["to_pin"])), "signal": wire.get("signal") or "",
+                          "netFrom": list(wire["net_from"]), "netTo": list(wire["net_to"])})
+        else:
+            source, target = wire.get("from") or wire.get("source"), wire.get("to") or wire.get("target")
+            wires.append({"id": wire["id"], "from": (source["end"], str(source["pin"])),
+                          "to": (target["end"], str(target["pin"])), "signal": wire.get("signal") or "",
+                          "netFrom": list(wire.get("netFrom") or []), "netTo": list(wire.get("netTo") or [])})
+    return ends, wires
+
+
+# Nodes that are not a net on a board (a pin of an unmated harness end) start with this and never
+# become members of a system net; they only carry the join.
+_INTERNAL = "~"
+
+
 @dataclass
 class Group:
     group_id: str
@@ -188,7 +227,8 @@ class Group:
 
     @property
     def pin_count(self) -> int:
-        return len({(h[side]["occurrence"], h[side]["portKey"], h[side]["pad"]) for h in self.hops for side in ("from", "to")})
+        return len({(h[side]["occurrence"], h[side]["portKey"], h[side]["pad"]) for h in self.hops for side in ("from", "to")
+                    if h[side]["occurrence"] is not None})
 
 
 def build(root: Level) -> list[Group]:
@@ -213,6 +253,14 @@ def build(root: Level) -> list[Group]:
         for key in keys:
             find(key)
         return keys
+
+    def locate(level: Level, mates: tuple[str, str, str]) -> Optional[tuple[str, str, str]]:
+        """A mated end's board occurrence, port key and reference; exports are followed down."""
+        instance_id, key, reference = mates
+        if level.kinds.get(instance_id, "board") == "assembly":
+            child = level.children.get(instance_id)
+            return _resolve_export(child, key) if child else None
+        return f"{level.prefix}/{instance_id}", key, reference
 
     def walk(level: Level) -> None:
         for link in level.links:
@@ -242,6 +290,30 @@ def build(root: Level) -> list[Group]:
                     "to": {"occurrence": ends["b"][0], "portKey": ends["b"][1], "reference": ends["b"][2],
                            "pad": pin_b, "nets": sorted(nets_b)},
                 }))
+        for harness in level.harnesses:
+            ends, wires = _harness(harness)
+            located = {end_id: locate(level, end["mates"]) if end["mates"] else None for end_id, end in ends.items()}
+            for wire in wires:
+                sides = []
+                for (end_id, pin), nets in ((wire["from"], wire["netFrom"]), (wire["to"], wire["netTo"])):
+                    end, where = ends[end_id], located.get(end_id)
+                    if end["mates"] and where is None:
+                        break  # an end on a subsystem export that does not resolve
+                    pad = str(end["pinMap"].get(pin, pin))
+                    keys = (node(where[0], where[1], pad, nets) if where
+                            else [f"{_INTERNAL}{level.prefix}/{harness['id']}#{end_id}#{pin}"])
+                    sides.append((keys, {
+                        "occurrence": where[0] if where else None, "portKey": where[1] if where else None,
+                        "reference": where[2] if where else None, "pad": pad if where else None,
+                        "nets": sorted(nets), "end": f"End {end['ordinal'] + 1}", "endPin": pin,
+                    }))
+                if len(sides) != 2:
+                    continue
+                (keys_a, side_a), (keys_b, side_b) = sides
+                for key in keys_a + keys_b:
+                    union(keys_a[0], key)
+                hops.append((keys_a[0], {"kind": "wire", "harnessId": harness["id"], "harnessName": harness.get("name") or "",
+                                         "wireId": wire["id"], "signal": wire["signal"], "from": side_a, "to": side_b}))
         for child in level.children.values():
             walk(child)
 
@@ -249,6 +321,9 @@ def build(root: Level) -> list[Group]:
     members: dict[str, list[str]] = {}
     for key in parent:
         members.setdefault(find(key), []).append(key)
+    # A group of only internal nodes (wires between unmated ends) is no system net.
+    members = {root: [k for k in keys if not k.startswith(_INTERNAL)] for root, keys in members.items()}
+    members = {root: keys for root, keys in members.items() if keys}
     by_root: dict[str, list[dict]] = {}
     for key, hop in hops:
         by_root.setdefault(find(key), []).append(hop)

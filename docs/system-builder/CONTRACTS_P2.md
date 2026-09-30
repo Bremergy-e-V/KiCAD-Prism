@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.20 · 2026-10-01 · tickets SB2-00 to SB2-19.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.21 · 2026-10-01 · tickets SB2-00 to SB2-20.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -334,6 +334,13 @@ Evaluation compares, **for the exports this parent's links and harness ends use*
 - Search (`?search=&occurrence=`) matches aliases case-insensitively, using fuzzy ranking.
 - Groups with `pinCount > 200` carry `"large": true`. The UI confirms before highlighting.
 - Restricted occurrences appear as `{"occurrence": null, "redacted": true}` members, and their hops are dropped.
+
+**As built (SB2-20, P2-1.21): harness wires.**
+- Each wire joins the node of the pad its from-end pin lands on (after that end's `pinMap`) with the node of the pad its to-end pin lands on, using the wire's captured `netFrom`/`netTo` like a row's nets. Wires sharing an end pin therefore share a node: a splice joins every wire on it.
+- An end on a subsystem export is followed down to the child's board, as for a link end; an end whose export does not resolve drops that wire. Subsystem levels contribute the harnesses in their snapshot manifest.
+- A pin of an **unmated** end is an internal node: it carries joins between the wires on it but is never a member, and a group made only of internal nodes is not listed.
+- A wire hop is `{"kind": "wire", "harnessId", "harnessName", "wireId", "signal", "from": {occurrence, displayPath, portKey, reference, pad, nets, end: "End N", endPin}, "to": {…}}`. On an unmated end `occurrence`, `displayPath`, `portKey`, `reference` and `pad` are null; `pinCount` counts board pads only.
+- Golden: `tests/fixtures/system_builder/p2/goldens/harness_splice_nets.json` (the fixture WH-001 cable as a 3-end harness: PWR J3 pin 3 spliced to PAY J11 pin 1 and J12 pin 1), written by hand from the fixture's rows.
 
 ### 8.3 Tokens **[S5]**
 
@@ -705,6 +712,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.21 | 2026-10-01 | SB2-20: §8.2 as built for harness wires: edges through pin maps, splices, export ends, subsystem manifests' harnesses, unmated ends as internal nodes; wire hop shape; 3-end splice golden. |
 | P2-1.20 | 2026-10-01 | SB2-19: §17.4 as built. CSV wire rows and seven harness columns (`from_end_pin`/`to_end_pin` renamed from the plan's `from_pin`/`to_pin`, which collide with P1 pad columns); import of wire rows into existing or new harnesses with conflicts named; ICD Board-to-board mating and Harnesses sections; link documents gain end `mating`; renderer 3. |
 | P2-1.19 | 2026-09-30 | SB2-18: mating housings as parts. Migration 39 `part_pins` and `part_summary`; `PATCH …/ends/{eid} {part}` assigns or clears (404/422/409 refusals); end documents gain `matePads` and the part's name and MPN; manifest `HarnessEnd.partPins` and `PartRef` name/mpn/manufacturer; SYS-V19 lands; harness editor part picker, Make generic and a pin map over the connector's pads. |
 | P2-1.18 | 2026-09-30 | SB2-17: §18.2 catalog models. Catalog migration 5 (GLB cache by STEP sha256 + converter; per-part alignment); job `catalog_model_glb`; models, convert, alignment, preview and GLB routes; part page 3D models panel with a numeric alignment editor and a Geometer SVG preview, alone or mated. §18 renamed and split into 18.1/18.2. |
