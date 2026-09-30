@@ -33,7 +33,8 @@ HTTP handlers can use; avoid creating another caller of private catalog methods.
 equivalent of `job_handlers.py`:
 
 `catalog_validation`, `catalog_preview_generation`, `project_component_import`,
-`folder_library_import`, `artifact_maintenance`, `catalog_metadata_batch`.
+`folder_library_import`, `artifact_maintenance`, `catalog_metadata_batch`,
+`catalog_model_glb` (System Builder STEP → GLB with Geometer).
 
 The catalog wrapper restores `catalog_checkpoint` and `catalog_result` into the
 legacy handler envelope and persists updates reported through `progress`.

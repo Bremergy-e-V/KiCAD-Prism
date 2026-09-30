@@ -128,11 +128,47 @@ def _mates_with(conn: Any) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS catalog_mates_with_b_idx ON catalog_mates_with (part_b)")
 
 
+def _model_glb(conn: Any) -> None:
+    """System Builder P2 (CONTRACTS_P2 §18.2): GLBs converted from STEP models, and per-part model alignment.
+
+    A GLB is cached by ``key`` = sha256(STEP sha256 + converter), so it is shared by every part that
+    carries the same STEP and replaced only when the converter changes.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS catalog_model_glb (
+            key         TEXT PRIMARY KEY,
+            step_sha256 TEXT NOT NULL,
+            converter   TEXT NOT NULL,
+            glb_sha256  TEXT NOT NULL,
+            glb_path    TEXT NOT NULL,
+            bounds_json TEXT NOT NULL,
+            materials   INTEGER NOT NULL,
+            size_bytes  INTEGER NOT NULL,
+            created_at  TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS catalog_model_alignment (
+            component_id   TEXT NOT NULL REFERENCES components(id) ON DELETE CASCADE,
+            asset_id       TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+            alignment_json TEXT NOT NULL,
+            updated_by     TEXT NOT NULL DEFAULT '',
+            updated_at     TEXT NOT NULL,
+            PRIMARY KEY (component_id, asset_id)
+        )
+        """
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Migration], ...] = (
     (1, "portable_column_types", _portable_column_types),
     (2, "import_proposal_draft_column", _import_proposal_draft_column),
     (3, "component_kinds", _component_kinds),
     (4, "mates_with", _mates_with),
+    (5, "model_glb", _model_glb),
 )
 
 

@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.17 · 2026-09-30 · tickets SB2-00 to SB2-16.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.18 · 2026-09-30 · tickets SB2-00 to SB2-17.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -460,8 +460,8 @@ All routes are under `/api/systems/{id}` and follow P1 conventions (If-Match, 41
 | `GET …/icd.{csv,html}?depth=all` | §10 |
 | Catalog: `GET /api/catalog/components?kind=part\|module\|assembly` | Filter by kind. Component payloads carry `kind`, `interface` and `source_ref` |
 
-**Viewer browsing (D-P2-24, [S8]).** The dependency `require_catalog_browser` (roles `CATALOG_BROWSE_ROLES` = reader roles + `viewer`) guards exactly these 23 routes:
-- components list, detail, revisions (list, compare, one), audit (and verify), usage, mates-with (P2-1.17), reviews, releases and validation;
+**Viewer browsing (D-P2-24, [S8]).** The dependency `require_catalog_browser` (roles `CATALOG_BROWSE_ROLES` = reader roles + `viewer`) guards exactly these 26 routes:
+- components list, detail, revisions (list, compare, one), audit (and verify), usage, mates-with (P2-1.17), models, model previews and GLBs (P2-1.18), reviews, releases and validation;
 - categories, workflow summary, release queue, asset search, previews and asset content;
 - metadata fields, grid, grid preferences (GET and PUT, per user) and `export.csv`.
 
@@ -659,7 +659,9 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 - ICD gains a **Harnesses** section per harness: ends (mated connector, block part or "Generic", pin map), the wire table (from end/pin/net → to end/pin/net, signal, gauge, colour, label) and splices. A `b2b` table lists each pair with mating frames and stack height.
 - CSV export adds a harness column set: `harness`, `from_end`, `from_pin`, `to_end`, `to_pin`, `gauge_awg`, `colour`, `wire_label` (empty for link rows). Import accepts the same columns and round-trips an exported harness.
 
-## 18. "Mates with" (SB2-16) **[T7]**
+## 18. Mating parts in the catalog: mates with (SB2-16) and models (SB2-17)
+
+### 18.1 "Mates with" **[T7]**
 
 - Catalog migration 4: `catalog_mates_with (part_a, part_b, created_by, created_at)`, stored once with `part_a < part_b`, read in both directions, only between active `part` components (§3.4).
 - API: `GET /api/catalog/components/{cid}/mates-with` (catalog browse roles, viewers included), `POST …/mates-with {componentId}` and `DELETE …/mates-with/{otherId}` (catalog writers). Each returns the part's current list. A change writes `component.mates_with_added` or `…_removed` into **both** parts' audit chains; re-adding an existing pair writes nothing. 404 for an unknown part, 422 for a non-part or a part paired with itself.
@@ -676,10 +678,20 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 | SYS-V18 | `mate_pair_unknown` | warning |
 | SYS-V19 | `mate_pin_mismatch` | error |
 
+### 18.2 Models and alignment (SB2-17)
+
+- **Conversion.** A part's `3dmodel` assets that are STEP files convert to GLB with Geometer (`step_to_glb`). Bounds come from `model_bounds`, in the STEP's own frame, in mm. The catalog job `catalog_model_glb` runs it. `POST …/components/{cid}/models/convert` queues the job (writers); converting in the domain is idempotent.
+- **Cache.** Catalog migration 5 adds `catalog_model_glb`, keyed by `sha256(STEP sha256 + converter)`. The converter is Geometer's version (`geometer-2026.9.7`). That version *is* the tessellation setting: this Geometer's GLB export ignores deflection options (checked: identical output across options on planar and cylindrical models). An unchanged STEP is never converted twice, and a new Geometer produces new files. The GLB is served at `GET /api/catalog/models/{key}.glb`, immutable and cacheable.
+- **Alignment.** Catalog migration 5 also adds `catalog_model_alignment (component_id, asset_id, alignment_json)` with `{offsetMm[3], rotationDeg[3], scale}`, applied as `T(offset) · Rz · Ry · Rx · S` (rotate about x, then y, then z). It maps the model into the part's **mating frame**: mating face on z = 0, mating toward +z, pin 1 toward −x (the housing twin of `F_c`, §14.4). It is set with `PUT …/components/{cid}/models/{assetId}/alignment` (writers; audited `component.model_aligned`). It belongs to the part, so every harness end or module using the part reuses it, and it is never baked into the GLB.
+- **Preview.** `GET …/components/{cid}/models/{assetId}/preview.svg?view=front|side|top&offset=&rotation=&scale=&partner=` renders an orthographic, coloured SVG with Geometer (`model_tessellation` + `mesh_illustration`, about 0.2 s per model). It uses the given alignment (unsaved) or the saved one. `partner` adds the first STEP model of a mating part under its own saved alignment, turned half a turn about x, so the two mating faces meet at z = 0. The M2 viewer replaces this with a live 3D view.
+- `GET …/components/{cid}/models` lists `{assetId, name, stepSha256, glb: {key, converter, bounds, materials, sizeBytes} | null, alignment}`. The model reads and the preview are open to browse roles (the viewer list grows to 26).
+- **Evidence.** `fixtures/system_builder/p2/evidence/models/record.json` holds five KiCad stock models, including a 4-colour RJ45 and an 8.9 MB, 400-pin Samtec FMC. For each, Geometer's bounds are compared with `kicad-cli`'s GLB of the model placed by its stock footprint.
+
 ## 19. Revision log
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.18 | 2026-09-30 | SB2-17: §18.2 catalog models. Catalog migration 5 (GLB cache by STEP sha256 + converter; per-part alignment); job `catalog_model_glb`; models, convert, alignment, preview and GLB routes; part page 3D models panel with a numeric alignment editor and a Geometer SVG preview, alone or mated. §18 renamed and split into 18.1/18.2. |
 | P2-1.17 | 2026-09-30 | SB2-16: catalog migration 4 `catalog_mates_with`, routes (GET for browse roles: the viewer list grows to 23), audit events on both parts; extractor v7 `mpn`; harness-end suggestions; SYS-V18 on b2b links and parted harness ends; catalog part page gains Mates with; the harness editor shows suggestions. |
 | P2-1.16 | 2026-09-30 | SB2-15 harness UI: the diagram lays out each harness as a board whose ports are its ends (mated ends are its links), drawn with a dashed border and a mating cap per end; **H** arms harness creation (identity wires between two ports); dragging from **Add an end**, or from an unmated end, to a port adds or mates an end; nodes without a saved position move clear of saved ones. Connections lists harnesses and opens the harness editor (ends, pin maps, wires with splices, generators per end pair, details, conversion, delete). Links offer Convert to a harness and Make harness from label. |
 | P2-1.15 | 2026-09-30 | SB2-14: migration 38 (harnesses, ends, wires); harness store, service and API (§17.3); link↔harness and label conversions (§16.1); a port mated once across b2b links and harness ends (T6); drift and reviews through harness ends; wire validation (V01, V03, V04, V09 opt-in, V10); document, redaction and manifest harnesses. "As built" notes in §17.3. |
