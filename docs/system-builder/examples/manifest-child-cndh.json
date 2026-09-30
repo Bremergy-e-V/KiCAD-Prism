@@ -154,7 +154,8 @@
             "/SPI_MOSI"
           ]
         }
-      ]
+      ],
+      "stackHeightMm": 8.0
     }
   ],
   "harnesses": [],
@@ -167,17 +168,17 @@
         "axis": "bottom",
         "quarterTurns": 0
       },
-      "stackHeightMm": 8.0
+      "geometryDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     },
     {
       "instanceId": "sin_f8cdbc63b67db711b1cc76ca0d905132",
       "portKey": "/f8cdbc63-root/f198a9a1-J12",
-      "mode": "inferred",
+      "mode": "override",
       "frame": {
         "axis": "top",
-        "quarterTurns": 0
+        "quarterTurns": 2
       },
-      "stackHeightMm": null
+      "geometryDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
     }
   ],
   "placement": {

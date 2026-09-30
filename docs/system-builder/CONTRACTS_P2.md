@@ -1,13 +1,13 @@
 # System Builder P2 — contracts
 
-**Version P2-1.10 · 2026-09-30 · tickets SB2-00 to SB2-09, and the V09 opt-in.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised.
+**Version P2-1.11 · 2026-09-30 · tickets SB2-00 to SB2-10.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) are **awaiting sign-off**.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
-silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §14.
+silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
 The plan and decisions (D-P2-1 … D-P2-24) are on the audit board
 `audit-reports/system-builder-p2-2026-09-30/PLAN.md`.
 
-Changing a rule here is a contract revision: bump the version, record it in §14, and re-run
+Changing a rule here is a contract revision: bump the version, record it in §19, and re-run
 the affected goldens.
 
 Machine-checkable parts:
@@ -43,6 +43,18 @@ it appears.
 | S7 | A child system hidden from the reader shows its **catalog interface** (export names and pin numbers) but no internals, and its export pin nets are redacted if the board behind the export is hidden. | Consistent with catalog readability (D-P2-24) and P1 per-board redaction. |
 | S8 | **Viewers** gain catalog read (D-P2-24). The SB2-02 test lists every catalog read route that opens up; inventory and provider tokens stay writer-only. | User decision 2026-09-30; guarded by a test. |
 
+### 0.1 M1 packet (SB2-10) choices that need sign-off
+
+| # | Choice | Why |
+|---|---|---|
+| T1 | **Board frame** origin is KiCad's page origin, y flipped up, z out of the front, **z = 0 at the board mid-plane** (§14.2). | Extractor numbers come straight from the file; top and bottom connectors are symmetric (±t/2); the 3D bundle's own centring is absorbed by a per-asset offset in M2. |
+| T2 | **Inference has three confidences** (§15.1). A footprint without `_Vertical`/`_Horizontal` still infers from geometry (body over the pads → vertical) at `medium`. | The JTYU mezzanines (Samtec FTSH, SEAF8, ADM6) have no orientation keyword; name-only inference would ask for details on every real B2B. |
+| T3 | **Auto-placement uses only confirmed or override frames**; inferred ones are one click from confirmed. A confirmation records the port's geometry digest and goes **stale** (info `SYS-V17`) when the footprint moves (§15.2). | PLAN risk table: confirmation is mandatory before placement; a moved connector must not keep a silently wrong frame. |
+| T4 | **Conversions** (§16.1): link → harness always works (rows become wires); harness → link only for 2 ends, no splices, identity pin maps. | Round-trips without losing information; anything richer stays a harness. |
+| T5 | **Stack height lives on the B2B link**, not on each port (§16.2); the frozen manifest shape moves `stackHeightMm` from `mating[]` to `links[]` (no data had it yet). | It is a datasheet property of the mated pair; two per-port values could disagree. |
+| T6 | **A port is mated once** (§16.2, §17.2): by one `b2b` link, or one harness end, never both (409 `port_already_mated`). `unspecified` links stay as free as in P1. | A physical connector mates one thing; documentation links keep P1 behaviour. |
+| T7 | **Board connector part** is found by the component's MPN field matched to a catalog `part` (§18). Mates-with findings are `SYS-V18` (warning, unknown pair) and `SYS-V19` (error, pin count without a map); unknown parts are "not evaluated". | Uses data the boards already carry; never guesses a part from a footprint name. |
+
 ---
 
 ## 1. Scope
@@ -59,7 +71,7 @@ P2-1.0 freezes what **M0** needs, and the shapes later milestones must fit:
 - ICD changes (§10);
 - API, errors and audit (§11–§13).
 
-Placement conventions (frames, units, quaternions) are frozen in SB2-10, harness geometry numbers in SB2-40, and the Git model in SB2-52. Until then the manifest carries their fields with the shapes in §9, but not their math.
+Placement conventions (frames, units, quaternions), mating, link types, harness behaviour and "mates with" are frozen by SB2-10 in §14–§18. Harness geometry numbers wait for SB2-40 and the Git model for SB2-52; until then the manifest carries their fields with the shapes in §9, but not their math.
 
 ## 2. Identity
 
@@ -339,6 +351,9 @@ A net's **tokens** are the last path segment, uppercased, with KiCad markup (`~{
 | SYS-V14 | `child_revision_unreleased` | warning | An assembly or module instance pins a revision that is not `released`, or whose snapshot had open reviews. |
 | SYS-V15 | `child_advance_blocked` | warning | A released revision exists but advancing would break §5.3 limits. |
 | SYS-V16 | `export_unresolved` | error | An export's connector no longer resolves at its board's baseline, or is no longer exposed (§4.2 rule 7). Not evaluated while the board's interface is missing. |
+| SYS-V17 | `mating_stale` | info | A confirmed or override mating frame whose port geometry changed since confirmation (§15.2). |
+| SYS-V18 | `mate_pair_unknown` | warning | Both parts of a harness end or `b2b` pair are known and not related by mates-with (§18). |
+| SYS-V19 | `mate_pin_mismatch` | error | A harness end's part has a different pin count from its mated connector and a wired pin has no map (§17.2). |
 
 **Optional rules (P2-1.10, user decision 2026-09-30).** `system_projects.optional_rules` (migration 35) lists the opt-in rules a system runs; today the only one is `SYS-V09`, because real boards rename nets across connectors far more often than they miswire them (108 warnings on the JTYU C&DH set). It is set with `PATCH /systems/{id}` `{"optionalRules": ["SYS-V09"]}` (the list replaces the stored one; `null` clears it; any other rule is 422), bumps the system version, is audited as `system_updated`, and is shown in the system summary and the manifest header. The Overview tab has a **Checks** section with the switch. `SYS-V10` always runs.
 
@@ -357,9 +372,9 @@ The models in `manifest_schema.py` are normative. Top-level keys:
 | `meta` | `{createdAt, createdBy, sourceVersion, snapshot?: {id, name, note}}` |
 | `instances` | board `{id, label, kind: "board", projectId, baselineCommit, trackedRef, pinned, portOverrides}` or catalog `{id, label, kind: "assembly"\|"module", catalog: {componentId, revisionId, revisionVersion, identity}, follow}` |
 | `exports` | §4.1. A port target is `{instanceId, portKey, port: PortBaseline}` (P2-1.3); a re-export target is `{instanceId, exportId}` |
-| `links` | `{id, name, type, harnessLabel, a, b, rows}` with P1 rows (`netA`/`netB` baselines) |
+| `links` | `{id, name, type, harnessLabel, a, b, rows, stackHeightMm}` with P1 rows (`netA`/`netB` baselines); `stackHeightMm` is b2b-only placement data (§16.2) |
 | `harnesses` | `{id, name, label, ends[{id, ordinal, mates, part, pinCount, pinMap, bootMm}], wires[{id, from, to, signal, gaugeAwg, colour, label, netFrom, netTo}], nodes[{id, kind, positionMm, pinned, order, ends}], cutLengthMm, serviceAllowancePct}` |
-| `mating` | `{instanceId, portKey, mode, frame: {axis, quarterTurns}, stackHeightMm}` |
+| `mating` | `{instanceId, portKey, mode: confirmed\|override, frame: {axis, quarterTurns}, geometryDigest}` (§15.2) |
 | `placement` | `{poses[{instanceId, translationMm, rotation (xyzw unit), source}], drivingMates[{instanceId, linkId}]}` |
 | `layout` | `{positions: {<nodeKey>: {x, y}}}`, the saved diagram arrangement. Node keys are instance IDs and harness IDs at this level (at most 1000). An expanded child renders with the layout frozen in its own snapshot. |
 
@@ -384,8 +399,8 @@ Checks that need other documents (a child's export exists at the pinned revision
 
 The canonical form is JSON with sorted keys, `(",", ":")` separators and `ensure_ascii=False`, hashed with SHA-256 and written `sha256:<hex>`.
 
-- **`full`**: the manifest without `meta`.
-- **`connectivity`**: `full` without `layout`, `mating`, `placement`, and each harness's `nodes`, `cutLengthMm`, `serviceAllowancePct` and every end's `bootMm`.
+- **`full`**: the manifest without `meta`. Fields added after M0 (`system.optionalRules`, `links[].stackHeightMm`) are omitted while empty or null, so manifests written before them keep their digests.
+- **`connectivity`**: `full` without `system.optionalRules`, each link's `stackHeightMm`, `layout`, `mating`, `placement`, and each harness's `nodes`, `cutLengthMm`, `serviceAllowancePct` and every end's `bootMm`.
 
 Drift, publish identity and catalog `connectivityDigest` use **connectivity**. Snapshot identity uses **full**.
 
@@ -463,15 +478,196 @@ Everything else stays on reader or writer roles, including inventory export, hea
 | 422 | `hierarchy_too_deep`, `hierarchy_too_large`, `hierarchy_cycle` | §5.3 |
 | 422 | `export_limit` | More than 200 exports |
 | 403 | — | Publish without catalog write role; a manifest naming a board the reader cannot see |
+| 409 | `port_already_mated` | A port in a second `b2b` link or harness end (§16.2, §17.2) |
+| 409 | `harness_not_linkable` | Converting a harness with more than two ends, splices or a pin map to a link (§16.1) |
+| 409 | `mating_not_inferable` | Confirming a `low` inference (§15.3) |
 
 ## 13. Audit event kinds (additions)
 
-`system_imported`, `export_created`, `export_updated`, `export_retargeted`, `export_deleted`, `snapshot_published`, `child_auto_advanced`, `child_rebased`, `link_type_changed`, `harness_created`, `harness_updated`, `harness_deleted`, `pose_updated`, `poses_reset`, `mating_updated`.
+`system_imported`, `export_created`, `export_updated`, `export_retargeted`, `export_deleted`, `snapshot_published`, `child_auto_advanced`, `child_rebased`, `link_type_changed`, `harness_created`, `harness_updated`, `harness_deleted`, `pose_updated`, `poses_reset`, `mating_updated`. `harness_created` carries `fromLink` or `fromLabel` when it replaced links (§16.1, §17.2).
 
-## 14. Revision log
+## 14. Frames and placement conventions (SB2-10)
+
+These conventions are shared by the extractor (v6), the placement library pair (Python
+`systems/placement/`, TypeScript `frontend/src/features/system-builder/placement/`) and the
+renderer. Goldens in `backend/tests/fixtures/system_builder/placement_cases.json` run in both
+languages with a tolerance of 1e-6 mm and 1e-9 on quaternion components.
+
+### 14.1 Units and algebra
+
+- Lengths in **mm**, angles stored in **degrees** (API and manifest) and converted to radians only inside the library.
+- **Right-handed** axes; **column vectors**; a transform is `T·R` (rotate, then translate).
+- Rotations are **unit quaternions `[x, y, z, w]`**, normalised, with `w ≥ 0` in stored form (the sign is canonicalised so equal rotations serialise equally).
+- Composition reads right to left: `A·B` applies `B` first.
+
+### 14.2 Board frame **[T1]**
+
+- **Origin:** KiCad's page origin (the `(0, 0)` of the `.kicad_pcb` file), not the grid or drill origin.
+- **x** = KiCad x. **y** = −KiCad y (KiCad's y points down; the board frame's points up). **z** points out of the **front** (F.Cu) side.
+- **z = 0 is the board mid-plane.** The front surface is `z = +t/2`, the back `z = −t/2`, where `t` is the board thickness from the board setup (`general (thickness …)`), recorded by extractor v6.
+- A KiCad rotation angle (counter-clockwise on screen, degrees) is a positive rotation about +z in the board frame, unchanged in value.
+- The 3D bundle of a board (M2) is mapped into this frame by a per-asset offset computed in SB2-22; nothing in the placement library depends on how `kicad-cli` centres its GLB.
+
+### 14.3 Parent frame and poses
+
+- A system's frame is the frame its poses are expressed in. A pose `P = T(translationMm)·R(rotation)` maps an instance's own frame (board frame, or the child system's frame for an assembly) into the parent's.
+- A board occurrence's world matrix is the product of poses along its occurrence path, root first.
+- Default poses (`source: "default"`): instances in creation order along +x on the XY plane, each placed so its board-outline bounding box starts 20 mm after the previous one's ends, bottoms aligned at y = 0 (PLAN §5.3). Stored only when the user moves an instance.
+
+### 14.4 Connector frame `F_c`
+
+Computed from extractor v6 geometry (§14.6) in the board frame:
+
+- **Origin:** the centroid of the connector's **pads** (all pads, including mechanical ones), at `z = +t/2` when the footprint is on the front, `−t/2` on the back.
+- **x axis:** the principal axis of the pad centres (largest eigenvector of their 2D covariance), signed so that **pad "1"** (or, without one, the first pad in natural order) lies at negative x. When the two eigenvalues are within 5 % of each other (a square array) or there is one pad, x is the footprint's own +x rotated by the footprint angle.
+- **z axis (mating direction):**
+  - vertical: the board normal, +z for a front footprint, −z for a back one;
+  - right-angle: in the board plane, from the pad centroid toward the **body centroid** (the courtyard centroid; M4 may refine with model bounds), snapped to the footprint's nearest local ±x/±y axis.
+- **y = z × x**; if z ∥ x (a right-angle connector whose pads run along the mating direction), x is replaced by the in-plane axis perpendicular to z, signed toward pad 1 as above.
+- A confirmed override (§15) replaces the inferred axis choice and applies `quarterTurns` × 90° about z.
+
+### 14.5 Mate transform
+
+For a B2B pair (board A connector `a`, board B connector `b`):
+
+```text
+B_world = A_world · F_a · T(0, 0, h) · Rx(180°) · Rz(k · 90°) · F_b⁻¹
+```
+
+- `k ∈ {0,1,2,3}`: default is the one that puts pad 1 on pad 1 (minimum summed pad-to-pad distance, ties to the lower k); the user's `quarterTurns` on either side add to it.
+- `h`: the link's `stackHeightMm` when given (§16.2). Otherwise the minimum separation at which the two connectors' bodies (courtyard × assumed 5 mm height until M4 brings model bounds) don't intersect, **plus 5 mm**, so an unknown stack is visibly apart rather than interpenetrating.
+- The M4 tree solve, driving mates and `SYS-V11` follow PLAN §5.3; this section fixes only the algebra they use.
+
+### 14.6 Extractor v6 geometry
+
+`EXTRACTOR_VERSION` becomes **6**; every board re-extracts once. The interface gains `boardThicknessMm` (number, or null without a PCB) and each component gains `geometry` (null when the board has no PCB or the footprint is not placed on it):
+
+```json
+{"side": "top", "positionMm": [50.0, -10.0], "rotationDeg": 90.0,
+ "footprintName": "PinHeader_1x04_P2.54mm_Vertical",
+ "pads": [{"pad": "1", "positionMm": [50.0, -10.0], "sizeMm": [1.7, 1.7], "shape": "rect", "tht": true}],
+ "courtyard": {"minMm": [-1.33, -8.95], "maxMm": [1.33, 1.33]},
+ "model": {"path": "${KICAD10_3DMODEL_DIR}/Connector_PinHeader_2.54mm.3dshapes/PinHeader_1x04_P2.54mm_Vertical.step",
+           "offsetMm": [0, 0, 0], "rotationDeg": [0, 0, 0], "scale": [1, 1, 1]}}
+```
+
+- `positionMm` and pad `positionMm` are in the **board frame** (§14.2). `rotationDeg` is KiCad's angle.
+- `courtyard` is the axis-aligned bounds of the F/B.CrtYd graphics in the **footprint's own frame** (y up, before rotation); null when the footprint has none.
+- `model` is the first enabled 3D model reference, unresolved (variables kept); null when none. M1 never loads it.
+- Numbers are rounded to 1e-4 mm. Pads are listed in natural pad order; duplicate pad numbers keep every pad.
+- `geometry` joins the interface digest, so a moved connector produces a new artifact but **never** a drift item by itself (drift compares pins and nets only, P1 §5).
+
+## 15. Mating frames (SB2-12)
+
+### 15.1 Inference **[T2]**
+
+Inference is a pure function of a component's v6 geometry (both languages, shared goldens). It returns `{axis, quarterTurns: 0, confidence, reasons}`:
+
+| Evidence | Result | Confidence |
+|---|---|---|
+| Footprint name contains `_Vertical`, and the geometry agrees (body centroid within the pad hull + 1 mm) | `top` / `bottom` by side | `high` |
+| Name contains `_Horizontal`, `_RightAngle`, `_Angled` or `_RA_`, and the body centroid is ≥ 0.5 mm from the pad centroid, within 20° of a footprint axis | that axis, as `+x`/`-x`/`+y`/`-y` in the **board** frame | `high` |
+| No keyword; the body centroid lies within the pad hull + 1 mm (a mezzanine such as Samtec FTSH/ADM6 on JTYU) | `top` / `bottom` by side | `medium` |
+| No keyword; the body centroid is clearly off one side (≥ 0.5 mm, within 20° of an axis) | that axis | `medium` |
+| Keyword and geometry disagree, no courtyard and no keyword, or one pad | none | `low` → **"Mating details needed"** |
+
+`reasons` lists the evidence used (`name_vertical`, `body_over_pads`, …) for the UI.
+
+### 15.2 Storage and use **[T3]**
+
+- Table `system_port_mating (instance_id, port_key, mode, axis, quarter_turns, geometry_digest, updated_by, updated_at)`, primary key `(instance_id, port_key)`. Only **confirmed** and **override** records are stored; an inferred frame is always recomputed.
+- `mode = confirmed`: the user accepted the inference as is. `override`: the user picked `axis`/`quarterTurns`.
+- `geometry_digest` is the sha256 of the port's v6 `geometry` at confirmation. When the board's baseline moves and the digest differs, the record is kept but reported as **stale** (info finding `SYS-V17 mating_stale`), and auto-placement treats the port as unconfirmed until re-confirmed.
+- **Auto-placement (M4) uses only confirmed or override frames.** A `high`/`medium` inference is shown pre-filled with a one-click Confirm; `low` shows "Mating details needed" and offers only the picker.
+- Board and module ports only. An export end uses the mating record frozen in the child's snapshot manifest; a parent cannot override a child's connector frame.
+- Manifest: `mating[]` holds the stored records (`mode` ∈ `confirmed` \| `override`, plus `geometryDigest`). Mating stays out of the connectivity digest.
+
+### 15.3 API
+
+| Method and path | Purpose |
+|---|---|
+| `GET …/instances/{iid}/mating` | Every candidate port: `{portKey, reference, inferred: {axis, confidence, reasons} \| null, stored: {mode, axis, quarterTurns, stale} \| null}` |
+| `PUT …/instances/{iid}/mating/{portKey}` | `{mode: "confirmed"}` or `{mode: "override", axis, quarterTurns}`; If-Match; audits `mating_updated`; bumps the system version |
+| `DELETE …/instances/{iid}/mating/{portKey}` | Back to inferred; If-Match; audits `mating_updated` |
+
+Errors: 409 `mating_not_inferable` when confirming a `low` inference (use override), 422 for an axis/turns outside the enum, 409 `interface_not_ready` while the v6 artifact is missing.
+
+## 16. Link types (SB2-13)
+
+### 16.1 Types and conversion **[T4]**
+
+`system_links.type` ∈ `unspecified` \| `b2b` (§6.2, [S1]). P1 links are `unspecified` (migration default).
+
+| From → to | Rule |
+|---|---|
+| `unspecified` ↔ `b2b` | `PATCH …/links/{lid}` `{type}`; rows are kept; audits `link_type_changed`. |
+| link → harness | `POST …/links/{lid}/to-harness`: a 2-end harness whose ends mate the link's two ends, one wire per row (row ID kept in the wire's `label`, pins and net baselines copied), then the link is deleted. One audit `harness_created` with `fromLink`. |
+| harness → link | `POST …/harnesses/{hid}/to-link`: only for **2 ends, no splices, identity pin maps**; otherwise 409 `harness_not_linkable`. Wires become rows of an `unspecified` link. |
+
+### 16.2 B2B rules
+
+- A `b2b` link's two ports must both be **board or module ports, or exports** whose target is one; each such port may be in **only one** `b2b` link and in **no harness end**. Otherwise 409 `port_already_mated` on create, type change or harness end assignment.
+- `stackHeightMm` (optional, > 0) lives on the **link**, not the port, because it is a property of the mated pair (datasheet). It is placement-only (manifest `links[].stackHeightMm`, full digest only). **[T5]**
+- Link details for a `b2b` link shows both ends' mating frames (inferred badge, confirm, override picker) and the stack height.
+- On the diagram, **B** arms the next drawn link as `b2b` (a visible mode chip; Esc disarms). **H** arms harness creation (§17.2). Shortcuts fire only while the diagram has focus and no text field is active.
+
+## 17. Harnesses (SB2-14, SB2-15, SB2-18, SB2-19)
+
+### 17.1 Tables
+
+`system_harnesses (id, system_id, name, label, cut_length_mm, service_allowance_pct)`, `system_harness_ends (id, harness_id, ordinal, mates_instance_id, mates_port, catalog_component_id, catalog_revision_id, pin_count, pin_map, boot_mm)`, `system_harness_wires (id, harness_id, from_end, from_pin, to_end, to_pin, signal, gauge_awg, colour, label, net_from, net_to)`, `system_harness_nodes` (M5). Field meanings are the manifest's (§9.1). `mates_port` holds a port baseline like a link end (P1 §4), or an export baseline.
+
+### 17.2 Behaviour **[T6]**
+
+- **Ends.** 1–32 per harness. An end mates one port or export, or nothing. A port is mated by **at most one harness end** and then by no `b2b` link (409 `port_already_mated`). An `unspecified` link may still use a harness-mated port (P1 documentation links); V02 treats the harness end like any other use.
+- **Mating block.** Every end has one. It starts **Generic**: `part = null`, `pinCount` copied from the mated connector, pins named by pad. Assigning a catalog `part` (§18) sets `pinCount` from the part's pins; a count that differs from the mated connector's keeps the assignment and requires a `pinMap` (error `SYS-V19` until every wired end pin maps).
+- **Pin map.** `pinMap` maps **end pin → mated connector pad**; null is identity. Mapped pads must exist on the mated connector; each pad is mapped at most once.
+- **Wires.** `from {end, pin}` → `to {end, pin}`, different ends. Several wires on one end pin form a **splice** (allowed; never a fan-out finding). A duplicate wire (same unordered pair) is `SYS-V01`.
+- **Net baselines.** `netFrom`/`netTo` are the nets of the **board pins** the end pins map to, at the mated instance's baseline, captured like row nets (P1 §4.3). An unmated end has empty nets.
+- **Generators.** P1's generators run **per end pair** (`POST …/harnesses/{hid}/generate {fromEnd, toEnd, generator, options}`), over the end pins mapped to the mated pins, and propose wires with the same skip rules as rows.
+- **Creating.** H + drawing A→B creates a 2-end harness with Generic blocks on both ends and **identity wires** for the pads the two connectors share (the `identity` generator). Dragging from the harness node to a port adds an end with no wires.
+- **P1 label migration.** `POST …/harnesses/from-label {label}` turns every link carrying that `harness` label into **one** harness: the ends are the distinct `(instance, port)` pairs of those links (ordered by first appearance), each row becomes a wire between the corresponding ends (row ID in `label`), and the links are deleted. One click per label on the Connectivity tab. Audits `harness_created` with `fromLabel`.
+- **Drift.** P1 drift applies at each end's mate exactly as at a link end: item kinds `pin_missing`, `net_changed`, `connector_missing`, with `wireId`s in place of row IDs. Accept rewrites wire baselines; Remap edits the end's `pinMap`.
+- **Validation.** `SYS-V01` (duplicate wires), `V03` (end mates an unexposed port), `V04` (a mapped pad is absent), `V06`/`V07` on mapped pins, `V09` (opt-in) and `V10` per wire, `V16` for export ends. V02 never counts wires of one harness against each other.
+
+### 17.3 API
+
+| Method and path | Purpose |
+|---|---|
+| `GET/POST …/harnesses`, `GET/PATCH/DELETE …/harnesses/{hid}` | CRUD; PATCH edits name, label, cut length and allowance |
+| `POST …/harnesses/{hid}/ends`, `PATCH/DELETE …/harnesses/{hid}/ends/{eid}` | Add, re-mate, assign part, pin map, remove (removing an end deletes its wires) |
+| `PUT …/harnesses/{hid}/wires` | Replace the wire list (like rows: server recaptures net baselines, validates pins) |
+| `POST …/harnesses/{hid}/generate` | Per end pair (§17.2) |
+| `POST …/harnesses/from-label`, `POST …/links/{lid}/to-harness`, `POST …/harnesses/{hid}/to-link` | Conversions (§16.1) |
+
+All take If-Match and bump the system version. Audits `harness_created`, `harness_updated`, `harness_deleted`.
+
+### 17.4 ICD and CSV (SB2-19)
+
+- ICD gains a **Harnesses** section per harness: ends (mated connector, block part or "Generic", pin map), the wire table (from end/pin/net → to end/pin/net, signal, gauge, colour, label) and splices. A `b2b` table lists each pair with mating frames and stack height.
+- CSV export adds a harness column set: `harness`, `from_end`, `from_pin`, `to_end`, `to_pin`, `gauge_awg`, `colour`, `wire_label` (empty for link rows). Import accepts the same columns and round-trips an exported harness.
+
+## 18. "Mates with" (SB2-16) **[T7]**
+
+- `catalog.catalog_mates_with (part_a, part_b, created_by, created_at)`, stored once with `part_a < part_b`, read in both directions, only between `part` components (§3.4). API: `GET/POST/DELETE /api/catalog/components/{cid}/mates-with`; writers only; audited in the catalog history.
+- **Identifying a board connector's part:** the component's `MPN` (or `Manufacturer_Part_Number`, `MFR_PN`, `Mfr. No.`) field at the baseline, matched case-insensitively to a catalog `part`'s MPN. No match → the connector's part is unknown.
+- **Suggestion:** a Generic block whose mated connector's part is known lists that part's mates-with partners. It **never assigns** one by itself.
+- **Findings** (per harness end with a part, and per `b2b` link):
+  - `SYS-V18 mate_pair_unknown` (warning): both parts are known and the pair is not in mates-with.
+  - `SYS-V19 mate_pin_mismatch` (error): pin counts differ and wired pins lack a pin map (§17.2).
+  - Unknown part on either side: not evaluated, never a pass.
+
+| Rule | Name | Severity |
+|---|---|---|
+| SYS-V17 | `mating_stale` | info |
+| SYS-V18 | `mate_pair_unknown` | warning |
+| SYS-V19 | `mate_pin_mismatch` | error |
+
+## 19. Revision log
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.11 | 2026-09-30 | SB2-10 M1 packet: §0.1 choices T1–T7 (awaiting sign-off); §14 frames and conventions, extractor v6 geometry; §15 mating inference, storage and API; §16 link type conversions and B2B rules; §17 harness tables, behaviour, API, ICD/CSV; §18 mates with; findings V17–V19; errors and audit additions. Manifest: `mating[]` stores only confirmed/override with `geometryDigest`; `stackHeightMm` moves to `links[]` (b2b only, full digest only, omitted when unset). The revision log becomes §19. |
 | P2-1.10 | 2026-09-30 | SYS-V09 becomes opt-in per system (user decision after M0: 108 warnings on JTYU). Migration 35 `optional_rules`; `PATCH /systems/{id}` `optionalRules`; manifest `system.optionalRules` (full digest only, omitted when empty); Overview **Checks** section. SYS-V10 stays an error. |
 | P2-1.9 | 2026-09-30 | SB2-09: parent ICD Subsystems table and unreleased banner; `?depth=all` on live and snapshot ICDs (CSV `occurrence` column, HTML "Inside subsystems"), with recursive redaction; diagram subsystem node and its contents list; History "All levels" link. Backfills rows P2-1.5 to P2-1.8, whose document edits were missing from their tickets. |
 | P2-1.8 | 2026-09-30 | SB2-08: system nets (§8.1–§8.2) following export ends and re-exports; extractor v5 `powerNet`; V09 refined from "share no token" to "no related token" (§8.4) after the literal rule flagged 11 intentional renames in the fixtures; V10; `GET …/nets`, `…/nets/{groupId}`. The F8 golden gains one V09 (`PAYLOAD_INT#`/`IRQ_OUT#`). |

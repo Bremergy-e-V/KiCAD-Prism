@@ -199,6 +199,14 @@ class Link(_Model):
     a: End
     b: End
     rows: list[Row]
+    stackHeightMm: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False,
+                                           description="b2b only: the mated pair's stack height (§16.2)")
+
+    @model_validator(mode="after")
+    def _stack_height_is_b2b(self) -> "Link":
+        if self.stackHeightMm is not None and self.type != "b2b":
+            raise ValueError("stackHeightMm applies to b2b links only")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -269,11 +277,14 @@ class MatingFrame(_Model):
 
 
 class Mating(_Model):
+    """A stored connector frame (§15.2): inferred frames are recomputed, never stored."""
+
     instanceId: InstanceId
     portKey: str = Field(min_length=1, max_length=2000)
-    mode: Literal["inferred", "confirmed", "override"]
+    mode: Literal["confirmed", "override"]
     frame: MatingFrame
-    stackHeightMm: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    geometryDigest: Optional[str] = Field(default=None, pattern=r"^sha256:[0-9a-f]{64}$",
+                                          description="the port's v6 geometry when confirmed; stale if it differs")
 
 
 class Pose(_Model):
@@ -457,8 +468,12 @@ def _sha(value: Any) -> str:
 def full_view(manifest: Manifest) -> dict:
     body = manifest.model_dump(mode="json", by_alias=True, exclude_none=False)
     body.pop("meta")
+    # Fields added after M0 are omitted while unset, so older manifests keep their digests.
     if not body["system"]["optionalRules"]:
-        body["system"].pop("optionalRules")  # manifests from before P2-1.10 keep their digests
+        body["system"].pop("optionalRules")
+    for link in body["links"]:
+        if link["stackHeightMm"] is None:
+            link.pop("stackHeightMm")
     return body
 
 
@@ -467,6 +482,8 @@ def connectivity_view(manifest: Manifest) -> dict:
 
     body = full_view(manifest)
     body["system"].pop("optionalRules", None)  # a check setting, not connectivity
+    for link in body["links"]:
+        link.pop("stackHeightMm", None)  # placement (§16.2)
     body.pop("layout")
     body.pop("mating")
     body.pop("placement")

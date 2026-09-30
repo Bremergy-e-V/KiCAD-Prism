@@ -68,6 +68,24 @@ class ManifestSchemaTest(unittest.TestCase):
         with self.assertRaises(ValidationError):
             Manifest.model_validate(enabled)
 
+    def test_stack_height_is_b2b_placement_only(self) -> None:
+        raw = load("manifest-child-cndh.json")
+        b2b = next(i for i, link in enumerate(raw["links"]) if link["type"] == "b2b")
+        before = digests(Manifest.model_validate(raw))
+        taller = copy.deepcopy(raw)
+        taller["links"][b2b]["stackHeightMm"] = 11.0
+        after = digests(Manifest.model_validate(taller))
+        self.assertEqual(after["connectivity"], before["connectivity"])
+        self.assertNotEqual(after["full"], before["full"])
+        taller["links"][b2b]["type"] = "unspecified"
+        with self.assertRaises(ValidationError):
+            Manifest.model_validate(taller)
+        unset = copy.deepcopy(raw)
+        unset["links"][b2b]["stackHeightMm"] = None
+        legacy = copy.deepcopy(unset)
+        del legacy["links"][b2b]["stackHeightMm"]  # written before P2-1.11
+        self.assertEqual(digests(Manifest.model_validate(legacy)), digests(Manifest.model_validate(unset)))
+
     def test_meta_never_changes_a_digest(self) -> None:
         raw = load("manifest-child-cndh.json")
         other = copy.deepcopy(raw)
@@ -93,7 +111,7 @@ class ManifestSchemaTest(unittest.TestCase):
             "portKey must equal": (child, lambda m: m["links"][0]["a"]["port"].update(portKey="/other")),
             "needs a board or module": (parent, lambda m: m["mating"].append(
                 {"instanceId": m["instances"][0]["id"], "portKey": "/x", "mode": "confirmed",
-                 "frame": {"axis": "top", "quarterTurns": 0}, "stackHeightMm": None})),
+                 "frame": {"axis": "top", "quarterTurns": 0}})),
         }
         for expected, (base, mutate) in cases.items():
             with self.subTest(rule=expected):
