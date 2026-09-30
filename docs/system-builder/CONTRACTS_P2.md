@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.18 · 2026-09-30 · tickets SB2-00 to SB2-17.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.19 · 2026-09-30 · tickets SB2-00 to SB2-18.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -618,7 +618,7 @@ Errors: 409 `mating_not_inferable` when confirming a `low` inference (use overri
 
 ### 17.1 Tables
 
-`system_harnesses (id, system_id, name, label, cut_length_mm, service_allowance_pct)`, `system_harness_ends (id, harness_id, ordinal, mates_instance_id, mates_port, catalog_component_id, catalog_revision_id, pin_count, pin_map, boot_mm)`, `system_harness_wires (id, harness_id, from_end, from_pin, to_end, to_pin, signal, gauge_awg, colour, label, net_from, net_to)`, `system_harness_nodes` (M5). Field meanings are the manifest's (§9.1). `mates_port` holds a port baseline like a link end (P1 §4), or an export baseline.
+`system_harnesses (id, system_id, name, label, cut_length_mm, service_allowance_pct)`, `system_harness_ends (id, harness_id, ordinal, mates_instance_id, mates_port, catalog_component_id, catalog_revision_id, part_pins, pin_count, pin_map, boot_mm)`, `system_harness_wires (id, harness_id, from_end, from_pin, to_end, to_pin, signal, gauge_awg, colour, label, net_from, net_to)`, `system_harness_nodes` (M5). Field meanings are the manifest's (§9.1). `mates_port` holds a port baseline like a link end (P1 §4), or an export baseline.
 
 ### 17.2 Behaviour **[T6]**
 
@@ -654,6 +654,14 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 - Harness findings carry `detail.harnessId` with `endId` or `wireId` (and `rowId` = the wire ID); duplicate wires report `duplicateOf`.
 - Manifests export and import harnesses; `nodes` stay empty and an import carrying nodes is refused until M5.
 
+**As built (SB2-18): mating housings as parts.**
+- `PATCH …/ends/{eid}` takes `part: {componentId} | null`. A part must be an active catalog `part` (404 otherwise) with pins: its symbol's pins, or its footprint's pads when it has no symbol (422 when it has neither). The part's current revision is recorded (`catalogRevisionId`).
+- Migration 39 adds `system_harness_ends.part_pins` and `part_summary` (JSONB): the part's pin names and `{name, mpn, manufacturer}` at assignment, so documents, manifests and the ICD show the part without asking the catalog. The pins become the end's `pins` and set `pinCount`. Pin-map entries for pins the part lacks are dropped. Wires on pins the part lacks refuse the change (409 naming them), so no wire is ever dropped silently.
+- `part: null` makes the block Generic again: `part_pins` cleared, `pinCount` back to the mated connector's.
+- Documents gain `ends[].matePads` (the mated connector's pads, natural order; empty while unmated), the targets the pin map offers. `ends[].part` is `{componentId, revisionId, name, mpn, manufacturer}`. The manifest's `HarnessEnd` gains `partPins` and `PartRef` gains `name`, `mpn`, `manufacturer` (each omitted from the digest when null).
+- A wired end pin whose pad the connector lacks keeps empty nets (it is not an error in itself); `SYS-V19` reports it while pin counts differ.
+- The harness editor's block cell shows the part's MPN, **Choose part** (the connector's mates-with partners first, then any part by search), **Change part** and **Make generic**. The pin map lists the connector's pads.
+
 ### 17.4 ICD and CSV (SB2-19)
 
 - ICD gains a **Harnesses** section per harness: ends (mated connector, block part or "Generic", pin map), the wire table (from end/pin/net → to end/pin/net, signal, gauge, colour, label) and splices. A `b2b` table lists each pair with mating frames and stack height.
@@ -666,10 +674,10 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 - Catalog migration 4: `catalog_mates_with (part_a, part_b, created_by, created_at)`, stored once with `part_a < part_b`, read in both directions, only between active `part` components (§3.4).
 - API: `GET /api/catalog/components/{cid}/mates-with` (catalog browse roles, viewers included), `POST …/mates-with {componentId}` and `DELETE …/mates-with/{otherId}` (catalog writers). Each returns the part's current list. A change writes `component.mates_with_added` or `…_removed` into **both** parts' audit chains; re-adding an existing pair writes nothing. 404 for an unknown part, 422 for a non-part or a part paired with itself.
 - **Identifying a board connector's part:** extractor **v7** records `mpn` per component: the first non-empty field named `MPN`, `Manufacturer_Part_Number`, `Manufacturer Part Number`, `MFR_PN`, `Mfr. No.` or `Mfr No` (case-insensitive). It is matched case-insensitively to the MPN of an active `part`'s current revision. An MPN that two parts share matches neither. No match means the part is unknown.
-- **Suggestion:** `GET /api/systems/{id}/harnesses/{hid}/ends/{eid}/suggestions` returns `{connectorMpn, connectorPart, suggestions}` for a mated end. The harness editor shows the partners under a Generic block. It **never assigns** one; assignment is SB2-18.
+- **Suggestion:** `GET /api/systems/{id}/harnesses/{hid}/ends/{eid}/suggestions` returns `{connectorMpn, connectorPart, suggestions}` for a mated end. The harness editor shows the partners under a Generic block and first in its part picker. It **never assigns** one: a part is assigned only by the user's pick (`PATCH …/ends/{eid} {part}`, §17.3).
 - **Findings** (per `b2b` link, and per harness end with a part):
   - `SYS-V18 mate_pair_unknown` (warning): both parts are known and the pair is not in mates-with. Detail: `{partA, partB}` for a link; `{harnessId, endId, part, connectorPart}` for an end.
-  - `SYS-V19 mate_pin_mismatch` (error): pin counts differ and wired pins lack a pin map (§17.2); lands with part assignment in SB2-18.
+  - `SYS-V19 mate_pin_mismatch` (error): the part's pin count differs from the connector's and wired part pins have no pin-map entry (§17.2). Detail: `{harnessId, endId, partPins, connectorPins, unmapped}`. Equal counts are not checked: same-named pins land on same-named pads.
   - An unknown part on either side, or no catalog, is not evaluated and never counts as a pass.
 
 | Rule | Name | Severity |
@@ -691,6 +699,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.19 | 2026-09-30 | SB2-18: mating housings as parts. Migration 39 `part_pins` and `part_summary`; `PATCH …/ends/{eid} {part}` assigns or clears (404/422/409 refusals); end documents gain `matePads` and the part's name and MPN; manifest `HarnessEnd.partPins` and `PartRef` name/mpn/manufacturer; SYS-V19 lands; harness editor part picker, Make generic and a pin map over the connector's pads. |
 | P2-1.18 | 2026-09-30 | SB2-17: §18.2 catalog models. Catalog migration 5 (GLB cache by STEP sha256 + converter; per-part alignment); job `catalog_model_glb`; models, convert, alignment, preview and GLB routes; part page 3D models panel with a numeric alignment editor and a Geometer SVG preview, alone or mated. §18 renamed and split into 18.1/18.2. |
 | P2-1.17 | 2026-09-30 | SB2-16: catalog migration 4 `catalog_mates_with`, routes (GET for browse roles: the viewer list grows to 23), audit events on both parts; extractor v7 `mpn`; harness-end suggestions; SYS-V18 on b2b links and parted harness ends; catalog part page gains Mates with; the harness editor shows suggestions. |
 | P2-1.16 | 2026-09-30 | SB2-15 harness UI: the diagram lays out each harness as a board whose ports are its ends (mated ends are its links), drawn with a dashed border and a mating cap per end; **H** arms harness creation (identity wires between two ports); dragging from **Add an end**, or from an unmated end, to a port adds or mates an end; nodes without a saved position move clear of saved ones. Connections lists harnesses and opens the harness editor (ends, pin maps, wires with splices, generators per end pair, details, conversion, delete). Links offer Convert to a harness and Make harness from label. |

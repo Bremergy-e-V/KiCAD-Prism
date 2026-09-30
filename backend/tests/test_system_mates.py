@@ -10,7 +10,9 @@ from system_builder_db import FixtureSystemCase
 
 from app.services.systems.interface_extractor import _mpn
 from app.services.systems.jobs import extract_and_store
+from app.services.systems import manifest as manifest_io
 from app.services.systems.service import Caller, SystemService
+from app.services.systems.store import Conflict, Invalid, NotFound
 
 DESIGNER = Caller(role="designer", email="designer@example.com")
 PLUG = {"componentId": "cmp_plug", "name": "Plug", "mpn": "SAMTEC-PLUG", "manufacturer": "Samtec"}
@@ -29,12 +31,19 @@ class FakeCatalog:
     def mate_pairs(self, ids):
         return {pair for pair in self.pairs if set(pair) & set(ids)}
 
+    def part_for_block(self, component_id):
+        blocks = {"cmp_housing": {**HOUSING, "revisionId": "rev_h", "pins": ["1", "2", "3", "4"]},
+                  "cmp_blank": {**HOUSING, "componentId": "cmp_blank", "revisionId": "rev_b", "pins": None}}
+        if component_id not in blocks:
+            raise LookupError("Component not found")
+        return blocks[component_id]
+
     def list_mates_with(self, component_id):
         partners = [b if a == component_id else a for a, b in self.pairs if component_id in (a, b)]
         return [p for p in self.parts.values() if p["componentId"] in partners]
 
 
-class MatesTest(FixtureSystemCase):
+class MatesCase(FixtureSystemCase):
     def setUp(self) -> None:
         super().setUp()
         self.catalog = FakeCatalog()
@@ -52,6 +61,9 @@ class MatesTest(FixtureSystemCase):
         self.conn.commit()
         self.link = self.links["L-J7J4"]
 
+
+
+class MatesTest(MatesCase):
     def v18(self) -> list[dict]:
         return [f for f in self.service.validation_report(DESIGNER, self.sid).body["findings"] if f["rule"] == "SYS-V18"]
 
@@ -96,3 +108,56 @@ class MatesTest(FixtureSystemCase):
         self.conn.commit()
         self.service.update_link(DESIGNER, self.sid, self.version(), self.link, {"type": "b2b"})
         self.assertEqual(self.v18(), [])
+
+
+class HousingPartTest(MatesCase):
+    """SB2-18: a catalog part on a harness end's mating block (CONTRACTS_P2 §17.2, SYS-V19)."""
+
+    def harness(self) -> dict:
+        harness = self.service.link_to_harness(DESIGNER, self.sid, self.version(), self.link).body
+        a, b = harness["ends"]
+        return self.service.replace_wires(DESIGNER, self.sid, self.version(), harness["id"], [
+            {"from": {"end": a["id"], "pin": "1"}, "to": {"end": b["id"], "pin": "1"}},
+            {"from": {"end": a["id"], "pin": "2"}, "to": {"end": b["id"], "pin": "2"}}]).body
+
+    def assign(self, harness: dict, end: dict, part) -> dict:
+        return self.service.update_harness_end(DESIGNER, self.sid, self.version(), harness["id"], end["id"],
+                                               {"part": part}).body
+
+    def v19(self) -> list[dict]:
+        return [f for f in self.service.validation_report(DESIGNER, self.sid).body["findings"] if f["rule"] == "SYS-V19"]
+
+    def test_a_part_replaces_the_pins_and_a_mismatch_needs_a_map(self) -> None:
+        harness = self.harness()
+        end = harness["ends"][0]
+        self.assertEqual(len(end["pins"]), len(end["matePads"]))  # Generic: the connector's pads
+        body = self.assign(harness, end, {"componentId": "cmp_housing"})
+        assigned = body["ends"][0]
+        self.assertEqual((assigned["part"], assigned["pins"], assigned["pinCount"]),
+                         ({"componentId": "cmp_housing", "revisionId": "rev_h", "name": "Housing", "mpn": "JST-H",
+                           "manufacturer": "JST"}, ["1", "2", "3", "4"], 4))
+        [finding] = self.v19()
+        self.assertEqual((finding["severity"], finding["detail"]["unmapped"], finding["detail"]["partPins"]),
+                         ("error", ["1", "2"], 4))
+        self.service.update_harness_end(DESIGNER, self.sid, self.version(), harness["id"], end["id"],
+                                        {"pinMap": {"1": "1", "2": "2"}})
+        self.assertEqual(self.v19(), [])
+        manifest = manifest_io.build(self.store, self.sid, created_by="user:t", created_at="2026-09-30T00:00:00+00:00")
+        self.assertEqual((manifest.harnesses[0].ends[0].partPins, manifest.harnesses[0].ends[0].part.mpn),
+                         (["1", "2", "3", "4"], "JST-H"))
+        generic = self.assign(harness, end, None)["ends"][0]
+        self.assertEqual((generic["part"], len(generic["pins"])), (None, len(end["matePads"])))
+
+    def test_refusals(self) -> None:
+        harness = self.harness()
+        end = harness["ends"][0]
+        with self.assertRaises(NotFound):
+            self.assign(harness, end, {"componentId": "cmp_missing"})
+        with self.assertRaises(Invalid):
+            self.assign(harness, end, {"componentId": "cmp_blank"})
+        a, b = harness["ends"]
+        self.service.replace_wires(DESIGNER, self.sid, self.version(), harness["id"],
+                                   [{"from": {"end": a["id"], "pin": "9"}, "to": {"end": b["id"], "pin": "9"}}])
+        with self.assertRaises(Conflict) as refused:
+            self.assign(harness, end, {"componentId": "cmp_housing"})
+        self.assertIn("9", str(refused.exception))

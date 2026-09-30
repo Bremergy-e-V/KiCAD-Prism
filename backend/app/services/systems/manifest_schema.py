@@ -216,6 +216,10 @@ class Link(_Model):
 class PartRef(_Model):
     componentId: str = Field(min_length=1, max_length=200)
     revisionId: str = Field(min_length=1, max_length=200)
+    # As the catalog showed the part at assignment (SB2-18); omitted from the digest when null.
+    name: Optional[str] = Field(default=None, max_length=500)
+    mpn: Optional[str] = Field(default=None, max_length=500)
+    manufacturer: Optional[str] = Field(default=None, max_length=500)
 
 
 class HarnessEnd(_Model):
@@ -226,6 +230,7 @@ class HarnessEnd(_Model):
     pinCount: int = Field(ge=1, description="end pins; copied from the mated connector while Generic")
     pinMap: Optional[dict[str, str]] = Field(default=None, description="end pin -> mated pin; null = identity")
     bootMm: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    partPins: Optional[list[Pad]] = Field(default=None, description="the part's pins; null while Generic (SB2-18)")
 
 
 class WirePoint(_Model):
@@ -474,6 +479,13 @@ def full_view(manifest: Manifest) -> dict:
     for link in body["links"]:
         if link["stackHeightMm"] is None:
             link.pop("stackHeightMm")
+    for harness in body["harnesses"]:
+        for end in harness["ends"]:
+            if end["partPins"] is None:
+                end.pop("partPins")
+            for key in ("name", "mpn", "manufacturer"):
+                if end["part"] is not None and end["part"][key] is None:
+                    end["part"].pop(key)
     return body
 
 

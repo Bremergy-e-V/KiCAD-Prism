@@ -51,6 +51,7 @@ const RULE_TEXT: Record<string, string> = {
   export_unresolved: "Export does not resolve",
   mating_stale: "Connector moved since its mating frame was confirmed",
   mate_pair_unknown: "Catalog does not list these parts as mating",
+  mate_pin_mismatch: "Harness part pins do not land on connector pads",
 };
 
 export function findingText(finding: Pick<Finding, "name">): string {

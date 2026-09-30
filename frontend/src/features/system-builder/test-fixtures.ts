@@ -58,6 +58,7 @@ export function harnessEnd(id: string, ordinal: number, mates: { instanceId: str
   return {
     id, ordinal, part: null, pinCount: pins, pinMap: null, bootMm: null,
     pins: Array.from({ length: pins }, (_, i) => String(i + 1)),
+    matePads: mates ? Array.from({ length: pins }, (_, i) => String(i + 1)) : [],
     mates: mates && { instanceId: mates.instanceId, portKey: `key-${mates.reference}`, resolved: true, redacted: false,
       port: { portKey: `key-${mates.reference}`, reference: mates.reference, libId: null, footprint: null, pinCount: pins } },
   };

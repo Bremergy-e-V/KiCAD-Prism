@@ -14,6 +14,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Mapping, Optional
 
+from app.services.systems import harnesses as harnesses_module
 from app.services.systems.manifest_schema import SCHEMA, Manifest
 from app.services.systems.store import Invalid, SystemStore
 
@@ -105,9 +106,9 @@ def build(
         "ends": [{"id": end["id"], "ordinal": end["ordinal"],
                   "mates": (_manifest_end(kinds, end["mates_instance_id"], end["mates_port"])
                             if end["mates_instance_id"] and end["mates_port"] else None),
-                  "part": ({"componentId": end["catalog_component_id"], "revisionId": end["catalog_revision_id"]}
-                           if end["catalog_component_id"] else None),
-                  "pinCount": end["pin_count"], "pinMap": end["pin_map"], "bootMm": end["boot_mm"]}
+                  "part": harnesses_module.part_ref(end),
+                  "pinCount": end["pin_count"], "pinMap": end["pin_map"], "bootMm": end["boot_mm"],
+                  "partPins": end["part_pins"]}
                  for end in harness["ends"]],
         "wires": [{"id": wire["id"], "from": {"end": wire["from_end"], "pin": wire["from_pin"]},
                    "to": {"end": wire["to_end"], "pin": wire["to_pin"]}, "signal": wire["signal"],
@@ -221,7 +222,9 @@ def import_manifest(
                     mates_port=_end_baseline(end.mates) if end.mates else None,
                     pin_map=end.pinMap, boot_mm=end.bootMm,
                     catalog_component_id=end.part.componentId if end.part else None,
-                    catalog_revision_id=end.part.revisionId if end.part else None)
+                    catalog_revision_id=end.part.revisionId if end.part else None, part_pins=end.partPins,
+                    part_summary=({k: getattr(end.part, k) or "" for k in harnesses_module.PART_SUMMARY}
+                                  if end.part else None))
             store.replace_wires(change, harness.id, [
                 {"id": w.id, "from": {"end": w.source.end, "pin": w.source.pin},
                  "to": {"end": w.target.end, "pin": w.target.pin}, "signal": w.signal, "gaugeAwg": w.gaugeAwg,

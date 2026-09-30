@@ -17,8 +17,22 @@ from app.services.systems.store import Invalid, SystemStore
 Component = Optional[Mapping[str, Any]]
 
 
+PART_SUMMARY = ("name", "mpn", "manufacturer")
+
+
+def part_ref(end: Mapping[str, Any]) -> Optional[dict]:
+    """The end's block part as documents and manifests show it: IDs plus the summary kept at assignment."""
+    if not end["catalog_component_id"]:
+        return None
+    summary = end.get("part_summary") or {}
+    return {"componentId": end["catalog_component_id"], "revisionId": end["catalog_revision_id"],
+            **{k: summary.get(k) for k in PART_SUMMARY}}
+
+
 def end_pins(end: Mapping[str, Any], component: Component) -> list[str]:
-    """The end's pin names, natural order."""
+    """The end's pin names, natural order: the assigned part's pins (SB2-18), else the connector's pads."""
+    if end.get("part_pins") is not None:
+        return sorted({str(p) for p in end["part_pins"]}, key=pad_sort_key)
     if component is None:
         names = {str(n) for n in range(1, int(end["pin_count"]) + 1)}
     else:
@@ -27,14 +41,20 @@ def end_pins(end: Mapping[str, Any], component: Component) -> list[str]:
     return sorted(names, key=pad_sort_key)
 
 
-def pin_facts(end: Mapping[str, Any], component: Component) -> dict[str, dict]:
-    """``end pin -> facts of the pad it maps to`` (nets, names); empty facts while unmated."""
+def pin_facts(end: Mapping[str, Any], component: Component, *, include_missing: bool = False) -> dict[str, dict]:
+    """``end pin -> facts of the pad it maps to`` (nets, names); empty facts while unmated.
+
+    A pin that lands on a pad the connector does not have is left out, or with ``include_missing``
+    kept with no nets and ``missing: True`` (a part's extra pin before it is remapped, SYS-V19).
+    """
     pads = exposure.pins_by_pad(component) if component is not None else {}
     out = {}
     for pin in end_pins(end, component):
         pad = SystemStore.end_pad(end, pin)
         if component is not None and pad not in pads:
-            continue  # mapped to a pad the connector does not have (SYS-V04)
+            if include_missing:
+                out[pin] = {"pad": pad, "nets": [], "missing": True}
+            continue
         out[pin] = dict(pads.get(pad) or {"pad": pad, "nets": []})
     return out
 
@@ -42,7 +62,7 @@ def pin_facts(end: Mapping[str, Any], component: Component) -> dict[str, dict]:
 def capture(wires: Sequence[Mapping[str, Any]], ends: Mapping[str, Mapping[str, Any]],
             components: Mapping[str, Component]) -> list[dict]:
     """Validate end pins and capture ``netFrom``/``netTo`` at the mated baselines (§17.2)."""
-    facts = {end_id: pin_facts(end, components.get(end_id)) for end_id, end in ends.items()}
+    facts = {end_id: pin_facts(end, components.get(end_id), include_missing=True) for end_id, end in ends.items()}
     out = []
     for wire in wires:
         item = dict(wire)
@@ -97,6 +117,13 @@ def findings(harness: Mapping[str, Any], components: Mapping[str, Component],
         for pin, pad in sorted((end.get("pin_map") or {}).items()):
             if pad not in pads:
                 out.append(finding("SYS-V04", **{**common, "pin": pad}))
+        if end.get("part_pins") is not None and len(end["part_pins"]) != len(pads):
+            mapped = set((end.get("pin_map") or {}).keys())
+            wired = {w[f"{side}_pin"] for w in harness["wires"] for side in ("from", "to") if w[f"{side}_end"] == end["id"]}
+            unmapped = sorted(wired - mapped, key=pad_sort_key)
+            if unmapped:  # SYS-V19 (§18.1): the part and the connector differ and wired pins are not remapped
+                out.append(finding("SYS-V19", **{**common, "detail": {**common["detail"], "partPins": len(end["part_pins"]),
+                                                                       "connectorPins": len(pads), "unmapped": unmapped}}))
     seen: dict[frozenset, str] = {}
     for wire in harness["wires"]:
         key = frozenset({(wire["from_end"], wire["from_pin"]), (wire["to_end"], wire["to_pin"])})

@@ -34,6 +34,7 @@ from app.services.workspace_migrations import (
     m036_system_port_mating,
     m037_system_link_types,
     m038_system_harnesses,
+    m039_system_harness_part_pins,
 )
 from app.services.workspace_migrations.m026_system_builder import migrate
 from app.services.workspace_schema_migrations import MIGRATIONS
@@ -78,7 +79,7 @@ class StoreTest(unittest.TestCase):
                       m030_system_snapshot_manifest, m031_system_exports, m032_system_catalog_binding,
                       m033_system_catalog_instances, m034_system_child_reviews,
                       m035_system_optional_rules, m036_system_port_mating,
-                      m037_system_link_types, m038_system_harnesses):
+                      m037_system_link_types, m038_system_harnesses, m039_system_harness_part_pins):
             later.migrate(self.conn)
         self.conn.commit()
         self.store = SystemStore(self.conn)

@@ -451,10 +451,16 @@ class MatesRequest(BaseModel):
     portKey: str = Field(min_length=1, max_length=2000)
 
 
+class PartRequest(BaseModel):
+    componentId: str = Field(min_length=1, max_length=200)
+
+
 class UpdateHarnessEndRequest(BaseModel):
     mates: Optional[MatesRequest] = None
     pinMap: Optional[dict[str, str]] = None
     bootMm: Optional[float] = Field(default=None, ge=0)
+    # A catalog part for the mating block, or null for Generic (CONTRACTS_P2 §17.2, SB2-18).
+    part: Optional[PartRequest] = None
 
 
 class WirePointRequest(BaseModel):
@@ -547,6 +553,8 @@ async def update_harness_end(system_id: str, harness_id: str, end_id: str, body:
     fields = {key: getattr(body, key) for key in body.model_fields_set}
     if "mates" in fields and fields["mates"] is not None:
         fields["mates"] = body.mates.model_dump()
+    if "part" in fields and fields["part"] is not None:
+        fields["part"] = body.part.model_dump()
     result = await _run(system_id, lambda: system_service.service.update_harness_end(
         _caller(user), system_id, version, harness_id, end_id, fields))
     return _respond(result, response)
