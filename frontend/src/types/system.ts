@@ -13,7 +13,9 @@ export interface SystemSummary {
   folderId: string | null;
   version: number;
   etag: string;
+  /** Board instances only (P2): subsystems are counted in `subsystemCount`. */
   instanceCount: number;
+  subsystemCount?: number;
   openReviewCount: number;
   /** The catalog `assembly` this system publishes to, bound on first publish (CONTRACTS_P2 §3.3). */
   catalogComponentId?: string | null;
@@ -64,7 +66,25 @@ export interface SystemInstance {
   tipCheckedAt: string | null;
   updateAvailable: boolean | null;
   interface: InstanceInterfaceState | null;
+  /** For an assembly, its exports: `portKey` is the export ID (CONTRACTS_P2 §5.1). */
   ports: SystemPort[] | null;
+  /** `board` when absent (documents from before P2). */
+  kind?: "board" | "assembly" | "module";
+  /** Set for assembly and module instances. */
+  catalog?: InstanceCatalogRef;
+}
+
+export interface InstanceCatalogRef {
+  componentId: string;
+  revisionId: string;
+  follow: "pinned" | "latest_released";
+  version: number | null;
+  releaseStatus: string | null;
+  identity: string | null;
+  latestReleasedRevisionId: string | null;
+  /** The child system the revision was published from, and its snapshot. */
+  systemId: string | null;
+  snapshotName: string | null;
 }
 
 export interface PortBaseline {
@@ -398,4 +418,29 @@ export interface GeneratorResult {
   generator: GeneratorKind;
   rows: GeneratedRow[];
   skipped: { pinA: string; pinB: string; reason: "existing" | "unconnected" }[];
+}
+
+/** `GET …/hierarchy` (CONTRACTS_P2 §11): every occurrence, redacted for the reader. */
+export interface SystemOccurrence {
+  path: string;
+  displayPath: string;
+  labels: string[];
+  instanceId: string;
+  kind: "board" | "assembly" | "module";
+  depth: number;
+  systemId: string;
+  projectId: string | null;
+  baselineCommit: string | null;
+  componentId: string | null;
+  revisionId: string | null;
+  childSystemId: string | null;
+  childSnapshotId: string | null;
+  unresolved: boolean;
+  restricted: boolean;
+}
+
+export interface SystemHierarchy {
+  systemId: string;
+  occurrences: SystemOccurrence[];
+  boardCount: number;
 }

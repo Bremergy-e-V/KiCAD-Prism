@@ -43,17 +43,24 @@ class UpdateSystemRequest(BaseModel):
 
 
 class CreateInstanceRequest(BaseModel):
-    projectId: str = Field(min_length=1, max_length=200)
+    """A board (``projectId``) or, P2 §5.1, a catalog assembly (``componentId``)."""
+
+    kind: Literal["board", "assembly"] = "board"
+    projectId: Optional[str] = Field(default=None, min_length=1, max_length=200)
     label: str = Field(min_length=1, max_length=100)
     baselineCommit: Optional[str] = Field(default=None, max_length=40)
     trackedRef: Optional[str] = Field(default=None, max_length=200)
     pinned: bool = False
+    componentId: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    revisionId: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    follow: Literal["pinned", "latest_released"] = "latest_released"
 
 
 class UpdateInstanceRequest(BaseModel):
     label: Optional[str] = Field(default=None, min_length=1, max_length=100)
     pinned: Optional[bool] = None
     trackedRef: Optional[str] = Field(default=None, max_length=200)
+    follow: Optional[Literal["pinned", "latest_released"]] = None
 
 
 class OverrideRequest(BaseModel):
@@ -248,6 +255,16 @@ async def add_instance(
     user: AuthenticatedUser = Depends(require_viewer),
 ):
     version = _expected_version(request, system_id)
+    if body.kind == "assembly":
+        if body.componentId is None or body.projectId is not None:
+            raise HTTPException(status_code=422, detail="an assembly instance takes componentId, not projectId")
+        result = await _run(system_id, lambda: system_service.service.add_catalog_instance(
+            _caller(user), system_id, version, kind="assembly", label=body.label, component_id=body.componentId,
+            revision_id=body.revisionId, follow=body.follow,
+        ))
+        return _respond(result, response, 201)
+    if body.projectId is None:
+        raise HTTPException(status_code=422, detail="a board instance takes projectId")
     result = await _run(system_id, lambda: system_service.service.add_instance(
         _caller(user), system_id, version, project_id=body.projectId, label=body.label,
         baseline_commit=body.baselineCommit, tracked_ref=body.trackedRef, pinned=body.pinned,
@@ -282,6 +299,12 @@ async def remove_instance(
         _caller(user), system_id, version, instance_id, cascade=cascade == "links",
     ))
     return _no_content(result)
+
+
+@router.get("/{system_id}/hierarchy")
+async def get_hierarchy(system_id: str, user: AuthenticatedUser = Depends(require_viewer)):
+    """P2 §11: the occurrence tree, redacted for the reader."""
+    return await _run(system_id, lambda: system_service.service.hierarchy(_caller(user), system_id))
 
 
 @router.get("/{system_id}/instances/{instance_id}/interface")

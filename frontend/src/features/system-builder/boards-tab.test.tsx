@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { chooseMenuItem } from "@/test/select";
+import { chooseMenuItem, chooseOption } from "@/test/select";
 
 import { BoardsTab, linkedPortKeys, portState } from "./boards-tab";
 import { OverviewTab } from "./overview-tab";
@@ -189,5 +189,45 @@ describe("OverviewTab", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect([url, init.method, JSON.parse(String(init.body))]).toEqual(["/api/systems/sys_1/exports/sxp_DEBUG", "PATCH", { name: "SWD", description: "" }]);
+  });
+  it("shows a subsystem with its revision, exports and contents", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ systemId: "sys_1", boardCount: 2, occurrences: [
+      { path: "/sin_CNDH", displayPath: "CNDH-A", labels: ["CNDH-A"], instanceId: "sin_CNDH", kind: "assembly", depth: 1, restricted: false },
+      { path: "/sin_CNDH/sin_x", displayPath: "CNDH-A ▸ OBC-1", labels: ["CNDH-A", "OBC-1"], instanceId: "sin_x", kind: "board", depth: 2, restricted: false },
+      { path: "/sin_CNDH/sin_y", displayPath: "CNDH-A ▸ PAY", labels: ["CNDH-A", "PAY"], instanceId: "sin_y", kind: "board", depth: 2, restricted: true },
+    ] }), { status: 200, headers: { "Content-Type": "application/json" } })));
+    const cndh = instance("CNDH", {
+      kind: "assembly", label: "CNDH-A", projectId: null, projectName: "CNDH Stack", baselineCommit: null, trackedRef: null,
+      ports: [port("PWR_IN", { portKey: "sxp_1", value: "J1", pinCount: 60 })],
+      catalog: { componentId: "cmp_1", revisionId: "rev_2", follow: "latest_released", version: 2, releaseStatus: "released",
+        identity: "IPN-1", latestReleasedRevisionId: "rev_2", systemId: "sys_child", snapshotName: "CDR-rc2" },
+    });
+    renderTab({ document: systemDocument([cndh]) });
+    expect(screen.getByText("Subsystem")).toBeTruthy();
+    expect(screen.getAllByText("v2 released")).toHaveLength(2); // the list and the header
+    expect(screen.getByText("CDR-rc2")).toBeTruthy();
+    expect(screen.getByText("PWR_IN")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Open system/ }).getAttribute("href")).toBe("/systems/sys_child");
+    const contents = await screen.findByRole("list", { name: "Subsystem contents" });
+    expect(contents.textContent).toContain("OBC-1");
+    expect(contents.querySelector("[aria-label=restricted]")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Check now/ })).toBeNull();
+  });
+
+  it("adds a subsystem from the catalog, pinning an unreleased one", async () => {
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.startsWith("/api/catalog")
+      ? { items: [{ id: "cmp_1", name: "CNDH Stack", value: "IPN-1", current_revision_id: "rev_1", released_revision_id: "" }] }
+      : { id: "sin_new" }), { status: url.startsWith("/api/catalog") ? 200 : 201, headers: { "Content-Type": "application/json", ETag: '"sys:sys_1:2"' } }));
+    vi.stubGlobal("fetch", fetchMock);
+    renderTab();
+    await chooseMenuItem("Add", /Subsystem/);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    await chooseOption("Assembly", /CNDH Stack/);
+    expect(await screen.findByText(/Not released yet/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Label in this system"), { target: { value: "CNDH-A" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add subsystem" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => url === "/api/systems/sys_1/instances")).toBe(true));
+    const [, init] = fetchMock.mock.calls.find(([url]) => url === "/api/systems/sys_1/instances") as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({ kind: "assembly", label: "CNDH-A", componentId: "cmp_1", revisionId: "rev_1", follow: "pinned" });
   });
 });

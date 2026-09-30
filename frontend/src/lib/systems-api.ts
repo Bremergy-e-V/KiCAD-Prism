@@ -26,6 +26,7 @@ import type {
   SnapshotPublication,
   SystemDocument,
   SystemExport,
+  SystemHierarchy,
   SystemInstance,
   SystemLink,
   SystemPort,
@@ -127,9 +128,22 @@ export function addInstance(systemId: string, etag: string, input: InstanceInput
     "Could not add the board");
 }
 
+/** P2 §5.1: an assembly instance pinning a catalog revision (the released one when `revisionId` is omitted). */
+export function addAssemblyInstance(
+  systemId: string, etag: string,
+  input: { label: string; componentId: string; revisionId?: string; follow: "pinned" | "latest_released" },
+) {
+  return versioned<InstanceRow>(path(systemId, "instances"), { method: "POST", etag, body: json({ kind: "assembly", ...input }) },
+    "Could not add the subsystem");
+}
+
+export function getHierarchy(systemId: string) {
+  return send<SystemHierarchy>(path(systemId, "hierarchy")).then((r) => r.body);
+}
+
 export function updateInstance(
   systemId: string, etag: string, instanceId: string,
-  fields: { label?: string; pinned?: boolean; trackedRef?: string | null },
+  fields: { label?: string; pinned?: boolean; trackedRef?: string | null; follow?: "pinned" | "latest_released" },
 ) {
   return versioned<InstanceRow>(path(systemId, "instances", instanceId), { method: "PATCH", etag, body: json(fields) });
 }

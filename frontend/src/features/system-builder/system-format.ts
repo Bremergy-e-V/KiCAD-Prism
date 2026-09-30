@@ -17,6 +17,19 @@ export interface BoardStatus {
  * lost, interface failed or pending, then the baseline against its branch.
  */
 export function boardStatus(instance: SystemInstance): BoardStatus {
+  if (instance.kind === "assembly" || instance.kind === "module") {
+    const ref = instance.catalog;
+    if (instance.resolution === "unresolved" || !ref) {
+      return { label: "Catalog unavailable", tone: "error", detail: "The pinned catalog revision could not be read." };
+    }
+    const version = ref.version ? `v${ref.version}` : "revision";
+    if (instance.updateAvailable) {
+      return { label: "Update available", tone: "warning", detail: `A newer released revision than ${version} exists.` };
+    }
+    return ref.releaseStatus === "released"
+      ? { label: `${version} released`, tone: "ok", detail: `Pinned to ${version}, released.` }
+      : { label: `${version} unreleased`, tone: "warning", detail: `Pinned to ${version}, which QA has not released.` };
+  }
   if (instance.restricted) {
     return { label: "Restricted", tone: "muted", detail: "You cannot see this board's project." };
   }

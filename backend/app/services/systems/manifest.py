@@ -5,8 +5,8 @@
 ``import_manifest`` recreates a system from a manifest, keeping its IDs, so a
 manifest round-trips DB → manifest → DB (and, in M7, Git → DB).
 
-P2 objects that have no tables yet (harnesses, mating, poses, catalog
-instances) are emitted empty; their tickets extend both directions.
+P2 objects that have no tables yet (harnesses, mating, poses) are emitted
+empty; their tickets extend both directions.
 """
 
 from __future__ import annotations
@@ -36,12 +36,30 @@ def _port(baseline: Mapping[str, Any]) -> dict:
 def build(
     store: SystemStore, system_id: str, *, created_by: str, created_at: Any,
     snapshot: Optional[Mapping[str, str]] = None,
+    catalog_refs: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Manifest:
-    """The manifest of ``system_id`` as stored now. ``snapshot`` fills ``meta.snapshot``."""
+    """The manifest of ``system_id`` as stored now. ``snapshot`` fills ``meta.snapshot``.
+
+    ``catalog_refs`` maps each assembly/module instance ID to its pinned
+    revision (``system_revision`` shape: ``version``, ``identity``); the
+    catalog is a separate service, so the caller reads it.
+    """
 
     system = store.get_system(system_id)
     instances = []
-    for instance in sorted(store.list_instances(system_id), key=lambda i: i["id"]):
+    for instance in sorted(store.list_instances(system_id, kinds=SystemStore.ALL_KINDS), key=lambda i: i["id"]):
+        if instance["kind"] != "board":
+            ref = (catalog_refs or {}).get(instance["id"])
+            if ref is None:
+                raise Invalid(f"catalog revision of {instance['label']} is not available")
+            instances.append({
+                "id": instance["id"], "label": instance["label"], "kind": instance["kind"],
+                "catalog": {"componentId": instance["catalog_component_id"],
+                            "revisionId": instance["catalog_revision_id"],
+                            "revisionVersion": int(ref["version"]), "identity": str(ref.get("identity") or "")},
+                "follow": instance["follow"],
+            })
+            continue
         overrides = store.list_overrides(instance["id"])
         instances.append({
             "id": instance["id"], "label": instance["label"], "kind": "board",
@@ -105,8 +123,6 @@ def import_manifest(
     unsupported = [name for name in ("harnesses", "mating") if getattr(manifest, name)]
     if manifest.placement.poses or manifest.placement.drivingMates:
         unsupported.append("placement")
-    if any(i.kind != "board" for i in manifest.instances):
-        unsupported.append("catalog instances")
     if unsupported:
         raise Invalid(f"manifest sections not supported yet: {', '.join(unsupported)}")
 
@@ -116,6 +132,12 @@ def import_manifest(
     )
     with store.mutation(row["id"], expected_version=None, actor=actor) as change:
         for instance in manifest.instances:
+            if instance.kind != "board":
+                store.add_catalog_instance(
+                    change, kind=instance.kind, label=instance.label, component_id=instance.catalog.componentId,
+                    revision_id=instance.catalog.revisionId, follow=instance.follow, instance_id=instance.id,
+                )
+                continue
             store.add_instance(
                 change, project_id=instance.projectId, label=instance.label,
                 baseline_commit=instance.baselineCommit, tracked_ref=instance.trackedRef,
