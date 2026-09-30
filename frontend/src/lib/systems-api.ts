@@ -327,10 +327,9 @@ export function manifestUrl(systemId: string, snapshotId: string): string {
   return `${path(systemId, "snapshots", snapshotId)}/manifest`;
 }
 
-export function icdUrl(systemId: string, format: "csv" | "html", snapshotId?: string): string {
-  return snapshotId
-    ? `${path(systemId, "snapshots", snapshotId)}/icd.${format}`
-    : `${path(systemId)}/icd.${format}`;
+export function icdUrl(systemId: string, format: "csv" | "html", snapshotId?: string, depth: "own" | "all" = "own"): string {
+  const base = snapshotId ? `${path(systemId, "snapshots", snapshotId)}/icd.${format}` : `${path(systemId)}/icd.${format}`;
+  return depth === "all" ? `${base}?depth=all` : base;
 }
 
 // ---------------------------------------------------------------------------

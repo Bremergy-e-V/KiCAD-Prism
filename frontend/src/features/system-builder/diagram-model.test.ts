@@ -9,8 +9,10 @@ import {
   layoutInputs,
   nodeHeight,
   portKeyOf,
+  subsystemContents,
 } from "./diagram-model";
 import { exportOf, instance, link, port, systemDocument } from "./test-fixtures";
+import type { SystemOccurrence } from "@/types/system";
 
 const obc = instance("OBC", { ports: [port("J7"), port("J10"), port("J2", { exposed: false, override: "hidden" })] });
 const pay = instance("PAY", { ports: [port("J4"), port("J9")] });
@@ -106,5 +108,24 @@ describe("applyOverrides", () => {
       n1: { position: { x: 1, y: 2 }, dragging: true, measured: { width: 10, height: 20 } },
       n2: { selected: true },
     });
+  });
+});
+
+describe("subsystemContents", () => {
+  const occurrence = (path: string, kind: "board" | "assembly", restricted = false) => {
+    const labels = path.split("/").filter(Boolean);
+    return { path, displayPath: labels.join(" ▸ "), labels, instanceId: labels[labels.length - 1], kind, depth: labels.length + 1,
+      systemId: "s", projectId: null, baselineCommit: null, componentId: null, restricted } as unknown as SystemOccurrence;
+  };
+
+  it("lists what sits under one subsystem, nested levels included, and nothing from its siblings", () => {
+    const occurrences = [occurrence("/A", "assembly"), occurrence("/A/OBC", "board"), occurrence("/A/SUB", "assembly"),
+      occurrence("/A/SUB/PAY", "board", true), occurrence("/AB", "assembly"), occurrence("/AB/X", "board"), occurrence("/PDU", "board")];
+    expect(subsystemContents(occurrences, "A")).toEqual([
+      { path: "/A/OBC", label: "OBC", kind: "board", depth: 3, restricted: false },
+      { path: "/A/SUB", label: "SUB", kind: "assembly", depth: 3, restricted: false },
+      { path: "/A/SUB/PAY", label: "PAY", kind: "board", depth: 4, restricted: true },
+    ]);
+    expect(subsystemContents(occurrences, "PDU")).toEqual([]);
   });
 });

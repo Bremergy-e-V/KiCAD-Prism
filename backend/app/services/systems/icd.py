@@ -11,7 +11,7 @@ from __future__ import annotations
 import csv
 import html
 import io
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 from app.services.systems import layout as system_layout
 from app.services.systems.drift import pad_sort_key
@@ -86,11 +86,41 @@ def csv_records(document: Mapping[str, Any]) -> list[dict[str, str]]:
     return records
 
 
-def render_csv(document: Mapping[str, Any]) -> str:
+def _nested_records(levels: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """``?depth=all`` rows from child levels: manifest links under their occurrence path (P2 §10)."""
+    records = []
+    for level in levels:
+        labels = level["labels"]
+        for link in sorted(level["links"], key=lambda l: (l.get("name") or "", l["id"])):
+            for row in sorted(link["rows"], key=lambda r: (pad_sort_key(r["pinA"]), r["id"])):
+                record = {"occurrence": level["displayPath"], "row_id": row["id"], "link_id": link["id"],
+                          "link_name": link.get("name") or "", "harness": link.get("harnessLabel") or "",
+                          "signal": row.get("signal") or "", "status": ""}
+                for end, column in (("a", "A"), ("b", "B")):
+                    raw = link[end]
+                    baseline = raw.get("port") or raw.get("export") or {}
+                    hidden = raw["instanceId"] in level.get("restricted", ())
+                    record.update({
+                        f"{end}_board": labels.get(raw["instanceId"], "?"),
+                        f"{end}_connector": "" if hidden else (baseline.get("reference") or baseline.get("name") or ""),
+                        f"{end}_pin": row[f"pin{column}"], f"{end}_pin_name": "",
+                        f"{end}_net": "" if hidden else _join(row[f"net{column}"]), f"{end}_commit": "",
+                    })
+                records.append(record)
+    return records
+
+
+def render_csv(document: Mapping[str, Any], levels: Optional[Sequence[Mapping[str, Any]]] = None) -> str:
+    """§9.4 CSV. With ``levels`` (``?depth=all``) an ``occurrence`` column leads, empty for this system's own rows."""
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=CSV_COLUMNS, lineterminator="\r\n")
+    columns = CSV_COLUMNS if levels is None else ("occurrence", *CSV_COLUMNS)
+    writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\r\n")
     writer.writeheader()
-    writer.writerows(csv_records(document))
+    own = csv_records(document)
+    if levels is None:
+        writer.writerows(own)
+    else:
+        writer.writerows([{"occurrence": "", **r} for r in own] + _nested_records(levels))
     return buffer.getvalue()
 
 
@@ -202,13 +232,21 @@ def _chip(status: str) -> str:
     return f'<span class="chip {_e(status)}">{_e(status)}</span>'
 
 
-def render_html(document: Mapping[str, Any], *, source: str, generated_at: str) -> str:
-    """§9.5: the printable ICD. ``source`` is the snapshot name or ``live``."""
+def render_html(document: Mapping[str, Any], *, source: str, generated_at: str,
+                levels: Optional[Sequence[Mapping[str, Any]]] = None) -> str:
+    """§9.5: the printable ICD. ``source`` is the snapshot name or ``live``; ``levels`` adds the subsystems' own links."""
 
     system = document["system"]
     open_reviews = int(document.get("openReviewCount") or 0)
-    banner_text = (f'This document contains {open_reviews} unreviewed change{"s" if open_reviews != 1 else ""}.'
-                   if open_reviews else "")
+    boards = [i for i in document["instances"] if i.get("kind", "board") == "board"]
+    subsystems = [i for i in document["instances"] if i.get("kind", "board") != "board"]
+    unreleased = [i for i in subsystems if (i.get("catalog") or {}).get("releaseStatus") not in (None, "released")]
+    banner_parts = []
+    if open_reviews:
+        banner_parts.append(f'This document contains {open_reviews} unreviewed change{"s" if open_reviews != 1 else ""}.')
+    if unreleased:
+        banner_parts.append(f'{len(unreleased)} subsystem{"s pin" if len(unreleased) != 1 else " pins"} an unreleased revision.')
+    banner_text = " ".join(banner_parts)
     validation = document.get("validation") or {}
     findings = validation.get("findings") or []
     labels = {i["id"]: i["label"] for i in document["instances"]}
@@ -229,7 +267,8 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str) 
     if system.get("description"):
         out.append(f'<p class="description">{_e(system["description"])}</p>')
     out.append('<div class="stats">'
-               f'<div class="stat"><b>{len(document["instances"])}</b><span>Boards</span></div>'
+               f'<div class="stat"><b>{len(boards)}</b><span>Boards</span></div>'
+               + (f'<div class="stat"><b>{len(subsystems)}</b><span>Subsystems</span></div>' if subsystems else "") +
                f'<div class="stat"><b>{len(document["links"])}</b><span>Links</span></div>'
                f'<div class="stat"><b>{len(records)}</b><span>Connections</span></div>'
                f'<div class="stat{" err" if errors else ""}"><b>{errors}</b><span>Errors</span></div>'
@@ -241,7 +280,7 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str) 
 
     out.append("<h2>Boards</h2><table><thead><tr><th>Label</th><th>Project</th><th>Baseline commit</th>"
                "<th>Tracked branch</th><th>Pinned</th></tr></thead><tbody>")
-    for instance in document["instances"]:
+    for instance in boards:
         commit = instance["baselineCommit"]
         baseline = (f'<span class="mono"><b>{_e(commit[:12])}</b></span><br><span class="mono meta">{_e(commit)}</span>'
                     if commit else '<span class="meta">restricted</span>')
@@ -249,6 +288,19 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str) 
                    f"<td>{baseline}</td><td class=\"mono\">{_e(instance['trackedRef'] or '—')}</td>"
                    f"<td>{'yes' if instance['pinned'] else 'no'}</td></tr>")
     out.append("</tbody></table>")
+
+    if subsystems:
+        out.append("<h2>Subsystems</h2><table><thead><tr><th>Label</th><th>Assembly</th><th>IPN</th><th>Revision</th>"
+                   "<th>Stage</th><th>Source snapshot</th><th>Unreviewed at publish</th></tr></thead><tbody>")
+        for instance in subsystems:
+            ref = instance.get("catalog") or {}
+            stage = ref.get("releaseStatus") or "unavailable"
+            out.append(f"<tr><td><b>{_e(instance['label'])}</b></td><td>{_e(instance.get('projectName') or '')}</td>"
+                       f"<td class=\"mono\">{_e(ref.get('identity') or '')}</td>"
+                       f"<td>{'v' + str(ref['version']) if ref.get('version') else '—'}</td>"
+                       f"<td>{_chip('ok' if stage == 'released' else 'review')} {_e(stage.replace('_', ' '))}</td>"
+                       f"<td>{_e(ref.get('snapshotName') or '')}</td><td>{int(ref.get('openReviewCount') or 0)}</td></tr>")
+        out.append("</tbody></table>")
 
     out.append(f'<h2>Block diagram</h2><div class="diagram">{_diagram(document)}</div>')
 
@@ -283,6 +335,26 @@ def render_html(document: Mapping[str, Any], *, source: str, generated_at: str) 
         if not rows:
             out.append('<tr><td colspan="8" class="meta">No pins mapped.</td></tr>')
         out.append("</tbody></table></section>")
+
+    if levels:
+        out.append("<h2>Inside subsystems</h2>")
+        for level in levels:
+            nested = [r for r in _nested_records([level])]
+            out.append(f'<section class="link"><div class="link-head"><h3>{_e(level["displayPath"])}</h3>'
+                       f'<span class="meta">{_e(level.get("snapshotName") or "")} · {len(nested)} pin'
+                       f'{"s" if len(nested) != 1 else ""}</span></div>')
+            if not nested:
+                out.append('<p class="meta">No links inside.</p></section>')
+                continue
+            out.append("<table><thead><tr><th>Link</th><th>From</th><th>Pin</th><th>Net</th><th>Signal</th>"
+                       "<th class=\"side-b\">Net</th><th class=\"side-b\">Pin</th><th class=\"side-b\">To</th></tr></thead><tbody>")
+            for r in nested:
+                out.append(f"<tr><td>{_e(r['link_name'])}</td><td>{_e(r['a_board'])} {_e(r['a_connector'])}</td>"
+                           f"<td class=\"mono\">{_e(r['a_pin'])}</td><td class=\"mono\">{_e(r['a_net'])}</td>"
+                           f"<td>{_e(r['signal'])}</td><td class=\"mono side-b\">{_e(r['b_net'])}</td>"
+                           f"<td class=\"mono side-b\">{_e(r['b_pin'])}</td>"
+                           f"<td class=\"side-b\">{_e(r['b_board'])} {_e(r['b_connector'])}</td></tr>")
+            out.append("</tbody></table></section>")
 
     out.append("<h2>Findings</h2>")
     if findings:
