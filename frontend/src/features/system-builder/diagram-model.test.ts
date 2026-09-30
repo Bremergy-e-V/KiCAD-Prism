@@ -7,9 +7,10 @@ import {
   connectionToLink,
   handleId,
   layoutInputs,
+  nodeHeight,
   portKeyOf,
 } from "./diagram-model";
-import { instance, link, port, systemDocument } from "./test-fixtures";
+import { exportOf, instance, link, port, systemDocument } from "./test-fixtures";
 
 const obc = instance("OBC", { ports: [port("J7"), port("J10"), port("J2", { exposed: false, override: "hidden" })] });
 const pay = instance("PAY", { ports: [port("J4"), port("J9")] });
@@ -31,6 +32,14 @@ describe("layoutInputs", () => {
 });
 
 describe("buildDiagram", () => {
+  it("always shows an exported port as a row named after its export", () => {
+    const doc = systemDocument([obc, pay], [link("L1", obc.id, "J7", pay.id, "J4", 3)], [exportOf("DEBUG", obc.id, "J10")]);
+    const [a] = buildDiagram(doc, {}).nodes;
+    expect(a.data.rows.map((row) => [row.reference, row.exportName ?? null])).toEqual([["J7", null], ["J10", "DEBUG"]]);
+    expect(a.data.hiddenCount).toBe(0);
+    expect(a.height).toBe(nodeHeight(2, 0)); // two rows, no "show unlinked" footer
+  });
+
   it("draws linked ports as rows with their partner, and counts the rest", () => {
     const doc = systemDocument([obc, pay], [link("L1", obc.id, "J7", pay.id, "J4", 3)]);
     const { nodes } = buildDiagram(doc, {});

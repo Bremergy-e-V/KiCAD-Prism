@@ -17,7 +17,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { toast } from "sonner";
-import { ChevronDown, LayoutGrid, Lock } from "lucide-react";
+import { ChevronDown, LayoutGrid, Lock, Share2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -73,13 +73,19 @@ function BoardNodeView({ id, data, isConnectable, selected }: NodeProps<BoardNod
           <div key={row.portKey ?? "restricted"}
             className={cn("absolute inset-x-0 flex items-center gap-2 px-3 text-xs", index > 0 && "border-t border-border/50")}
             style={{ top, height: ROW_HEIGHT }}
-            title={row.orphan ? "This linked port is no longer exposed at the baseline" : row.partners.join(", ") || undefined}>
-            <span className={cn("shrink-0 font-mono", row.linked ? "font-semibold" : "text-muted-foreground", row.orphan && "text-warning")}>
+            title={row.orphan ? "This linked port is no longer exposed at the baseline"
+              : row.exportName ? `Exported to parent systems as ${row.exportName}` : row.partners.join(", ") || undefined}>
+            <span className={cn("shrink-0 font-mono", row.linked || row.exportName ? "font-semibold" : "text-muted-foreground", row.orphan && "text-warning")}>
               {row.reference}
             </span>
             {row.partners.length > 0 && (
               <span className="min-w-0 flex-1 truncate text-right text-[11px] text-muted-foreground">
                 ↔ {row.partners.join(", ")}
+              </span>
+            )}
+            {row.exportName && (
+              <span className="flex min-w-0 flex-1 items-center justify-end gap-1 truncate text-[11px] text-primary">
+                <Share2 className="h-3 w-3 shrink-0" aria-hidden /> {row.exportName}
               </span>
             )}
             {(["l", "r"] as const).map((side) => (

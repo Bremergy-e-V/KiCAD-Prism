@@ -21,7 +21,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, ContextManager, Mapping, Optional
 
-from app.services.systems import drift, sources
+from app.services.systems import drift, exports, sources
 from app.services.systems.jobs import extract_and_store, workspace_connection
 from app.services.systems.store import SystemStore
 
@@ -110,6 +110,7 @@ def apply_evaluation(
             store.set_link_port(change, link_id, end, port)
         for silent in outcome.silent:
             change.audit(silent.kind, {"instanceId": instance["id"], **_silent_row(silent)})
+        exports.refresh_after_advance(store, change, instance["id"], candidate)
         store.set_baseline(change, instance["id"], tip, kind=auto_kind,
                            payload={"silentChanges": len(outcome.silent)})
         return "auto_advanced", None

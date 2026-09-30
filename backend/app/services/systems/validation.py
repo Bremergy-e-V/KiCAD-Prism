@@ -25,6 +25,8 @@ RULES = {
     "SYS-V06": ("pcb_out_of_sync", "warning"),
     "SYS-V07": ("pin_net_ambiguous", "warning"),
     "SYS-V08": ("open_review", "info"),
+    # CONTRACTS_P2 §8.4. V09-V15 arrive with their tickets.
+    "SYS-V16": ("export_unresolved", "error"),
 }
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 # Rules that need an instance's baseline interface.
@@ -54,6 +56,7 @@ def validate(
     open_reviews: Sequence[Mapping[str, Any]] = (),
     *,
     unavailable: Mapping[str, str] | None = None,
+    exports: Sequence[Mapping[str, Any]] = (),
 ) -> dict:
     """Findings for one system.
 
@@ -160,6 +163,15 @@ def validate(
                     if pcb is None or sorted(pcb) != nets:
                         findings.append(_finding("SYS-V06", **common,
                                                  detail={"schematic": nets, "pcb": pcb}))
+
+    # SYS-V16: exports that no longer resolve or are no longer exposed.
+    from app.services.systems import exports as exports_module
+
+    unevaluated = {iid for iid in by_id if iid not in evaluable}
+    for problem in exports_module.findings(exports, interfaces, overrides, unevaluated):
+        findings.append(_finding("SYS-V16", instance_id=problem["instanceId"], reference=problem["reference"],
+                                 detail={"exportId": problem["exportId"], "name": problem["name"],
+                                         "reason": problem["reason"]}))
 
     # SYS-V08.
     for review in open_reviews:

@@ -35,6 +35,8 @@ export interface DiagramRow {
   linked: boolean;
   /** A linked port that is no longer exposed at the baseline. */
   orphan: boolean;
+  /** The export name when this port is published to parent systems (CONTRACTS_P2 §4). */
+  exportName?: string;
 }
 
 export interface DiagramNodeData extends Record<string, unknown> {
@@ -158,6 +160,10 @@ export function buildDiagram(
     const placed = layout.get(instance.id)!;
     const { orphans } = drawablePorts(document, instance);
     const open = expanded.has(instance.id);
+    const exported = new Map<string, string>();
+    for (const entry of document.exports ?? []) {
+      if (entry.instanceId === instance.id && entry.portKey !== null) exported.set(entry.portKey, entry.name);
+    }
     const rows: DiagramRow[] = placed.rows.map((row) => ({
       portKey: row.portKey,
       reference: row.reference,
@@ -165,16 +171,24 @@ export function buildDiagram(
       linked: true,
       orphan: row.portKey !== null && orphans.has(row.portKey),
     }));
+    // Exported ports are always shown: they are this board's connections to the parent system.
+    const hidden = placed.hiddenPorts.filter((port) => !exported.has(port.portKey));
+    for (const port of placed.hiddenPorts) {
+      if (exported.has(port.portKey)) {
+        rows.push({ portKey: port.portKey, reference: port.reference, partners: [], linked: false, orphan: false,
+          exportName: exported.get(port.portKey) });
+      }
+    }
     if (open) {
-      for (const port of placed.hiddenPorts) {
+      for (const port of hidden) {
         rows.push({ portKey: port.portKey, reference: port.reference, partners: [], linked: false, orphan: false });
       }
     }
     return {
       id: instance.id,
       position: { x: placed.x, y: placed.y },
-      height: nodeHeight(placed.rows.length, placed.hiddenPorts.length, open),
-      data: { instance, rows, hiddenCount: placed.hiddenPorts.length, expanded: open },
+      height: nodeHeight(placed.rows.length + placed.hiddenPorts.length - hidden.length, hidden.length, open),
+      data: { instance, rows, hiddenCount: hidden.length, expanded: open },
     };
   });
   const labels = new Map(document.links.map((link) => [link.id, link]));

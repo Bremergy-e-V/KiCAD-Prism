@@ -1,0 +1,171 @@
+import { useState } from "react";
+import { Lock, MoreHorizontal, Pencil, Share2, Trash2 } from "lucide-react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { deleteExport, updateExport } from "@/lib/systems-api";
+import type { SystemDocument, SystemExport } from "@/types/system";
+
+import type { Mutate } from "./use-system-mutation";
+
+/** The export (if any) whose target is this board port. */
+export function exportForPort(document: SystemDocument, instanceId: string, portKey: string): SystemExport | undefined {
+  return document.exports?.find((entry) => entry.instanceId === instanceId && entry.portKey === portKey);
+}
+
+export function exportStatus(entry: SystemExport): { label: string; variant: "outline" | "destructive" | "secondary" } {
+  if (entry.redacted) return { label: "restricted", variant: "secondary" };
+  if (entry.resolved === false) return { label: "unresolved", variant: "destructive" };
+  if (entry.resolved === null) return { label: "not evaluated", variant: "secondary" };
+  return { label: "published", variant: "outline" };
+}
+
+interface ExportDialogProps {
+  title: string;
+  description: string;
+  initial: { name: string; description: string };
+  existingNames: string[];
+  busy: boolean;
+  submitLabel: string;
+  onClose: () => void;
+  onSubmit: (value: { name: string; description: string }) => void | Promise<void>;
+}
+
+/** Name and describe an export; names are unique per system, ignoring case. */
+export function ExportDialog({ title, description, initial, existingNames, busy, submitLabel, onClose, onSubmit }: ExportDialogProps) {
+  const [name, setName] = useState(initial.name);
+  const [text, setText] = useState(initial.description);
+  const taken = existingNames.some((existing) => existing.toLowerCase() === name.trim().toLowerCase());
+  const problem = !name.trim() ? "Give the export a name." : taken ? "Another export already has this name." : null;
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        <form className="space-y-4" onSubmit={(event) => {
+          event.preventDefault();
+          if (!problem) void onSubmit({ name: name.trim(), description: text.trim() });
+        }}>
+          <div className="space-y-1.5">
+            <Label htmlFor="export-name">Export name</Label>
+            <Input id="export-name" value={name} maxLength={100} autoFocus onChange={(event) => setName(event.target.value)} />
+            {problem && name && <p className="text-xs text-destructive">{problem}</p>}
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="export-description">Description</Label>
+            <Textarea id="export-description" value={text} maxLength={2000} rows={3}
+              placeholder="What a parent system connects here, e.g. 28 V bus input"
+              onChange={(event) => setText(event.target.value)} />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={busy || problem !== null}>{busy ? "Saving…" : submitLabel}</Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+interface ExportsSectionProps {
+  systemId: string;
+  document: SystemDocument;
+  etag: string;
+  canEdit: boolean;
+  busy: string | null;
+  run: Mutate;
+  onOpenBoard: (instanceId: string) => void;
+}
+
+/** The connectors this system publishes, for parent systems to link to (CONTRACTS_P2 §4). */
+export function ExportsSection({ systemId, document, etag, canEdit, busy, run, onOpenBoard }: ExportsSectionProps) {
+  const [editing, setEditing] = useState<SystemExport | null>(null);
+  const [removing, setRemoving] = useState<SystemExport | null>(null);
+  const exports = document.exports ?? [];
+  const labels = new Map(document.instances.map((instance) => [instance.id, instance.label]));
+
+  return (
+    <section className="space-y-2" aria-labelledby="exports-heading">
+      <div className="flex items-baseline justify-between gap-2">
+        <h2 id="exports-heading" className="text-sm font-semibold">Exports</h2>
+        <p className="text-xs text-muted-foreground">Connectors a parent system can link to</p>
+      </div>
+      {exports.length === 0 ? (
+        <p className="rounded-md border border-dashed p-6 text-center text-sm text-muted-foreground">
+          No exports yet. Export an unlinked port from its board on the Boards tab.
+        </p>
+      ) : (
+        <ul className="divide-y rounded-md border">
+          {exports.map((entry) => {
+            const status = exportStatus(entry);
+            return (
+              <li key={entry.id} className="flex items-center gap-3 px-3 py-2 text-sm">
+                <Share2 className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-medium">{entry.name}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    <button type="button" className="hover:underline" onClick={() => onOpenBoard(entry.instanceId)}>
+                      {labels.get(entry.instanceId) ?? "Board"}
+                    </button>
+                    {" · "}
+                    {entry.redacted ? <Lock className="inline h-3 w-3" aria-label="restricted" /> : entry.port?.reference ?? "—"}
+                    {entry.port ? ` · ${entry.port.pinCount} pins` : ""}
+                    {entry.description ? ` · ${entry.description}` : ""}
+                  </p>
+                </div>
+                <Badge variant={status.variant}>{status.label}</Badge>
+                {canEdit && !entry.redacted && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-7 w-7" aria-label={`Actions for ${entry.name}`}>
+                        <MoreHorizontal className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onSelect={() => setEditing(entry)}><Pencil className="mr-2 h-4 w-4" /> Rename</DropdownMenuItem>
+                      <DropdownMenuItem className="text-destructive focus:text-destructive" onSelect={() => setRemoving(entry)}>
+                        <Trash2 className="mr-2 h-4 w-4" /> Remove export
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {editing && (
+        <ExportDialog title={`Rename ${editing.name}`} description="Parents keep their links: an export's identity never changes."
+          initial={{ name: editing.name, description: editing.description }} submitLabel="Save"
+          existingNames={exports.flatMap((entry) => (entry.id === editing.id ? [] : [entry.name]))}
+          busy={busy === "export"} onClose={() => setEditing(null)}
+          onSubmit={async (value) => {
+            const done = await run("export", () => updateExport(systemId, etag, editing.id, value), "Export updated");
+            if (done) setEditing(null);
+          }} />
+      )}
+      <ConfirmDialog
+        open={removing !== null}
+        onOpenChange={(open) => !open && setRemoving(null)}
+        title={`Remove the export ${removing?.name ?? ""}?`}
+        description="Parent systems that link to it will see it as missing when they take the next revision."
+        confirmLabel="Remove export"
+        destructive
+        busy={busy === "export"}
+        onConfirm={() => {
+          if (!removing) return;
+          void run("export", () => deleteExport(systemId, etag, removing.id), `Removed ${removing.name}`).then(() => setRemoving(null));
+        }}
+      />
+    </section>
+  );
+}

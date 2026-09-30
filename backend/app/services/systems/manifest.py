@@ -5,7 +5,7 @@
 ``import_manifest`` recreates a system from a manifest, keeping its IDs, so a
 manifest round-trips DB → manifest → DB (and, in M7, Git → DB).
 
-P2 objects that have no tables yet (exports, harnesses, mating, poses, catalog
+P2 objects that have no tables yet (harnesses, mating, poses, catalog
 instances) are emitted empty; their tickets extend both directions.
 """
 
@@ -63,6 +63,15 @@ def build(
                 "source": row["source"], "netA": sorted(row["net_a"]), "netB": sorted(row["net_b"]),
             } for row in sorted(link["rows"], key=lambda r: r["id"])],
         })
+    exports = []
+    for export in sorted(store.list_exports(system_id), key=lambda e: e["id"]):
+        if export["target_port"]:
+            port = _port(export["target_port"])
+            target = {"instanceId": export["target_instance_id"], "portKey": port["portKey"], "port": port}
+        else:
+            target = {"instanceId": export["target_instance_id"], "exportId": export["target_export_id"]}
+        exports.append({"id": export["id"], "name": export["name"], "description": export["description"],
+                        "target": target})
     layout = store.get_layout(system_id)
     body = {
         "schema": SCHEMA,
@@ -72,7 +81,7 @@ def build(
             "snapshot": dict(snapshot) if snapshot else None,
         },
         "instances": instances,
-        "exports": [],
+        "exports": exports,
         "links": links,
         "harnesses": [],
         "mating": [],
@@ -93,7 +102,7 @@ def import_manifest(
     Runs inside the caller's transaction; a clash with an existing ID fails it.
     """
 
-    unsupported = [name for name in ("exports", "harnesses", "mating") if getattr(manifest, name)]
+    unsupported = [name for name in ("harnesses", "mating") if getattr(manifest, name)]
     if manifest.placement.poses or manifest.placement.drivingMates:
         unsupported.append("placement")
     if any(i.kind != "board" for i in manifest.instances):
@@ -124,6 +133,16 @@ def import_manifest(
                 "id": r.id, "pinA": r.pinA, "pinB": r.pinB, "signal": r.signal, "source": r.source,
                 "netA": r.netA, "netB": r.netB,
             } for r in link.rows], keep_new_ids=True)
+        for export in manifest.exports:
+            target = export.target
+            if hasattr(target, "port"):
+                store.create_export(change, name=export.name, description=export.description,
+                                    instance_id=target.instanceId, port=target.port.model_dump(),
+                                    export_id=export.id)
+            else:
+                store.create_export(change, name=export.name, description=export.description,
+                                    instance_id=target.instanceId, child_export_id=target.exportId,
+                                    export_id=export.id)
         change.audit("system_imported", {"schema": SCHEMA, "sourceVersion": manifest.meta.sourceVersion,
                                          "snapshot": manifest.meta.snapshot.id if manifest.meta.snapshot else None})
     if manifest.layout.positions:

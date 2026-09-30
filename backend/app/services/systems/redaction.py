@@ -57,6 +57,11 @@ def redact_document(document: Mapping[str, Any], restricted: Collection[str]) ->
     if not restricted:
         return out
     out["instances"] = [redact_instance(i) if i["id"] in restricted else i for i in out["instances"]]
+    out["exports"] = [
+        {**e, "portKey": None, "port": None, "resolved": None, "redacted": True}
+        if e["instanceId"] in restricted else e
+        for e in out.get("exports") or []
+    ]
     out["links"] = [redact_link(link, restricted) for link in out["links"]]
     if out.get("validation") is not None:
         out["validation"] = redact_findings(out["validation"], restricted)
