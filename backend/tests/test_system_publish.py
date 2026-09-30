@@ -23,7 +23,9 @@ QA = Caller(role="qa", email="qa@example.com")
 ADMIN = Caller(role="admin", email="admin@example.com")
 
 
-class PublishTest(ExportCase):
+class PublishCase(ExportCase):
+    """A fixture system plus a real catalog service; no tests of its own."""
+
     def setUp(self) -> None:
         super().setUp()
         from app.services.component_catalog_service_postgres import ComponentCatalogPostgresService
@@ -52,6 +54,9 @@ class PublishTest(ExportCase):
                                              name=fields.get("name"), description=fields.get("description"),
                                              manufacturer=fields.get("manufacturer"))
 
+
+
+class PublishTest(PublishCase):
     def test_first_publish_creates_the_assembly_and_binds_the_system(self) -> None:
         bare = self.snapshot("EMPTY")
         with self.assertRaisesRegex(Invalid, "at least one export"):

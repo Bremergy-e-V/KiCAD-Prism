@@ -47,6 +47,7 @@ def summary(row: dict) -> dict[str, Any]:
         "version": int(row["version"]),
         "etag": etag(row["id"], row["version"]),
         "instanceCount": int(row.get("instance_count") or 0),
+        "subsystemCount": int(row.get("subsystem_count") or 0),
         "openReviewCount": int(row.get("open_review_count") or 0),
         "catalogComponentId": row.get("catalog_component_id"),
         "createdBy": row["created_by"],
@@ -57,7 +58,8 @@ def summary(row: dict) -> dict[str, Any]:
 
 _SUMMARY_SQL = """
     SELECT s.*,
-           (SELECT count(*) FROM system_instances i WHERE i.system_id = s.id) AS instance_count,
+           (SELECT count(*) FROM system_instances i WHERE i.system_id = s.id AND i.kind = 'board') AS instance_count,
+           (SELECT count(*) FROM system_instances i WHERE i.system_id = s.id AND i.kind <> 'board') AS subsystem_count,
            (SELECT count(*) FROM system_reviews r
              WHERE r.system_id = s.id AND r.status = 'open') AS open_review_count
     FROM system_projects s

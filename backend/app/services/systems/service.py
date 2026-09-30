@@ -25,8 +25,8 @@ from typing import Any, Callable, Collection, ContextManager, Iterator, Mapping,
 
 from app.core.roles import Role
 from app.services.systems import (
-    csv_import, drift, exports as exports_module, exposure, generators, icd, manifest as manifest_io, reconcile,
-    redaction, sources, validation, visibility,
+    csv_import, drift, exports as exports_module, exposure, generators, hierarchy, icd, manifest as manifest_io,
+    reconcile, redaction, sources, validation, visibility,
 )
 from app.services.systems.manifest_schema import digests as manifest_digests
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION
@@ -129,7 +129,9 @@ class SystemService:
         return found[0]
 
     def _access(self, store: SystemStore, instances: Sequence[dict], caller: Caller) -> dict[str, dict]:
-        return visibility.project_access(store.conn, [i["project_id"] for i in instances], caller.role)
+        # Assembly and module instances have no project: they are the parent's own (P2 §5.4).
+        return visibility.project_access(store.conn, [i["project_id"] for i in instances if i.get("project_id")],
+                                         caller.role)
 
     def _open_instance(
         self, store: SystemStore, system_id: str, instance_id: str, caller: Caller,
@@ -145,6 +147,8 @@ class SystemService:
             instance = store.get_instance(system_id, instance_id)
         except NotFound:
             raise NotFound("Instance not found") from None
+        if instance.get("kind", "board") != "board":
+            return instance  # the parent's own instance; what it pins is redacted on read, not here
         access = self._access(store, [instance], caller)[instance["project_id"]]
         if not access["visible"] and not (allow_deleted and access["deleted"]):
             raise NotFound("Instance not found")
@@ -251,7 +255,7 @@ class SystemService:
                                    overrides.get(i["id"], {}),
                                    job_state.get(artifact_key(i["project_id"], i["baseline_commit"])))
                 for i in instances
-            ],
+            ] + [self._catalog_instance_doc(i) for i in store.list_instances(system_id, kinds=("assembly", "module"))],
             "links": [self._link_doc(link, interfaces, overrides) for link in links],
             "exports": [self._export_doc(export, interfaces, overrides) for export in exports],
             "openReviewCount": system["openReviewCount"],
@@ -586,16 +590,165 @@ class SystemService:
     @staticmethod
     def _instance_row(row: Mapping[str, Any]) -> dict:
         return {
-            "id": row["id"], "label": row["label"], "projectId": row["project_id"],
+            "id": row["id"], "label": row["label"], "kind": row.get("kind", "board"), "projectId": row["project_id"],
             "baselineCommit": row["baseline_commit"], "trackedRef": row["tracked_ref"],
             "pinned": row["pinned"], "resolution": row["resolution"],
             "tipCommit": row["tip_commit"], "tipCheckedAt": _iso(row["tip_checked_at"]),
+            "catalogComponentId": row.get("catalog_component_id"), "catalogRevisionId": row.get("catalog_revision_id"),
+            "follow": row.get("follow"),
         }
+
+    # ------------------------------------------------------------------
+    # Assembly and module instances (CONTRACTS_P2 §5)
+
+    def _catalog_revision(self, revision_id: str) -> Optional[dict]:
+        try:
+            return self._catalog().system_revision(revision_id)
+        except Exception:  # the catalog is a separate service; documents must still render
+            logger.exception("Could not read catalog revision %s", revision_id)
+            return None
+
+    def _catalog_refs(self, store: SystemStore, system_id: str) -> dict[str, dict]:
+        """Pinned catalog revision per assembly/module instance, for the manifest."""
+        refs = {}
+        for instance in store.list_instances(system_id, kinds=("assembly", "module")):
+            revision = self._catalog_revision(instance["catalog_revision_id"])
+            if revision is None:
+                raise Conflict(f"the catalog revision of {instance['label']} cannot be read; try again")
+            refs[instance["id"]] = revision
+        return refs
+
+    def _catalog_instance_doc(self, instance: Mapping[str, Any]) -> dict:
+        """An assembly/module instance as the document shows it: its exports are its ports."""
+        revision = self._catalog_revision(instance["catalog_revision_id"])
+        exports = ((revision or {}).get("interface") or {}).get("exports") or []
+        latest = (revision or {}).get("latestReleasedRevisionId")
+        return {
+            "id": instance["id"], "label": instance["label"], "kind": instance["kind"], "restricted": False,
+            "projectId": None, "projectName": (revision or {}).get("name"), "projectDeleted": False,
+            "baselineCommit": None, "trackedRef": None, "pinned": instance["follow"] == "pinned",
+            "resolution": "resolved" if revision else "unresolved", "tipCommit": None, "tipCheckedAt": None,
+            "updateAvailable": bool(latest) and latest != instance["catalog_revision_id"],
+            "interface": {"status": "ready" if revision else "failed", "digest": None, "hasPcb": None,
+                          "jobId": None, "errorCode": None if revision else "catalog_revision_unavailable"},
+            "ports": [{
+                "portKey": entry.get("id"), "memberKeys": [entry.get("id")], "reference": entry.get("name"),
+                "libId": entry.get("libId"), "footprint": entry.get("footprint"), "value": entry.get("reference"),
+                "dnp": False, "candidate": True, "candidateReason": "export", "override": None, "exposed": True,
+                "pinCount": int(entry.get("pinCount") or 0),
+            } for entry in exports],
+            "catalog": {
+                "componentId": instance["catalog_component_id"], "revisionId": instance["catalog_revision_id"],
+                "follow": instance["follow"], "version": (revision or {}).get("version"),
+                "releaseStatus": (revision or {}).get("releaseStatus"), "identity": (revision or {}).get("identity"),
+                "latestReleasedRevisionId": latest,
+                "systemId": ((revision or {}).get("sourceRef") or {}).get("systemId"),
+                "snapshotName": ((revision or {}).get("sourceRef") or {}).get("snapshotName"),
+            },
+        }
+
+    def _child_loader(self, store: SystemStore):
+        """hierarchy.Loader: catalog revision -> the snapshot it was published from."""
+
+        def load(revision_id: str) -> Optional[hierarchy.ChildSystem]:
+            revision = self._catalog_revision(revision_id)
+            source = (revision or {}).get("sourceRef") or {}
+            if source.get("kind") != "system_snapshot":
+                return None
+            try:
+                row = store.get_snapshot(source["systemId"], source["snapshotId"])
+            except (NotFound, KeyError):
+                return None
+            manifest = row.get("manifest")
+            if not manifest:
+                return None
+            return hierarchy.ChildSystem(source["systemId"], source["snapshotId"], manifest["system"]["name"],
+                                         manifest["instances"], manifest.get("exports") or [])
+
+        return load
+
+    def _tree(self, store: SystemStore, system_id: str, extra: Sequence[Mapping[str, Any]] = ()) -> hierarchy.Tree:
+        instances = list(store.list_instances(system_id, kinds=SystemStore.ALL_KINDS)) + list(extra)
+        try:
+            return hierarchy.resolve(system_id, instances, self._child_loader(store))
+        except hierarchy.HierarchyError as error:
+            raise Invalid(str(error)) from None
+
+    def add_catalog_instance(
+        self, caller: Caller, system_id: str, version: int, *, kind: str, label: str, component_id: str,
+        revision_id: Optional[str], follow: str,
+    ) -> Result:
+        """Add an assembly (or, M6, module) instance pinning one catalog revision (§5.1)."""
+
+        from app.core.roles import CATALOG_BROWSE_ROLES
+
+        if caller.role not in CATALOG_BROWSE_ROLES:
+            raise Forbidden("adding a catalog item needs catalog read access")
+        catalog = self._catalog()
+        revision = (catalog.system_revision(revision_id) if revision_id
+                    else catalog.released_system_revision(component_id))
+        if revision is None:
+            raise Conflict("no_released_revision: the component has no released revision; pick one explicitly")
+        if revision["componentId"] != component_id:
+            raise Invalid("revisionId does not belong to componentId")
+        if revision["kind"] != kind:
+            raise Invalid(f"component is a {revision['kind']}, not a {kind}")
+        if not revision["active"]:
+            raise Conflict("the component has been retired")
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                row = store.add_catalog_instance(change, kind=kind, label=label, component_id=component_id,
+                                                 revision_id=revision["revisionId"], follow=follow)
+                self._tree(store, system_id)  # refuses a cycle or a limit before anything commits
+        return Result(self._instance_row(row), system_id, change.version)
+
+    def hierarchy(self, caller: Caller, system_id: str) -> dict:
+        """``GET …/hierarchy`` (§11): every occurrence, redacted for the reader (§5.4)."""
+
+        with self._tx() as store:
+            self._system(store, system_id, caller)
+            tree = self._tree(store, system_id)
+            projects = {o.project_id for o in tree.boards if o.project_id}
+            access = visibility.project_access(store.conn, projects, caller.role)
+            hidden_systems = {o.child_system_id for o in tree.occurrences
+                              if o.child_system_id and not visibility.visible_systems(
+                                  store.conn, caller.role, system_id=o.child_system_id)}
+        out = []
+        hidden_prefixes: list[str] = []
+        for occurrence in tree.occurrences:
+            if any(occurrence.path.startswith(prefix + "/") for prefix in hidden_prefixes):
+                continue  # inside a child system the reader cannot see (S7)
+            entry = occurrence.as_dict()
+            entry["restricted"] = False
+            if occurrence.kind == "board" and not access.get(occurrence.project_id, {}).get("visible", False):
+                entry.update(restricted=True, projectId=None, baselineCommit=None)
+            if occurrence.child_system_id in hidden_systems:
+                entry.update(restricted=True, childSystemId=None, childSnapshotId=None)
+                hidden_prefixes.append(occurrence.path)
+            out.append(entry)
+        return {"systemId": system_id, "occurrences": out,
+                "boardCount": sum(1 for o in tree.occurrences if o.kind == "board")}
 
     def update_instance(
         self, caller: Caller, system_id: str, version: int, instance_id: str,
         fields: Mapping[str, Any],
     ) -> Result:
+        with self._tx() as store:
+            kind = self._open_instance(store, system_id, instance_id, caller).get("kind", "board")
+        if kind != "board":
+            if {"trackedRef", "pinned"} & set(fields):
+                raise Invalid("assembly and module instances follow catalog revisions; use follow")
+            with self._tx() as store:
+                self._system(store, system_id, caller)
+                with store.mutation(system_id, expected_version=version, actor=caller.actor) as change:
+                    row = store.update_instance(change, instance_id, label=fields.get("label"))
+                    if fields.get("follow") is not None:
+                        store.set_follow(change, instance_id, fields["follow"])
+                        row = store.get_instance(system_id, instance_id)
+            return Result(self._instance_row(row), system_id, change.version)
+        if fields.get("follow") is not None:
+            raise Invalid("a board follows its tracked branch, not catalog revisions")
         tracked_ref = fields.get("trackedRef", ...)
         if tracked_ref not in (..., None):
             with self._tx() as store:
@@ -641,13 +794,13 @@ class SystemService:
     ) -> None:
         """Cascading must not delete a link whose other end the caller cannot see."""
 
-        instances = {i["id"]: i for i in store.list_instances(system_id)}
+        instances = {i["id"]: i for i in store.list_instances(system_id, kinds=SystemStore.ALL_KINDS)}
         access = self._access(store, list(instances.values()), caller)
         for link in store.list_links(system_id):
             if instance_id not in (link["a_instance_id"], link["b_instance_id"]):
                 continue
             for other in (link["a_instance_id"], link["b_instance_id"]):
-                if other == instance_id:
+                if other == instance_id or instances[other]["kind"] != "board":
                     continue
                 if not access[instances[other]["project_id"]]["visible"]:
                     raise NotFound("Link not found")
@@ -1051,6 +1204,7 @@ class SystemService:
                     store, system_id, created_by=caller.actor,
                     created_at=datetime.now(timezone.utc).replace(microsecond=0),
                     snapshot={"id": snapshot_id, "name": name.strip(), "note": note},
+                    catalog_refs=self._catalog_refs(store, system_id),
                 )
                 digests = manifest_digests(manifest)
                 row = store.create_snapshot(
@@ -1086,6 +1240,18 @@ class SystemService:
     # ------------------------------------------------------------------
     # Publishing (CONTRACTS_P2 §3.3)
 
+    def _hierarchy_facts(self, system_id: str, manifest: Mapping[str, Any]) -> dict:
+        """``hierarchyValid`` and ``children`` for an assembly's release gates, from its snapshot."""
+        children = [{"componentId": i["catalog"]["componentId"], "revisionId": i["catalog"]["revisionId"]}
+                    for i in manifest["instances"] if i["kind"] != "board"]
+        with self._tx() as store:
+            try:
+                hierarchy.resolve(system_id, manifest["instances"], self._child_loader(store))
+                valid = True
+            except hierarchy.HierarchyError:
+                valid = False
+        return {"hierarchyValid": valid, "children": children}
+
     def publish_snapshot(
         self, caller: Caller, system_id: str, snapshot_id: str, *, ipn: Optional[str], name: Optional[str],
         description: Optional[str], manufacturer: Optional[str],
@@ -1118,8 +1284,7 @@ class SystemService:
             "kind": "system_snapshot", "systemId": system_id, "snapshotId": snapshot_id,
             "snapshotName": row["name"], "fullDigest": row["digest"],
             "connectivityDigest": row["connectivity_digest"], "openReviewCount": int(row["open_review_count"]),
-            # Assembly instances arrive in SB2-05; until then a system has no children.
-            "hierarchyValid": True, "children": [],
+            **self._hierarchy_facts(system_id, row["manifest"]),
         }
         catalog = self._catalog()
         with self._tx() as store:

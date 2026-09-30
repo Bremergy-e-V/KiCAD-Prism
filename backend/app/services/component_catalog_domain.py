@@ -1101,6 +1101,41 @@ class ComponentCatalogDomainService:
             "sourceRef": system_items.revision_payload({"source_ref_json": row["source_ref_json"]})["sourceRef"],
         } for row in rows]
 
+    def system_revision(self, revision_id: str) -> dict[str, Any] | None:
+        """One module/assembly revision with its component facts, or None."""
+
+        self.initialize()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT r.id, r.component_id, r.version, r.release_status, r.name, r.value,
+                       r.interface_json, r.source_ref_json, c.kind, c.is_active, c.released_revision_id
+                FROM component_revisions r JOIN components c ON c.id = r.component_id
+                WHERE r.id = %s
+                """,
+                (revision_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        payload = system_items.revision_payload(row)
+        return {
+            "revisionId": str(row["id"]), "componentId": str(row["component_id"]), "kind": str(row["kind"]),
+            "version": int(row["version"]), "name": str(row["name"]), "identity": str(row["value"]),
+            "releaseStatus": _normalize_workflow_stage(str(row["release_status"])),
+            "active": bool(row["is_active"]), "latestReleasedRevisionId": str(row["released_revision_id"] or "") or None,
+            "interface": payload["interface"], "sourceRef": payload["sourceRef"],
+        }
+
+    def released_system_revision(self, component_id: str) -> dict[str, Any] | None:
+        """The component's current released revision (for ``follow = latest_released``), or None."""
+
+        self.initialize()
+        with self._connect() as conn:
+            row = conn.execute("SELECT released_revision_id FROM components WHERE id = %s",
+                               (component_id,)).fetchone()
+        revision_id = str((row or {}).get("released_revision_id") or "")
+        return self.system_revision(revision_id) if revision_id else None
+
     def find_system_component(self, system_id: str) -> str | None:
         """An active assembly whose revisions came from ``system_id`` (recovers an unbound first publish)."""
 

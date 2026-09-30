@@ -248,10 +248,18 @@ class SystemStore:
     # ------------------------------------------------------------------
     # Instances
 
-    def list_instances(self, system_id: str) -> list[dict]:
+    BOARD_KINDS = ("board",)
+    ALL_KINDS = ("board", "assembly", "module")
+
+    def list_instances(self, system_id: str, *, kinds: Sequence[str] = BOARD_KINDS) -> list[dict]:
+        """Boards by default: every P1 path (interfaces, drift, validation, access) is board-only.
+
+        Pass ``kinds=SystemStore.ALL_KINDS`` where assembly and module
+        instances matter (the document, the hierarchy, the manifest).
+        """
         rows = self.conn.execute(
-            "SELECT * FROM system_instances WHERE system_id = %s ORDER BY lower(label), id",
-            (system_id,),
+            "SELECT * FROM system_instances WHERE system_id = %s AND kind = ANY(%s) ORDER BY lower(label), id",
+            (system_id, list(kinds)),
         ).fetchall()
         return [dict(row) for row in rows]
 
@@ -292,6 +300,61 @@ class SystemStore:
              "baselineCommit": baseline_commit, "trackedRef": tracked_ref, "pinned": bool(pinned)},
         )
         return dict(row)
+
+    def add_catalog_instance(
+        self, change: Mutation, *, kind: str, label: str, component_id: str, revision_id: str,
+        follow: str, instance_id: Optional[str] = None,
+    ) -> dict:
+        """An ``assembly`` or ``module`` instance pinning one catalog revision (CONTRACTS_P2 §5.1)."""
+        if kind not in ("assembly", "module"):
+            raise Invalid("kind must be assembly or module")
+        if follow not in ("pinned", "latest_released"):
+            raise Invalid("follow must be pinned or latest_released")
+        count = self.conn.execute(
+            "SELECT count(*) AS n FROM system_instances WHERE system_id = %s", (change.system_id,)
+        ).fetchone()["n"]
+        if count >= MAX_INSTANCES:
+            raise Invalid(f"limit instances_per_system ({MAX_INSTANCES})")
+        self._require_free_label(change.system_id, label)
+        instance_id = _given_id("sin_", instance_id)
+        row = self.conn.execute(
+            """
+            INSERT INTO system_instances
+                (id, system_id, kind, label, catalog_component_id, catalog_revision_id, follow)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """,
+            (instance_id, change.system_id, kind, label.strip(), component_id, revision_id, follow),
+        ).fetchone()
+        change.audit("instance_added", {
+            "instanceId": instance_id, "kind": kind, "label": row["label"], "componentId": component_id,
+            "revisionId": revision_id, "follow": follow,
+        })
+        return dict(row)
+
+    def set_catalog_revision(self, change: Mutation, instance_id: str, revision_id: str, *, kind: str,
+                             payload: Optional[Mapping[str, Any]] = None) -> None:
+        """Move an assembly/module instance to another revision (audited as ``kind``)."""
+        before = self.get_instance(change.system_id, instance_id)
+        self.conn.execute(
+            "UPDATE system_instances SET catalog_revision_id = %s, updated_at = NOW() WHERE id = %s",
+            (revision_id, instance_id),
+        )
+        change.audit(kind, {"instanceId": instance_id, "from": before["catalog_revision_id"], "to": revision_id,
+                            **dict(payload or {})})
+
+    def set_follow(self, change: Mutation, instance_id: str, follow: str) -> None:
+        if follow not in ("pinned", "latest_released"):
+            raise Invalid("follow must be pinned or latest_released")
+        before = self.get_instance(change.system_id, instance_id)
+        if before["kind"] == "board":
+            raise Invalid("only assembly and module instances follow catalog revisions")
+        if before["follow"] == follow:
+            return
+        self.conn.execute("UPDATE system_instances SET follow = %s, updated_at = NOW() WHERE id = %s",
+                          (follow, instance_id))
+        change.audit("instance_updated", {"instanceId": instance_id,
+                                          "follow": {"before": before["follow"], "after": follow}})
 
     def update_instance(
         self, change: Mutation, instance_id: str, *, label: Optional[str] = None,
@@ -1057,11 +1120,11 @@ class SystemStore:
 
         rows = self.conn.execute(
             """
-            SELECT id, project_id FROM system_instances WHERE system_id = %s
+            SELECT id, project_id FROM system_instances WHERE system_id = %s AND project_id IS NOT NULL
             UNION
             SELECT payload->>'instanceId', payload->>'projectId' FROM system_audit_events
             WHERE system_id = %s AND kind IN ('instance_added', 'instance_removed')
-              AND payload ? 'instanceId' AND payload ? 'projectId'
+              AND payload ? 'instanceId' AND payload->>'projectId' IS NOT NULL
             """,
             (system_id, system_id),
         ).fetchall()

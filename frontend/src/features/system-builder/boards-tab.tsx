@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
-import { Eye, EyeOff, Lock, MoreHorizontal, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Share2, Trash2 } from "lucide-react";
+import { Eye, EyeOff, Layers, Lock, MoreHorizontal, Pencil, Pin, PinOff, Plus, RefreshCw, RotateCcw, Share2, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useWorkspaceData, workspaceSessionKey } from "@/hooks/use-workspace-data";
 import {
+  addAssemblyInstance,
   addInstance,
   checkNow,
   createExport,
@@ -40,6 +41,7 @@ import type { InstanceComponent, SystemDocument, SystemInstance, SystemPort } fr
 
 import { BoardFields, boardProblems, instanceInput, type BoardDraft } from "./board-fields";
 import { ExportDialog, exportForPort } from "./exports-section";
+import { AddSubsystemDialog, SubsystemDetail } from "./subsystem-detail";
 import type { SystemTabProps } from "./system-tab-content";
 import { TONE_BADGE, boardStatus, shortSha } from "./system-format";
 import { useSystemMutation } from "./use-system-mutation";
@@ -70,7 +72,7 @@ export function BoardsTab({ systemId, document, etag, canEdit, user, reload }: S
   const [searchParams, setSearchParams] = useSearchParams();
   const requested = searchParams.get("board");
   const selected = document.instances.find((instance) => instance.id === requested) ?? document.instances[0] ?? null;
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<"board" | "subsystem" | null>(null);
   const { busy, run } = useSystemMutation(reload);
 
   const select = (instanceId: string) =>
@@ -86,9 +88,15 @@ export function BoardsTab({ systemId, document, etag, canEdit, user, reload }: S
         <div className="mb-2 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Boards</h2>
           {canEdit && (
-            <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
-              <Plus className="mr-1 h-4 w-4" /> Add
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="outline"><Plus className="mr-1 h-4 w-4" /> Add</Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => setAdding("board")}>Board</DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => setAdding("subsystem")}><Layers className="mr-2 h-4 w-4" /> Subsystem</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
         {document.instances.length === 0 && (
@@ -109,6 +117,7 @@ export function BoardsTab({ systemId, document, etag, canEdit, user, reload }: S
             >
               <span className="flex min-w-0 items-center gap-1.5 truncate">
                 {instance.restricted && <Lock className="h-3 w-3 shrink-0" aria-label="restricted" />}
+                {instance.kind === "assembly" && <Layers className="h-3 w-3 shrink-0 text-muted-foreground" aria-label="subsystem" />}
                 {instance.label}
               </span>
               <Badge variant={TONE_BADGE[status.tone]} className="shrink-0">{status.label}</Badge>
@@ -134,15 +143,29 @@ export function BoardsTab({ systemId, document, etag, canEdit, user, reload }: S
         )}
       </section>
 
-      {adding && (
+      {adding === "subsystem" && (
+        <AddSubsystemDialog
+          existingLabels={document.instances.map((instance) => instance.label)}
+          busy={busy === "add"}
+          onClose={() => setAdding(null)}
+          onSubmit={async (value) => {
+            const created = await run("add", () => addAssemblyInstance(systemId, etag, value), `Added ${value.label}`);
+            if (created) {
+              setAdding(null);
+              select(created.body.id);
+            }
+          }}
+        />
+      )}
+      {adding === "board" && (
         <AddBoardDialog
           user={user}
           existingLabels={document.instances.map((instance) => instance.label)}
-          onClose={() => setAdding(false)}
+          onClose={() => setAdding(null)}
           onSubmit={async (board) => {
             const created = await run("add", () => addInstance(systemId, etag, instanceInput(board)), `Added ${board.label.trim()}`);
             if (created) {
-              setAdding(false);
+              setAdding(null);
               select(created.body.id);
             }
           }}
@@ -208,7 +231,11 @@ function EditBoardDialog({ instance, busy, onClose, onSave }: EditBoardDialogPro
   );
 }
 
-function BoardDetail({ systemId, document, instance, etag, canEdit, busy, run }: BoardDetailProps) {
+function BoardDetail(props: BoardDetailProps) {
+  return props.instance.kind === "assembly" ? <SubsystemDetail {...props} /> : <BoardDetailBody {...props} />;
+}
+
+function BoardDetailBody({ systemId, document, instance, etag, canEdit, busy, run }: BoardDetailProps) {
   const status = boardStatus(instance);
   const [dialog, setDialog] = useState<"edit" | "remove" | null>(null);
   const linkCount = document.links.filter((link) => link.a.instanceId === instance.id || link.b.instanceId === instance.id).length;
