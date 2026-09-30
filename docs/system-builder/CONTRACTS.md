@@ -9,6 +9,9 @@ affected fixture steps (§11).
 
 Inspected baseline: `KiCAD-Prism` `57a7581e` (`dev` after #405).
 
+P2 (systems of systems, catalog assemblies, harnesses, 3D) extends this
+document in [CONTRACTS_P2.md](CONTRACTS_P2.md).
+
 Terms:
 
 - **System**: a named set of board instances and the connections between them.
