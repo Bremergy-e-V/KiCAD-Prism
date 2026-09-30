@@ -23,6 +23,7 @@ import type {
   RowSource,
   SnapshotDiff,
   SnapshotMeta,
+  SnapshotPublication,
   SystemDocument,
   SystemExport,
   SystemInstance,
@@ -292,6 +293,15 @@ export function diffSnapshot(systemId: string, snapshotId: string, against: "liv
 }
 
 /** Where the browser opens an ICD: live, or a snapshot's. */
+export async function publishSnapshot(
+  systemId: string, snapshotId: string,
+  fields: { ipn?: string; name?: string; description?: string; manufacturer?: string },
+): Promise<SnapshotPublication> {
+  const { body } = await send<SnapshotPublication>(`${path(systemId, "snapshots", snapshotId)}/publish`,
+    { method: "POST", body: json(fields) }, "Could not publish the snapshot");
+  return body;
+}
+
 export function manifestUrl(systemId: string, snapshotId: string): string {
   return `${path(systemId, "snapshots", snapshotId)}/manifest`;
 }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { Camera, FileJson, FileSpreadsheet, FileText, GitCompare } from "lucide-react";
+import { Camera, FileJson, FileSpreadsheet, FileText, GitCompare, PackageCheck } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -9,11 +9,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { createSnapshot, diffSnapshot, getHistory, icdUrl, listSnapshots, manifestUrl } from "@/lib/systems-api";
+import { canWriteCatalog } from "@/lib/roles";
+import { createSnapshot, diffSnapshot, getHistory, icdUrl, listSnapshots, manifestUrl, publishSnapshot } from "@/lib/systems-api";
 import type { AuditEvent, RowFields, SnapshotDiff, SnapshotMeta, SystemDocument } from "@/types/system";
 
 import type { SystemTabProps } from "./system-tab-content";
 import { shortSha } from "./system-format";
+import { PublicationBadge, PublishDialog } from "./publish-dialog";
 import { useSystemMutation } from "./use-system-mutation";
 
 const LIVE = "live";
@@ -68,13 +70,14 @@ function rowText(row: Pick<RowFields, "pinA" | "pinB" | "signal">): string {
   return `${row.pinA ?? "—"} ↔ ${row.pinB ?? "—"}${row.signal ? ` (${row.signal})` : ""}`;
 }
 
-export function HistoryTab({ systemId, document, etag, canEdit, reload }: SystemTabProps) {
+export function HistoryTab({ systemId, document, etag, canEdit, user, reload }: SystemTabProps) {
   // Taking a snapshot does not bump the version, so both lists also follow this counter.
   const [snapshotsTaken, setSnapshotsTaken] = useState(0);
   const refresh = `${etag}#${snapshotsTaken}`;
   return (
     <div className="grid gap-6 p-4 md:p-6 xl:grid-cols-[1fr_1fr]">
       <SnapshotsSection systemId={systemId} document={document} etag={etag} refresh={refresh} canEdit={canEdit} reload={reload}
+        canPublish={canEdit && canWriteCatalog(user?.role)}
         onTaken={() => setSnapshotsTaken((count) => count + 1)} />
       <AuditLog systemId={systemId} document={document} refresh={refresh} />
     </div>
@@ -89,10 +92,13 @@ interface SnapshotsProps {
   refresh: string;
   onTaken: () => void;
   canEdit: boolean;
+  /** Designers who may also write to the catalog (CONTRACTS_P2 §3.3). */
+  canPublish: boolean;
   reload: () => Promise<void>;
 }
 
-function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, onTaken }: SnapshotsProps) {
+function SnapshotsSection({ systemId, document, etag, refresh, canEdit, canPublish, reload, onTaken }: SnapshotsProps) {
+  const [publishing, setPublishing] = useState<SnapshotMeta | null>(null);
   const [snapshots, setSnapshots] = useState<{ refresh: string; items: SnapshotMeta[] } | null>(null);
   const [name, setName] = useState("");
   const [note, setNote] = useState("");
@@ -195,6 +201,7 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, 
                 {snapshot.openReviewCount > 0 && (
                   <Badge variant="warning">{snapshot.openReviewCount} unreviewed</Badge>
                 )}
+                {snapshot.publication && <PublicationBadge publication={snapshot.publication} />}
                 <span className="text-xs text-muted-foreground">
                   {new Date(snapshot.createdAt).toLocaleString()} · {snapshot.createdBy.replace(/^user:/, "")}
                 </span>
@@ -209,6 +216,12 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, 
                       <FileSpreadsheet className="h-4 w-4" />
                     </a>
                   </Button>
+                  {canPublish && snapshot.manifestSchema && !snapshot.publication && (
+                    <Button variant="ghost" size="sm" aria-label={`Publish ${snapshot.name}`} title="Publish to the catalog"
+                      onClick={() => setPublishing(snapshot)}>
+                      <PackageCheck className="h-4 w-4" />
+                    </Button>
+                  )}
                   {snapshot.manifestSchema && (
                     <Button asChild variant="ghost" size="sm">
                       <a href={manifestUrl(systemId, snapshot.id)} download={`${snapshot.name}.manifest.json`}
@@ -228,6 +241,20 @@ function SnapshotsSection({ systemId, document, etag, refresh, canEdit, reload, 
             </li>
           ))}
         </ul>
+      )}
+
+      {publishing && (
+        <PublishDialog snapshot={publishing} systemName={document.system.name}
+          firstPublish={!document.system.catalogComponentId} busy={busy === "publish"}
+          onClose={() => setPublishing(null)}
+          onPublish={async (fields) => {
+            const done = await run("publish", () => publishSnapshot(systemId, publishing.id, fields),
+              `${publishing.name} published to the catalog`);
+            if (done) {
+              setPublishing(null);
+              onTaken();
+            }
+          }} />
       )}
 
       {compare && (

@@ -1082,6 +1082,41 @@ class ComponentCatalogDomainService:
             conn.commit()
         return {"componentId": component_id, "revisionId": revision_id}
 
+    def system_revisions(self, component_id: str) -> list[dict[str, Any]]:
+        """Every revision of a module/assembly with the snapshot it came from, oldest first."""
+
+        self.initialize()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.id, r.version, r.release_status, r.source_ref_json, c.kind
+                FROM component_revisions r JOIN components c ON c.id = r.component_id
+                WHERE r.component_id = %s ORDER BY r.version
+                """,
+                (component_id,),
+            ).fetchall()
+        return [{
+            "revisionId": str(row["id"]), "version": int(row["version"]), "kind": str(row["kind"]),
+            "releaseStatus": _normalize_workflow_stage(str(row["release_status"])),
+            "sourceRef": system_items.revision_payload({"source_ref_json": row["source_ref_json"]})["sourceRef"],
+        } for row in rows]
+
+    def find_system_component(self, system_id: str) -> str | None:
+        """An active assembly whose revisions came from ``system_id`` (recovers an unbound first publish)."""
+
+        self.initialize()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT c.id FROM components c JOIN component_revisions r ON r.component_id = c.id
+                WHERE c.kind = 'assembly' AND c.is_active = 1
+                  AND r.source_ref_json::jsonb ->> 'systemId' = %s
+                ORDER BY c.created_at LIMIT 1
+                """,
+                (system_id,),
+            ).fetchone()
+        return str(row["id"]) if row else None
+
     def add_system_revision(
         self, component_id: str, *, interface: dict[str, Any], source_ref: dict[str, Any],
         actor: str = "", change_summary: str = "Publish",

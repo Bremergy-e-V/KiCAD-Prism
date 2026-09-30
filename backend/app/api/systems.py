@@ -119,6 +119,13 @@ class SnapshotRequest(BaseModel):
     note: str = Field(default="", max_length=4000)
 
 
+class PublishRequest(BaseModel):
+    ipn: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=4000)
+    manufacturer: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+
 class ImportMapRequest(BaseModel):
     columnMap: dict[str, str]
     boardMap: dict[str, str] = Field(default_factory=dict, max_length=500)
@@ -546,6 +553,18 @@ async def list_snapshots(system_id: str, user: AuthenticatedUser = Depends(requi
 @router.get("/{system_id}/snapshots/{snapshot_id}")
 async def get_snapshot(system_id: str, snapshot_id: str, user: AuthenticatedUser = Depends(require_viewer)):
     return await _run(system_id, lambda: system_service.service.get_snapshot(_caller(user), system_id, snapshot_id))
+
+
+@router.post("/{system_id}/snapshots/{snapshot_id}/publish", dependencies=[Depends(require_designer)])
+async def publish_snapshot(
+    system_id: str, snapshot_id: str, body: PublishRequest, user: AuthenticatedUser = Depends(require_viewer),
+):
+    """P2 §3.3: publish as a catalog ``assembly`` revision. 201 when new, 200 when already published."""
+    created, publication = await _run(system_id, lambda: system_service.service.publish_snapshot(
+        _caller(user), system_id, snapshot_id, ipn=body.ipn, name=body.name,
+        description=body.description, manufacturer=body.manufacturer,
+    ))
+    return JSONResponse(status_code=201 if created else 200, content=publication)
 
 
 @router.get("/{system_id}/snapshots/{snapshot_id}/manifest")

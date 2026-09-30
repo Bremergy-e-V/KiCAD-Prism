@@ -81,6 +81,12 @@ def _default_project_loader(project_id: str) -> Any:
     return _workspace_row_to_project(row) if row else None
 
 
+def _default_catalog() -> Any:
+    from app.services.component_catalog_service import catalog_service
+
+    return catalog_service
+
+
 def _default_enqueue_check(instance_id: str, project_id: str, *, requested_by: str) -> Mapping[str, Any]:
     from app.services.systems.detection import enqueue_instance_check
 
@@ -95,7 +101,9 @@ class SystemService:
         project_loader: Callable[[str], Any] = _default_project_loader,
         enqueue: Callable[..., Mapping[str, Any]] = enqueue_extraction,
         enqueue_check: Callable[..., Mapping[str, Any]] | None = None,
+        catalog: Callable[[], Any] = _default_catalog,
     ) -> None:
+        self._catalog = catalog
         self._connect = connect
         self._load_project = project_loader
         self._enqueue = enqueue
@@ -1055,8 +1063,101 @@ class SystemService:
 
     def list_snapshots(self, caller: Caller, system_id: str) -> list[dict]:
         with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            rows = store.list_snapshots(system_id)
+        publications = self._publications(system.get("catalogComponentId"))
+        return [{**self._snapshot_meta(row), "publication": publications.get(row["id"])} for row in rows]
+
+    def _publications(self, component_id: Optional[str]) -> dict[str, dict]:
+        """snapshotId -> the catalog revision it was published as. Best effort: never breaks a read."""
+        if not component_id:
+            return {}
+        try:
+            revisions = self._catalog().system_revisions(component_id)
+        except Exception:  # the catalog is a separate service; a listing must not fail on it
+            logger.exception("Could not read catalog revisions of %s", component_id)
+            return {}
+        return {
+            str(r["sourceRef"].get("snapshotId")): {"componentId": component_id, "revisionId": r["revisionId"],
+                                                   "version": r["version"], "releaseStatus": r["releaseStatus"]}
+            for r in revisions if r["sourceRef"].get("snapshotId")
+        }
+
+    # ------------------------------------------------------------------
+    # Publishing (CONTRACTS_P2 §3.3)
+
+    def publish_snapshot(
+        self, caller: Caller, system_id: str, snapshot_id: str, *, ipn: Optional[str], name: Optional[str],
+        description: Optional[str], manufacturer: Optional[str],
+    ) -> tuple[bool, dict]:
+        """Publish a snapshot as a catalog ``assembly`` revision. Returns ``(created, publication)``.
+
+        Idempotent per snapshot. The catalog revision is written before the
+        system binding, both under the system lock; a crash in between is
+        repaired by the next publish, which finds the orphan by system ID.
+        """
+
+        from app.core.roles import CATALOG_WRITE_ROLES
+
+        if caller.role not in CATALOG_WRITE_ROLES:
+            raise Forbidden("publishing needs catalog write access")
+        with self._tx() as store:
             self._system(store, system_id, caller)
-            return [self._snapshot_meta(row) for row in store.list_snapshots(system_id)]
+            row = store.get_snapshot(system_id, snapshot_id)
+            if row["manifest"] is None:
+                raise Invalid("this snapshot predates manifests; take a new snapshot to publish")
+            if self._restricted_in(store, row["document"], caller):
+                raise Forbidden("the snapshot contains boards you cannot see")
+        interface = self.export_interface(caller, system_id, snapshot_id)
+        if not interface["exports"]:
+            raise Invalid("publishing needs at least one export")
+        unresolved = [e["name"] for e in interface["exports"] if not e["resolved"]]
+        if unresolved:
+            raise Invalid(f"these exports do not resolve at the snapshot: {', '.join(unresolved)}")
+        source_ref = {
+            "kind": "system_snapshot", "systemId": system_id, "snapshotId": snapshot_id,
+            "snapshotName": row["name"], "fullDigest": row["digest"],
+            "connectivityDigest": row["connectivity_digest"], "openReviewCount": int(row["open_review_count"]),
+            # Assembly instances arrive in SB2-05; until then a system has no children.
+            "hierarchyValid": True, "children": [],
+        }
+        catalog = self._catalog()
+        with self._tx() as store:
+            system = self._system(store, system_id, caller)
+            with store.mutation(system_id, expected_version=None, actor=caller.actor, bump=False) as change:
+                bound = store.get_system(system_id).get("catalog_component_id") or catalog.find_system_component(system_id)
+                created = False
+                if bound:
+                    existing = next((r for r in catalog.system_revisions(bound)
+                                     if r["sourceRef"].get("snapshotId") == snapshot_id), None)
+                    if existing is None:
+                        out = catalog.add_system_revision(bound, interface=interface, source_ref=source_ref,
+                                                          actor=caller.email, change_summary=f"Publish {row['name']}")
+                        revision_id, created = out["revisionId"], True
+                    else:
+                        revision_id = existing["revisionId"]
+                    component_id = bound
+                else:
+                    if not (ipn or "").strip():
+                        raise Invalid("the first publish needs an IPN")
+                    try:
+                        out = catalog.create_system_item(
+                            kind="assembly", ipn=ipn or "", name=(name or system["name"]).strip(),
+                            description=(description or system["description"] or system["name"]).strip(),
+                            manufacturer=(manufacturer or "In-house").strip(), datasheet_url=f"/systems/{system_id}",
+                            interface=interface, source_ref=source_ref, actor=caller.email,
+                            change_summary=f"Publish {row['name']}",
+                        )
+                    except ValueError as error:
+                        raise Conflict(str(error)) from None
+                    component_id, revision_id, created = out["componentId"], out["revisionId"], True
+                store.bind_catalog_component(change, component_id)
+                if created:
+                    change.audit("snapshot_published", {"snapshotId": snapshot_id, "name": row["name"],
+                                                        "componentId": component_id, "revisionId": revision_id})
+        publication = self._publications(component_id).get(snapshot_id) or {
+            "componentId": component_id, "revisionId": revision_id, "version": None, "releaseStatus": None}
+        return created, publication
 
     def _snapshot(self, store: SystemStore, system_id: str, snapshot_id: str, caller: Caller) -> tuple[dict, dict]:
         """A snapshot's metadata and its document, redacted for ``caller``."""

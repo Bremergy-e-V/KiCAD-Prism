@@ -48,6 +48,7 @@ def summary(row: dict) -> dict[str, Any]:
         "etag": etag(row["id"], row["version"]),
         "instanceCount": int(row.get("instance_count") or 0),
         "openReviewCount": int(row.get("open_review_count") or 0),
+        "catalogComponentId": row.get("catalog_component_id"),
         "createdBy": row["created_by"],
         "createdAt": _iso(row["created_at"]),
         "updatedAt": _iso(row["updated_at"]),
