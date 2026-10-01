@@ -287,13 +287,38 @@ export class PrismSemanticViewerElement extends HTMLElement {
   /**
    * Draw the loaded board once per occurrence (System Builder SB2-23): an
    * array of column-major 4×4 model matrices in the bundle's runtime units
-   * (metres). The geometry is uploaded once and shared. `null` restores the
+   * (metres), or `{ matrix, key }` where the key (the system's occurrence
+   * path) comes back on picks and selection events. The geometry is uploaded
+   * once and shared. `null` restores the
    * single identity occurrence of the one-board view. Safe before ready and
    * after reloads: the last call is replayed on the next controller.
    */
-  setOccurrences(matrices) {
-    this.pendingOccurrences = matrices == null ? null : Array.from(matrices, (matrix) => [...(matrix?.matrix ?? matrix)]);
+  setOccurrences(occurrences) {
+    this.pendingOccurrences = occurrences == null
+      ? null
+      : Array.from(occurrences, (item) => (item?.matrix
+        ? { matrix: [...item.matrix], key: item.key }
+        : [...item]));
     this.controller?.setOccurrences?.(this.pendingOccurrences);
+  }
+
+  /**
+   * What is under a client point (SB2-24), without selecting it:
+   * `{ kind: "none" | "feature" | "board" | "gizmo", occurrenceKey, occurrenceIndex, featureId }`.
+   * Resolves null before the viewer is ready.
+   */
+  pickAt(clientX, clientY) {
+    return Promise.resolve(this.controller?.pickAt?.(clientX, clientY) ?? null);
+  }
+
+  /** Client coordinates of a component's centre on one occurrence, or null when off screen. */
+  projectComponent(reference, occurrenceKey) {
+    return this.controller?.projectComponent?.(reference, occurrenceKey) ?? null;
+  }
+
+  /** Client coordinates of a board-local point (runtime metres) on one occurrence, or null. */
+  projectPoint(point, occurrenceKey) {
+    return this.controller?.projectPoint?.(point, occurrenceKey) ?? null;
   }
 
   resize() {

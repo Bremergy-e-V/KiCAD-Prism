@@ -144,3 +144,54 @@ export function occurrenceUnionBounds(matrices, bounds) {
 export function isIdentity(model) {
   return model.every((value, index) => value === IDENTITY[index]);
 }
+
+// Two-channel picking (SB2-24): the pick target is `rg32uint`.
+//   R = occurrence index + 1 (0 = nothing under the cursor);
+//   G = the local feature id; 0 = the board itself (its context, no feature).
+// R values from PICK_GIZMO_BASE up are reserved for overlay handles such as
+// the move gizmo (SB2-29), which draw into the same target.
+export const PICK_NONE = 0;
+export const PICK_GIZMO_BASE = 0xffff0000;
+export const MAX_OCCURRENCES = PICK_GIZMO_BASE - 1;
+
+export function decodePick(red, green) {
+  const r = red >>> 0;
+  const g = green >>> 0;
+  if (r === PICK_NONE) return { kind: "none", occurrenceIndex: -1, featureId: 0 };
+  if (r >= PICK_GIZMO_BASE) return { kind: "gizmo", occurrenceIndex: -1, featureId: 0, gizmoPart: r - PICK_GIZMO_BASE, gizmoValue: g };
+  return { kind: g ? "feature" : "board", occurrenceIndex: r - 1, featureId: g };
+}
+
+/**
+ * Occurrences as the element accepts them: matrices, or `{ matrix, key }`
+ * where `key` names the occurrence to the host (the system scene's occurrence
+ * path). Keys default to the index and must be unique.
+ */
+export function normalizeOccurrences(list) {
+  const items = Array.from(list);
+  if (items.length > MAX_OCCURRENCES) throw new RangeError("Too many occurrences for the pick target");
+  const matrices = items.map(normalizeMatrix);
+  const keys = items.map((item, index) => {
+    const key = item && !Array.isArray(item) && !ArrayBuffer.isView(item) && item.key != null ? String(item.key) : String(index);
+    return key;
+  });
+  if (new Set(keys).size !== keys.length) throw new TypeError("Occurrence keys must be unique");
+  return { matrices, keys };
+}
+
+/**
+ * Project a runtime point through a clip matrix into a viewport rectangle
+ * ({ x, y, width, height }, y down). Null behind the camera or outside clip depth.
+ */
+export function projectToViewport(clip, point, viewport) {
+  const [x, y, z] = point;
+  const cx = clip[0] * x + clip[4] * y + clip[8] * z + clip[12];
+  const cy = clip[1] * x + clip[5] * y + clip[9] * z + clip[13];
+  const cz = clip[2] * x + clip[6] * y + clip[10] * z + clip[14];
+  const cw = clip[3] * x + clip[7] * y + clip[11] * z + clip[15];
+  if (!(cw > 0) || cz < 0 || cz > cw) return null;
+  return {
+    x: viewport.x + (cx / cw * 0.5 + 0.5) * viewport.width,
+    y: viewport.y + (0.5 - cy / cw * 0.5) * viewport.height,
+  };
+}

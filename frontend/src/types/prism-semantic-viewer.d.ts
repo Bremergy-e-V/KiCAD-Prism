@@ -14,6 +14,21 @@ export interface PrismRendererSelection {
     featureId?: number;
 }
 
+/** One placement of the loaded board; `key` (the occurrence path) returns on picks and selections. */
+export interface PrismViewerOccurrence {
+    matrix: readonly number[];
+    key: string;
+}
+
+export interface PrismViewerPick {
+    kind: "none" | "feature" | "board" | "gizmo";
+    occurrenceIndex: number;
+    occurrenceKey: string | null;
+    featureId: number;
+    /** What a click there would select (reference, pin, net), when it hits a feature. */
+    selection: Record<string, unknown> | null;
+}
+
 export interface PrismSemanticViewerElement extends HTMLElement {
     setSelection: (selection: PrismRendererSelection | null) => void;
     /**
@@ -32,7 +47,15 @@ export interface PrismSemanticViewerElement extends HTMLElement {
      * Geometry uploads once; `null` restores the one-board view exactly.
      * Safe before ready and after reloads.
      */
-    setOccurrences?: (matrices: readonly (readonly number[])[] | null) => void;
+    setOccurrences?: (
+        occurrences: readonly (readonly number[] | PrismViewerOccurrence)[] | null,
+    ) => void;
+    /** What is under a client point, without selecting it (SB2-24). Null before ready. */
+    pickAt?: (clientX: number, clientY: number) => Promise<PrismViewerPick | null>;
+    /** Client coordinates of a component's centre on one occurrence, or null off screen. */
+    projectComponent?: (reference: string, occurrenceKey?: string) => { x: number; y: number } | null;
+    /** Client coordinates of a board-local runtime point (metres) on one occurrence. */
+    projectPoint?: (point: readonly [number, number, number], occurrenceKey?: string) => { x: number; y: number } | null;
     resize: () => void;
 }
 

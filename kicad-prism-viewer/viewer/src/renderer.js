@@ -17,8 +17,9 @@ import {
   IDENTITY,
   OCCURRENCE_STRIDE,
   OCCURRENCE_WGSL,
+  decodePick,
   isIdentity,
-  normalizeMatrix,
+  normalizeOccurrences,
   packBarrels,
   packOccurrences,
 } from "./occurrences.js";
@@ -27,6 +28,8 @@ const VERTEX_STRIDE = 40;
 // WebGPU dynamic uniform offsets require 256-byte alignment; each draw buffer is padded to that size.
 const DRAW_UNIFORM_SIZE = 256;
 const GLOBAL_UNIFORM_SIZE = 112;
+// Two channels (SB2-24): R = occurrence index + 1, G = feature id (occurrences.js).
+const PICK_FORMAT = "rg32uint";
 
 const MAIN_SHADER = `
 struct Globals {
@@ -159,9 +162,9 @@ struct Output {
   output.objectId = input.objectId;
   return output;
 }
-@fragment fn fs(input: Output) -> @location(0) u32 {
+@fragment fn fs(input: Output) -> @location(0) vec2u {
   if (u32(draw.flags.x) == 2u && featureHidden(input.objectId)) { discard; }
-  return input.objectId;
+  return vec2u(1u, input.objectId);
 }
 `;
 
@@ -283,9 +286,9 @@ struct Output {
   }
   return output;
 }
-@fragment fn fs(input: Output) -> @location(0) u32 {
+@fragment fn fs(input: Output) -> @location(0) vec2u {
   if (input.visible == 0u) { discard; }
-  return input.objectId;
+  return vec2u(1u, input.objectId);
 }
 `;
 
@@ -320,16 +323,25 @@ const MAIN_SHADER_INSTANCED = variant(MAIN_SHADER, [[
   output.normal = normalize((occurrence.normal * vec4f(input.normal, 0.0)).xyz);`,
 ]]);
 
-const PICK_SHADER_INSTANCED = variant(PICK_SHADER, [[
-  `@vertex fn vs(input: Input) -> Output {
+const PICK_SHADER_INSTANCED = variant(PICK_SHADER, [
+  [`  @location(0) @interpolate(flat) objectId: u32,
+};`, `  @location(0) @interpolate(flat) objectId: u32,
+  @location(1) @interpolate(flat) occurrence: u32,
+};`],
+  [`@vertex fn vs(input: Input) -> Output {
   var output: Output;
   output.position = globals.viewProjection * vec4f(input.position + draw.offset.xyz, 1.0);`,
   `${OCCURRENCE_WGSL}
 @vertex fn vs(input: Input, @builtin(instance_index) instance: u32) -> Output {
   let world = (occurrences[instance].model * vec4f(input.position + draw.offset.xyz, 1.0)).xyz;
   var output: Output;
-  output.position = globals.viewProjection * vec4f(world, 1.0);`,
-]]);
+  output.position = globals.viewProjection * vec4f(world, 1.0);
+  output.occurrence = instance + 1u;`],
+  // Board context draws (kind 0) pick as feature 0: "this board", no feature.
+  [`  return vec2u(1u, input.objectId);`,
+  `  let kind = u32(draw.flags.x);
+  return vec2u(input.occurrence, select(input.objectId, 0u, kind == 0u));`],
+]);
 
 const BARREL_INPUT = `struct Input {
   @location(0) unit: vec3f,
@@ -384,6 +396,11 @@ const BARREL_SHADER_INSTANCED = barrelVariant(
 const BARREL_PICK_SHADER_INSTANCED = barrelVariant(
   BARREL_PICK_SHADER,
   "  output.position = globals.viewProjection * vec4f(world, 1.0);\n  output.objectId",
+  [
+    ["  @location(1) @interpolate(flat) visible: u32,\n};", "  @location(1) @interpolate(flat) visible: u32,\n  @location(2) @interpolate(flat) occurrence: u32,\n};"],
+    ["  output.objectId = input.ids.y;", "  output.objectId = input.ids.y;\n  output.occurrence = instance / count + 1u;"],
+    ["  return vec2u(1u, input.objectId);", "  return vec2u(input.occurrence, input.objectId);"],
+  ],
 );
 
 // For tests: the variants are derived at load, so a drifted anchor fails there.
@@ -424,6 +441,7 @@ export class Renderer {
     // instanced ones. Barrel records are mirrored into storage for them, with a
     // one-record placeholder so every bind group is valid.
     this.occurrenceMatrices = [[...IDENTITY]];
+    this.occurrenceKeys = ["0"];
     this.identityOnly = true;
     this.occurrenceCapacity = 1;
     this.occurrenceBuffer = this.createOccurrenceBuffer(this.occurrenceCapacity);
@@ -455,9 +473,9 @@ export class Renderer {
       ],
     }];
     this.pipeline = this.makePipeline(layout, MAIN_SHADER, this.format, vertexBuffers, "main");
-    this.pickPipeline = this.makePipeline(layout, PICK_SHADER, "r32uint", vertexBuffers, "pick");
+    this.pickPipeline = this.makePipeline(layout, PICK_SHADER, PICK_FORMAT, vertexBuffers, "pick");
     this.barrelPipeline = this.makeBarrelPipeline(layout, BARREL_SHADER, this.format, "barrel");
-    this.barrelPickPipeline = this.makeBarrelPipeline(layout, BARREL_PICK_SHADER, "r32uint", "barrel-pick");
+    this.barrelPickPipeline = this.makeBarrelPipeline(layout, BARREL_PICK_SHADER, PICK_FORMAT, "barrel-pick");
     this.singlePipelines = {
       main: this.pipeline,
       pick: this.pickPipeline,
@@ -504,13 +522,15 @@ export class Renderer {
 
   /**
    * Replace the occurrences every primitive and barrel is drawn at: column-major
-   * 4×4 model matrices in renderer units (metres, the bundle's runtime frame).
-   * Uploaded geometry is shared; only this buffer changes. An empty list draws
-   * nothing; `null` restores the single identity occurrence.
+   * 4×4 model matrices in renderer units (metres, the bundle's runtime frame),
+   * or `{ matrix, key }` naming each occurrence for picks. Uploaded geometry is
+   * shared; only this buffer changes. An empty list draws nothing; `null`
+   * restores the single identity occurrence.
    */
-  setOccurrences(matrices) {
-    const next = matrices == null ? [[...IDENTITY]] : Array.from(matrices, normalizeMatrix);
+  setOccurrences(occurrences) {
+    const { matrices: next, keys } = normalizeOccurrences(occurrences == null ? [IDENTITY] : occurrences);
     this.occurrenceMatrices = next;
+    this.occurrenceKeys = keys;
     this.identityOnly = next.length === 1 && isIdentity(next[0]);
     if (!this.identityOnly) this.ensureInstancedPipelines();
     if (next.length > this.occurrenceCapacity) {
@@ -528,9 +548,9 @@ export class Renderer {
     const layout = this.pipelineLayout;
     this.instancedPipelines = {
       main: this.makePipeline(layout, MAIN_SHADER_INSTANCED, this.format, this.vertexBuffers, "main-instanced"),
-      pick: this.makePipeline(layout, PICK_SHADER_INSTANCED, "r32uint", this.vertexBuffers, "pick-instanced"),
+      pick: this.makePipeline(layout, PICK_SHADER_INSTANCED, PICK_FORMAT, this.vertexBuffers, "pick-instanced"),
       barrel: this.makeBarrelPipeline(layout, BARREL_SHADER_INSTANCED, this.format, "barrel-instanced", false),
-      barrelPick: this.makeBarrelPipeline(layout, BARREL_PICK_SHADER_INSTANCED, "r32uint", "barrel-pick-instanced", false),
+      barrelPick: this.makeBarrelPipeline(layout, BARREL_PICK_SHADER_INSTANCED, PICK_FORMAT, "barrel-pick-instanced", false),
     };
   }
 
@@ -645,7 +665,7 @@ export class Renderer {
         entryPoint: "fs",
         targets: [{
           format,
-          blend: format === "r32uint" ? undefined : {
+          blend: format === PICK_FORMAT ? undefined : {
             color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
             alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
           },
@@ -690,7 +710,7 @@ export class Renderer {
         entryPoint: "fs",
         targets: [{
           format,
-          blend: format === "r32uint" ? undefined : {
+          blend: format === PICK_FORMAT ? undefined : {
             color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
             alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
           },
@@ -729,7 +749,7 @@ export class Renderer {
     this.depth?.destroy();
     this.pickTexture?.destroy();
     this.depth = this.device.createTexture({ size: [width, height], format: "depth24plus", usage: GPUTextureUsage.RENDER_ATTACHMENT });
-    this.pickTexture = this.device.createTexture({ size: [width, height], format: "r32uint", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
+    this.pickTexture = this.device.createTexture({ size: [width, height], format: PICK_FORMAT, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
   }
 
   addPrimitive(primitive, metadata) {
@@ -1060,7 +1080,10 @@ export class Renderer {
         options.compareMode,
         options.visibleTileIds,
       )) continue;
-      if (entry.kind === "board") continue;
+      // The one-board view never picked the board. A system scene picks its
+      // substrate as feature 0 (which board); mask and silkscreen stay out so
+      // copper under them is still pickable.
+      if (entry.kind === "board" && (this.identityOnly || entry.boardRole !== "substrate")) continue;
       this.writeDraw(
         entry,
         options.activeNetId,
@@ -1086,7 +1109,7 @@ export class Renderer {
     }
     pass.end();
     const readBuffer = this.device.createBuffer({
-      label: "pick-readback",
+      label: "pick-readback", // one rg32uint texel; rows are 256-byte aligned
       size: 256,
       usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
     });
@@ -1098,9 +1121,10 @@ export class Renderer {
     this.device.queue.submit([encoder.finish()]);
     try {
       await readBuffer.mapAsync(GPUMapMode.READ);
-      const value = new DataView(readBuffer.getMappedRange()).getUint32(0, true);
+      const view = new DataView(readBuffer.getMappedRange());
+      const hit = decodePick(view.getUint32(0, true), view.getUint32(4, true));
       readBuffer.unmap();
-      return value;
+      return { ...hit, occurrenceKey: hit.occurrenceIndex >= 0 ? this.occurrenceKeys[hit.occurrenceIndex] ?? null : null };
     } finally {
       if (readBuffer.mapState === "mapped") readBuffer.unmap();
       readBuffer.destroy();
