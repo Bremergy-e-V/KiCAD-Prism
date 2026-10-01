@@ -29,6 +29,20 @@ export interface PrismViewerPick {
     selection: Record<string, unknown> | null;
 }
 
+export interface PrismViewerStats {
+    occurrences: number;
+    /** Occurrences per level of detail in the last culled frame. */
+    lod: { full: number; board: number; box: number; culled: number };
+    triangles: number;
+    draws: number;
+    gpuMemoryBytes: number;
+    frameIntervalMs: number;
+    frameIntervalP95Ms: number;
+    frameCpuMs: number;
+    frameCpuP95Ms: number;
+    fps: number;
+}
+
 export interface PrismSemanticViewerElement extends HTMLElement {
     setSelection: (selection: PrismRendererSelection | null) => void;
     /**
@@ -56,6 +70,12 @@ export interface PrismSemanticViewerElement extends HTMLElement {
     projectComponent?: (reference: string, occurrenceKey?: string) => { x: number; y: number } | null;
     /** Client coordinates of a board-local runtime point (metres) on one occurrence. */
     projectPoint?: (point: readonly [number, number, number], occurrenceKey?: string) => { x: number; y: number } | null;
+    /** Show the scene stats overlay (SB2-25); the backquote key toggles it. */
+    setStatsOverlay?: (visible: boolean) => void;
+    /** The numbers behind the stats overlay, or null before ready. */
+    getStats?: () => PrismViewerStats | null;
+    /** Force a level of detail on every occurrence (0 full, 1 board, 2 box), or null for automatic. */
+    setLodOverride?: (lod: 0 | 1 | 2 | null) => void;
     resize: () => void;
 }
 

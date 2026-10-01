@@ -8,7 +8,7 @@ import {
 import { escapeHtml } from "./escape-html.js";
 import { findNetByName, resolveNetIds } from "./net-emphasis.js";
 import { loadGltf } from "./gltf-loader.js";
-import { boundsRadius, clamp, mat4Multiply } from "./math.js";
+import { add, boundsRadius, clamp, mat4Multiply, scale } from "./math.js";
 import { isIdentity, occurrenceUnionBounds, projectToViewport, transformBounds, transformPoint } from "./occurrences.js";
 import { Renderer } from "./renderer.js";
 import { SchematicWorldRenderer } from "./schematic-world-renderer.js";
@@ -38,6 +38,7 @@ let statusEl;
 let viewerKindEl;
 let selectionEl;
 let diagnosticsEl;
+let sceneStatsEl;
 let layersEl;
 let searchControlsEl;
 let viewControlsEl;
@@ -66,6 +67,7 @@ function resolveDom(root = document) {
   viewerKindEl = query("#viewer-kind") || { set textContent(_value) {} };
   selectionEl = query("#selection") || { set textContent(v) {} };
   diagnosticsEl = query("#diagnostics") || { set innerHTML(v) {} };
+  sceneStatsEl = query("#scene-stats");
   layersEl = query("#layers");
   searchControlsEl = query("#search-controls");
   viewControlsEl = query("#view-controls");
@@ -383,6 +385,16 @@ export async function mountStandaloneViewer(options = {}) {
     },
     setOccurrences(occurrences) {
       return applyOccurrences(occurrences);
+    },
+    setStatsOverlay(visible) {
+      setStatsOverlay(visible);
+    },
+    stats() {
+      return sceneStats();
+    },
+    // Force a level of detail on every occurrence (0 full, 1 board, 2 box), or null for automatic.
+    setLodOverride(lod) {
+      renderer?.setLodOverride(lod);
     },
     // Query the pick target at a client point without changing the selection.
     pickAt(clientX, clientY) {
@@ -755,6 +767,7 @@ async function loadTile(tile, token = activeViewerToken) {
           kind: "copper",
           tileId: tile.id,
           layerId: Number(tile.layerId),
+          innerCopper: isInnerCopperLayer(Number(tile.layerId)),
           color: layerColor(layer),
           baseZ: Number(layer?.z_mm || 0) / 1000,
           material: { baseColor: [1, 1, 1, 1], metallic: 0.78, roughness: 0.32 },
@@ -1038,6 +1051,68 @@ function sceneRuntimeBounds() {
   return scene.occurrenceBounds || scene.runtimeBounds || runtimeBoundsFromGltf(scene.manifest?.bbox);
 }
 
+// Outer copper is the first and last copper layer by height; the rest sit inside the board.
+function isInnerCopperLayer(layerId) {
+  const heights = scene.copperLayers.map((layer) => [Number(layer.id), Number(layer.z_mm || 0)]);
+  if (heights.length < 3) return false;
+  heights.sort((a, b) => a[1] - b[1]);
+  return layerId !== heights[0][0] && layerId !== heights[heights.length - 1][0];
+}
+
+// What the cull pass needs to size occurrences on screen (SB2-25): the eye, and
+// pixels per runtime unit at unit distance (perspective) or flat (orthographic).
+function cameraLod(viewportHeight, orthographic) {
+  const { back } = camera.basis();
+  return {
+    eye: add(camera.focus, scale(back, camera.distance)),
+    orthographic,
+    pixelScale: orthographic
+      ? viewportHeight / Math.max(1e-9, camera.orthoScale)
+      : viewportHeight / 2 / Math.tan(camera.fov / 2),
+  };
+}
+
+// Scene numbers for the stats overlay and for measurements through the element.
+function sceneStats() {
+  const counts = renderer?.cullCounts || { full: 0, board: 0, box: 0, culled: 0 };
+  const single = !renderer || renderer.identityOnly;
+  return {
+    occurrences: renderer?.occurrenceMatrices.length || 0,
+    lod: single ? { full: 1, board: 0, box: 0, culled: 0 } : { ...counts },
+    triangles: renderer?.frameStats.triangles || 0,
+    draws: renderer?.frameStats.draws || 0,
+    gpuMemoryBytes: renderer?.gpuMemoryBytes() || 0,
+    frameIntervalMs: state.frameIntervalMs,
+    frameIntervalP95Ms: state.frameIntervalP95Ms,
+    frameCpuMs: state.frameCpuMs,
+    frameCpuP95Ms: state.frameCpuP95Ms,
+    fps: state.fps,
+  };
+}
+
+function setStatsOverlay(visible) {
+  state.showStats = Boolean(visible);
+  if (sceneStatsEl) sceneStatsEl.hidden = !state.showStats;
+  updateSceneStats();
+}
+
+function updateSceneStats() {
+  if (!sceneStatsEl || !state.showStats) return;
+  const stats = sceneStats();
+  const { full, board, box, culled } = stats.lod;
+  const rows = [
+    ["Occurrences", `${stats.occurrences} (${full + board + box} visible)`],
+    ["Detail", `${full} full · ${board} board · ${box} box · ${culled} culled`],
+    ["Triangles", stats.triangles.toLocaleString()],
+    ["Draws", stats.draws.toLocaleString()],
+    ["GPU memory", `${(stats.gpuMemoryBytes / 1048576).toFixed(1)} MB`],
+    ["Frame", `${stats.frameIntervalMs.toFixed(1)} ms · p95 ${stats.frameIntervalP95Ms.toFixed(1)}`],
+    ["CPU", `${stats.frameCpuMs.toFixed(2)} ms · p95 ${stats.frameCpuP95Ms.toFixed(2)}`],
+    ["FPS", stats.fps.toFixed(0)],
+  ];
+  sceneStatsEl.innerHTML = rows.map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`).join("");
+}
+
 // Draw the loaded board once per occurrence (SB2-23): column-major model
 // matrices in runtime units. `null` restores the single identity occurrence.
 // Geometry stays uploaded once; the camera reframes on every copy.
@@ -1046,6 +1121,7 @@ function applyOccurrences(matrices) {
   renderer.setOccurrences(matrices);
   if (state.selectedOccurrence >= renderer.occurrenceMatrices.length) state.selectedOccurrence = 0;
   const board = scene.runtimeBounds || runtimeBoundsFromGltf(scene.manifest?.bbox);
+  renderer.setBoardBounds(board);
   scene.occurrenceBounds = matrices == null ? null : occurrenceUnionBounds(renderer.occurrenceMatrices, board);
   const bounds = sceneRuntimeBounds();
   if (camera && bounds) {
@@ -1238,7 +1314,12 @@ function frame(now, token = activeViewerToken) {
     layerId: 0,
     viewport: { x: 0, y: 0, width: canvas.width, height: canvas.height },
     matrix: camera.matrix(canvas.width, canvas.height, state.mode === "layer"),
+    lod: cameraLod(canvas.height, state.mode === "layer"),
   };
+  // The copy holding the selection keeps full detail and its emphasis; none without a selection.
+  renderer.selectedOccurrence = state.selectedFeatureId || state.activeNetId ? state.selectedOccurrence : -1;
+  // Inner copper shows once the board is exploded, faded for highlighting, or hidden.
+  renderer.setInnerCopperAtFull(state.showBoard && state.separation <= 0.001 && !emphasizedNetIds().size);
   scheduleTileResidency(now);
   const visibleLayers = state.mode === "3d" ? state.visible3dLayers : compareRenderLayers();
   renderer.render({
@@ -2990,6 +3071,7 @@ function handleKey(event) {
     setNetIsolation(!state.isolateNet);
   }
   else if (key === "home") camera.frame(sceneRuntimeBounds());
+  else if (key === "`") setStatsOverlay(!state.showStats);
   else if (["x", "y", "z"].includes(key)) camera.setAxis(key, event.shiftKey);
   else if (key === "f") camera.flip();
   else if (key === "r") camera.rotateZ(event.shiftKey ? -1 : 1);
@@ -3188,6 +3270,7 @@ function updateDiagnostics(now) {
   state.frameCpuP95Ms = percentile(samples.map((item) => item.cpuMs), 0.95);
   state.frames = 0;
   state.fpsAt = now;
+  updateSceneStats();
   if (state.workspace === "bom") {
     const counts = bomViewer?.payload?.counts || {};
     const rows = [

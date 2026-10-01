@@ -12,6 +12,16 @@ function shellHtml() {
       #app.panel-collapsed { grid-template-columns: minmax(0, 1fr) 46px; }
       #app.workspace-stackup { grid-template-columns: minmax(0, 1fr); }
       #selection-card { display: none !important; }
+      #scene-stats {
+        position: absolute; top: 12px; right: 12px; z-index: 4; margin: 0; padding: 8px 10px;
+        display: grid; grid-template-columns: auto auto; gap: 2px 12px;
+        background: rgb(15 20 28 / 0.82); color: #dbe4f0; border-radius: 6px;
+        font: 11px/1.4 "SFMono-Regular", Consolas, monospace; font-variant-numeric: tabular-nums;
+        pointer-events: none;
+      }
+      #scene-stats[hidden] { display: none; }
+      #scene-stats dt { color: #8a97a8; }
+      #scene-stats dd { margin: 0; text-align: right; }
     </style>
     <main id="app">
       <section class="viewport-shell">
@@ -20,6 +30,7 @@ function shellHtml() {
         <div id="panel-labels"></div>
         <div id="selection-card" hidden></div>
         <canvas id="axis-gizmo" width="112" height="112" title="Click an axis to align the camera"></canvas>
+        <dl id="scene-stats" hidden></dl>
         <div id="fallback" hidden></div>
       </section>
       <aside class="panel">
@@ -314,6 +325,21 @@ export class PrismSemanticViewerElement extends HTMLElement {
   /** Client coordinates of a component's centre on one occurrence, or null when off screen. */
   projectComponent(reference, occurrenceKey) {
     return this.controller?.projectComponent?.(reference, occurrenceKey) ?? null;
+  }
+
+  /** Show the scene stats overlay (occurrences by detail, triangles, GPU memory, frame times); the backquote key toggles it. */
+  setStatsOverlay(visible) {
+    this.controller?.setStatsOverlay?.(visible);
+  }
+
+  /** The numbers behind the stats overlay, or null before ready. */
+  getStats() {
+    return this.controller?.stats?.() ?? null;
+  }
+
+  /** Force a level of detail on every occurrence (0 full, 1 board, 2 box), or null for automatic. */
+  setLodOverride(lod) {
+    this.controller?.setLodOverride?.(lod);
   }
 
   /** Client coordinates of a board-local point (runtime metres) on one occurrence, or null. */

@@ -23,6 +23,14 @@ struct Occurrence {
   normal: mat4x4f,
 };
 @group(0) @binding(5) var<storage, read> occurrences: array<Occurrence>;
+// The cull pass (SB2-25) lists the occurrences to draw, interleaved by level of
+// detail: slot * 3 + list. Components draw for LIST_FULL; board, copper and
+// barrels for LIST_BOARD (full or board); the stand-in box for LIST_BOX.
+@group(0) @binding(7) var<storage, read> visibleOccurrences: array<u32>;
+const LIST_FULL = 0u;
+const LIST_BOARD = 1u;
+const LIST_BOX = 2u;
+fn listedOccurrence(list: u32, instance: u32) -> u32 { return visibleOccurrences[instance * 3u + list]; }
 `;
 
 export const IDENTITY = Object.freeze([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
@@ -194,4 +202,46 @@ export function projectToViewport(clip, point, viewport) {
     x: viewport.x + (cx / cw * 0.5 + 0.5) * viewport.width,
     y: viewport.y + (0.5 - cy / cw * 0.5) * viewport.height,
   };
+}
+
+// Level of detail per occurrence (SB2-25), chosen on the GPU each frame from the
+// board's projected radius in pixels. These mirror the cull shader in renderer.js.
+export const LOD_FULL = 0; // components, board and copper
+export const LOD_BOARD = 1; // board, copper and barrels
+export const LOD_BOX = 2; // the board's bounding box
+export const LOD_CULLED = 3; // outside the view
+export const LOD_THRESHOLDS = Object.freeze({
+  fullPx: 140, // projected radius at or above which components draw
+  boxPx: 18, // below this the board is a box
+  keep: 0.8, // hysteresis: a finer level holds until the size drops below threshold × keep
+});
+
+export function chooseLod(previous, pixels, thresholds = LOD_THRESHOLDS) {
+  const { fullPx, boxPx, keep } = thresholds;
+  let lod = pixels >= fullPx ? LOD_FULL : pixels >= boxPx ? LOD_BOARD : LOD_BOX;
+  if (previous === LOD_FULL && lod > LOD_FULL && pixels >= fullPx * keep) lod = LOD_FULL;
+  if (previous <= LOD_BOARD && lod === LOD_BOX && pixels >= boxPx * keep) lod = LOD_BOARD;
+  return lod;
+}
+
+/**
+ * The six clip planes of a column-major view-projection with WebGPU depth
+ * (0 ≤ z ≤ w), as [a, b, c, d] with a·x + b·y + c·z + d ≥ 0 inside.
+ */
+export function frustumPlanes(m) {
+  const row = (i) => [m[i], m[4 + i], m[8 + i], m[12 + i]];
+  const [r0, r1, r2, r3] = [row(0), row(1), row(2), row(3)];
+  const add = (a, b) => a.map((value, k) => value + b[k]);
+  const sub = (a, b) => a.map((value, k) => value - b[k]);
+  return [add(r3, r0), sub(r3, r0), add(r3, r1), sub(r3, r1), r2, sub(r3, r2)];
+}
+
+/** True when the box [minX, minY, minZ, maxX, maxY, maxZ] lies wholly outside one plane. */
+export function boxOutside(planes, box) {
+  return planes.some(([a, b, c, d]) => {
+    const x = a >= 0 ? box[3] : box[0];
+    const y = b >= 0 ? box[4] : box[1];
+    const z = c >= 0 ? box[5] : box[2];
+    return a * x + b * y + c * z + d < 0;
+  });
 }
