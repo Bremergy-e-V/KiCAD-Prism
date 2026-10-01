@@ -1039,8 +1039,9 @@ class SystemService:
         with self._tx() as store:
             version = int(self._system(store, system_id, caller)["version"])
             tree = self._tree(store, system_id)
-            interfaces = {(o.project_id, o.baseline_commit): store.get_interface(o.project_id, o.baseline_commit,
-                                                                                 EXTRACTOR_VERSION)
+            # Only the outline and thickness: a full artifact is megabytes per board.
+            interfaces = {(o.project_id, o.baseline_commit): store.get_interface_extent(o.project_id, o.baseline_commit,
+                                                                                        EXTRACTOR_VERSION)
                           for o in tree.boards if o.project_id and o.baseline_commit}
         for (project_id, commit), found in interfaces.items():
             if found is None:  # not extracted yet, or by an older extractor: the bounds come with it

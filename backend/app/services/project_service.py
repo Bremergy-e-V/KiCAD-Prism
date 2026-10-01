@@ -480,7 +480,13 @@ def _find_cli_path():
     return kicad_jobset_service.find_kicad_cli_path()
 
 def webgpu_artifact_key(row: dict, commit: str | None, *, force: bool = False) -> str:
-    """The ``webgpu_3d`` job key for a project row at ``commit`` (or its workspace)."""
+    """The ``webgpu_3d`` job key for a project row at ``commit`` (or its workspace).
+
+    It names the 3D generator build, so a completed job from an older viewer or
+    pipeline build never stands in for a bundle the current build cannot read.
+    """
+    from app.services import semantic_visualizer_service
+
     source_selector = commit or f"workspace:{row.get('last_modified') or ''}"
     return hashlib.sha256(
         json.dumps(
@@ -490,6 +496,7 @@ def webgpu_artifact_key(row: dict, commit: str | None, *, force: bool = False) -
                 "source": source_selector,
                 "force": bool(force),
                 "generator": semantic_index_service.generator_cache_tag(),
+                "webgpuBuild": semantic_visualizer_service.BUILD_FINGERPRINT,
             },
             sort_keys=True,
             separators=(",", ":"),

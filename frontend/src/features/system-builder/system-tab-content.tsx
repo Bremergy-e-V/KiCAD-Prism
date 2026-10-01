@@ -12,6 +12,7 @@ import type { SystemTab } from "./system-tabs";
 
 // The canvas library is only loaded when the diagram is opened.
 const DiagramTab = lazy(() => import("./diagram-tab").then((module) => ({ default: module.DiagramTab })));
+const Scene3dTab = lazy(() => import("./scene-3d-tab").then((module) => ({ default: module.Scene3dTab })));
 
 export interface SystemTabProps {
   systemId: string;
@@ -41,6 +42,12 @@ export function SystemTabContent({ tab, ...props }: SystemTabProps & { tab: Syst
       return (
         <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading diagram…</div>}>
           <DiagramTab {...props} />
+        </Suspense>
+      );
+    case "scene3d":
+      return (
+        <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Loading 3D view…</div>}>
+          <Scene3dTab {...props} />
         </Suspense>
       );
     default: {

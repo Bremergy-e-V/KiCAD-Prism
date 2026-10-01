@@ -1602,6 +1602,19 @@ class SystemStore:
         ).fetchone()
         return dict(row["payload"]) if row else None
 
+    def get_interface_extent(self, project_id: str, commit: str, extractor_version: str) -> Optional[dict]:
+        """The scene's slice of an artifact (outline and thickness), without the multi-MB payload."""
+        row = self.conn.execute(
+            """
+            SELECT jsonb_build_object('boardOutlineMm', payload->'boardOutlineMm',
+                                      'boardThicknessMm', payload->'boardThicknessMm') AS extent
+            FROM system_interface_artifacts
+            WHERE project_id = %s AND commit = %s AND extractor_version = %s
+            """,
+            (project_id, commit, extractor_version),
+        ).fetchone()
+        return dict(row["extent"]) if row else None
+
     def put_interface(self, payload: Mapping[str, Any]) -> dict:
         """Store an artifact; the first writer wins, and its copy is returned."""
         project_id, commit = payload["projectId"], payload["commit"]

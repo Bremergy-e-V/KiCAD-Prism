@@ -520,6 +520,44 @@ export interface SystemHierarchy {
   boardCount: number;
 }
 
+/** `GET …/scene` → `prism.system_scene.a0` (CONTRACTS_P2 §20). Lengths in mm; matrices column-major. */
+export interface SystemSceneAsset {
+  assetId: string;
+  projectId: string;
+  commit: string;
+  status: "ready" | "building" | "missing" | "failed";
+  bundleUrl: string | null;
+  sourceRevisionKey: string | null;
+  generatorBuild: string | null;
+  jobId: string | null;
+  error: string | null;
+  bundleToBoard: number[] | null;
+}
+
+export interface SystemSceneOccurrence {
+  path: string;
+  parentPath: string | null;
+  displayPath: string;
+  labels: string[];
+  instanceId: string;
+  kind: "board" | "assembly" | string;
+  depth: number;
+  restricted: boolean;
+  assetId: string | null;
+  pose: { translationMm: number[]; rotation: number[]; source: "default" | "manual" | "auto" };
+  worldMatrix: number[];
+  boundsMm: { minMm: number[]; maxMm: number[] } | null;
+}
+
+export interface SystemScene {
+  schema: "prism.system_scene.a0";
+  systemId: string;
+  systemVersion: number;
+  units: "mm";
+  assets: SystemSceneAsset[];
+  occurrences: SystemSceneOccurrence[];
+}
+
 /** `GET …/instances/{iid}/mating` (CONTRACTS_P2 §15.3). */
 export type MatingAxis = "top" | "bottom" | "+x" | "-x" | "+y" | "-y";
 
