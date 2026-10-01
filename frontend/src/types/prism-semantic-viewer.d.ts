@@ -36,6 +36,20 @@ export interface PrismViewerStats {
     triangles: number;
     draws: number;
     gpuMemoryBytes: number;
+    /** SB2-26: the GPU budget, the component tier and the browser asset cache. */
+    gpuBudgetBytes: number;
+    componentTier: "idle" | "loading" | "loaded";
+    componentEvictions: number;
+    tileEvictions: number;
+    cache: {
+        enabled: boolean;
+        files?: number;
+        bytes?: number;
+        hits?: number;
+        misses?: number;
+        networkBytes?: number;
+        cachedBytes?: number;
+    };
     frameIntervalMs: number;
     frameIntervalP95Ms: number;
     frameCpuMs: number;
@@ -76,6 +90,8 @@ export interface PrismSemanticViewerElement extends HTMLElement {
     getStats?: () => PrismViewerStats | null;
     /** Force a level of detail on every occurrence (0 full, 1 board, 2 box), or null for automatic. */
     setLodOverride?: (lod: 0 | 1 | 2 | null) => void;
+    /** GPU memory budget in bytes (default 1.5 GB); over it, tiers no occurrence needs are evicted. */
+    setGpuBudget?: (bytes: number) => void;
     resize: () => void;
 }
 

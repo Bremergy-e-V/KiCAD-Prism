@@ -1,4 +1,5 @@
 import viewerCss from "../styles.css";
+import { AssetCache } from "./asset-cache.js";
 import { mountStandaloneViewer } from "./main.js";
 import { createReloadOwner, runSemanticViewerReload } from "./semantic-viewer-reload.js";
 
@@ -102,23 +103,41 @@ function absolutizeAssetPaths(semanticGeometry, bundleUrl, bundle, cacheKey) {
   return output;
 }
 
+// A bundle is final once generation reached its last stage; its files then never change.
+function bundleIsFinal(bundle) {
+  const stage = bundle?.readiness?.stage || "semantic-ready";
+  return stage === "semantic-ready" && (bundle?.readiness?.progress ?? 100) >= 100;
+}
+
 async function loadBundle(bundleUrl, timings, signal) {
   const absoluteBundleUrl = new URL(bundleUrl, document.baseURI).toString();
   const cacheKey = new URL(absoluteBundleUrl).searchParams.get("viewer") || "";
-  const bundle = await fetchJson(absoluteBundleUrl, timings, "bundle", signal);
+  // SB2-26: a final bundle is read from the browser cache; earlier stages
+  // rewrite bundle.json in place, so only a final one is ever stored.
+  const cache = AssetCache.open();
+  let bundle = await cache.peekJson(absoluteBundleUrl).catch(() => null);
+  const cachedBundle = Boolean(bundle);
+  if (!bundle) {
+    bundle = await fetchJson(absoluteBundleUrl, timings, "bundle", signal);
+    if (bundleIsFinal(bundle)) void cache.store(absoluteBundleUrl, new TextEncoder().encode(JSON.stringify(bundle)));
+  }
+  if (timings) timings.bundle_from_cache = cachedBundle;
+  const assetCache = bundleIsFinal(bundle) && cache.enabled ? cache : null;
   if (bundle.schema !== SUPPORTED_SCHEMA) {
     throw new Error(`Unsupported visualizer bundle schema: ${bundle.schema || "missing"}`);
   }
   const topologyUrl = new URL(bundle.topology || "topology.json", absoluteBundleUrl);
   const semanticGeometryUrl = new URL(bundle.semantic_geometry || "semantic_geometry.json", absoluteBundleUrl);
+  const load = (url, label) => (assetCache ? assetCache.fetchJson(url.toString(), { signal }) : fetchJson(url, timings, label, signal));
   const [topology, semanticGeometry] = await Promise.all([
-    fetchJson(topologyUrl, timings, "topology", signal),
-    fetchJson(semanticGeometryUrl, timings, "semantic_geometry", signal),
+    load(topologyUrl, "topology"),
+    load(semanticGeometryUrl, "semantic_geometry"),
   ]);
   return {
     bundle,
     topology,
     semanticGeometry: absolutizeAssetPaths(semanticGeometry, absoluteBundleUrl, bundle, cacheKey),
+    assetCache,
   };
 }
 
@@ -207,7 +226,7 @@ export class PrismSemanticViewerElement extends HTMLElement {
     `;
   }
 
-  mountViewer({ topology, semanticGeometry, readiness, signal }) {
+  mountViewer({ topology, semanticGeometry, readiness, assetCache = null, signal }) {
     // Callbacks are bound to this attempt: a superseded mount that is still
     // booting must not report selection or performance for the newer load.
     return mountStandaloneViewer({
@@ -216,6 +235,9 @@ export class PrismSemanticViewerElement extends HTMLElement {
       semanticGeometry,
       readiness,
       workspaceScope: "3d",
+      assetCache,
+      // A system scene (occurrences set before the load) fetches components on approach.
+      deferComponents: Boolean(this.pendingOccurrences),
       isActive: () => this.getAttribute("active") === "true",
       onSelectionChange: (selection) => {
         if (signal.aborted) return;
@@ -246,6 +268,7 @@ export class PrismSemanticViewerElement extends HTMLElement {
       this.controller?.setHiddenComponents?.(this.pendingHiddenComponents);
     }
     if (this.pendingOccurrences) this.controller?.setOccurrences?.(this.pendingOccurrences);
+    if (this.pendingGpuBudget != null) this.controller?.setGpuBudget?.(this.pendingGpuBudget);
     // A fresh viewer is already unselected. Avoid a redundant clearSelection()
     // while the staged shell is completing its first-frame setup.
     if (this.pendingSelection) this.controller?.setSelection?.(this.pendingSelection);
@@ -340,6 +363,12 @@ export class PrismSemanticViewerElement extends HTMLElement {
   /** Force a level of detail on every occurrence (0 full, 1 board, 2 box), or null for automatic. */
   setLodOverride(lod) {
     this.controller?.setLodOverride?.(lod);
+  }
+
+  /** The GPU memory budget in bytes (default 1.5 GB); over it, unused tiers are evicted. */
+  setGpuBudget(bytes) {
+    this.pendingGpuBudget = bytes;
+    this.controller?.setGpuBudget?.(bytes);
   }
 
   /** Client coordinates of a board-local point (runtime metres) on one occurrence, or null. */

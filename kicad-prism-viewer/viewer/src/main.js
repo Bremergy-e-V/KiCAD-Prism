@@ -160,6 +160,11 @@ function initialScene() {
     residentTiles: new Map(),
     componentFeatures: new Map(),
     componentModelCounts: new Map(),
+    // The component tier (SB2-26): idle → loading → loaded, and back to idle when evicted.
+    componentTier: "idle",
+    componentEntries: [],
+    componentsWantedAt: 0,
+    componentEvictions: 0,
     runtimeBounds: null,
     // Union of the board at every occurrence (SB2-23); null for the one-board view.
     occurrenceBounds: null,
@@ -207,6 +212,13 @@ const compareAnimation = initialCompareAnimation();
 const compareTransition = initialCompareTransition();
 const schematicScene = initialSchematicScene();
 let gizmoHits = [];
+// SB2-26: the browser cache for this bundle's assets (null: network only), and
+// whether components wait until some occurrence needs full detail.
+let assetCache = null;
+let deferComponents = false;
+const DEFAULT_GPU_BUDGET_BYTES = 1.5 * 1024 * 1024 * 1024;
+// Components unused this long (no occurrence at full detail) may be evicted over budget.
+const COMPONENT_IDLE_EVICT_MS = 5000;
 
 let renderer;
 let schematicRenderer;
@@ -344,6 +356,9 @@ export async function mountStandaloneViewer(options = {}) {
     : null;
   viewerIsActive = typeof options.isActive === "function" ? options.isActive : () => true;
   legacyWorkspacesEnabled = options.workspaceScope !== "3d";
+  assetCache = options.assetCache || null;
+  deferComponents = Boolean(options.deferComponents);
+  state.gpuBudgetBytes = DEFAULT_GPU_BUDGET_BYTES;
   resolveDom(options.root || document);
   if (!appEl || !canvas) throw new Error("Semantic viewer shell is missing required DOM nodes");
   await boot(token, performanceTimings, options.onPerformanceEvent);
@@ -395,6 +410,11 @@ export async function mountStandaloneViewer(options = {}) {
     // Force a level of detail on every occurrence (0 full, 1 board, 2 box), or null for automatic.
     setLodOverride(lod) {
       renderer?.setLodOverride(lod);
+    },
+    setGpuBudget(bytes) {
+      const value = Number(bytes);
+      state.gpuBudgetBytes = Number.isFinite(value) && value > 0 ? value : DEFAULT_GPU_BUDGET_BYTES;
+      state.tiersCheckedAt = 0;
     },
     // Query the pick target at a client point without changing the selection.
     pickAt(clientX, clientY) {
@@ -624,7 +644,7 @@ async function boot(token, performanceTimings = {}, onPerformanceEvent = null) {
     "semantic-ready": "WebGPU semantic glTF active",
   };
   statusEl.textContent = stageLabels[viewerReadiness.stage] || "Loading 3D assets";
-  if (semanticGeometry.assets?.components_glb) {
+  if (semanticGeometry.assets?.components_glb && !deferComponents) {
     const componentsStarted = performance.now();
     void loadComponents(token).then(() => {
       if (!viewerSessionActive(token)) return;
@@ -729,6 +749,7 @@ async function loadBom(token = activeViewerToken) {
 }
 
 async function fetchJson(url) {
+  if (assetCache) return assetCache.fetchJson(String(url));
   const response = await fetch(url, { cache: "default" });
   if (!response.ok) throw new Error(`Failed to load ${url}: ${response.status}`);
   return response.json();
@@ -754,6 +775,7 @@ async function loadTile(tile, token = activeViewerToken) {
   const promise = (async () => {
     try {
       const loaded = await loadGltf(new URL(tile.path, scene.manifestUrl).toString(), {
+        fetchBytes: assetFetcher(),
         fetchCache: "no-store",
       });
       if (!viewerSessionActive(token) || !renderer) return;
@@ -922,9 +944,9 @@ function unionSets(...sets) {
   return output;
 }
 
-function evictUnneededTiles(needed) {
+function evictUnneededTiles(needed, tileBudget = COPPER_TILE_GPU_BUDGET_BYTES) {
   if (state.mode === "layer") return;
-  const budget = COPPER_TILE_GPU_BUDGET_BYTES;
+  const budget = Math.min(COPPER_TILE_GPU_BUDGET_BYTES, tileBudget);
   if (state.residentTileGpuBytes <= budget) return;
   const candidates = [...scene.residentTiles.values()]
     .filter((record) => !needed.has(record.tile.id) && !scene.loading.has(record.tile.id))
@@ -1018,7 +1040,7 @@ function tileDistanceToFocus(tile) {
 async function loadBoard(token = activeViewerToken) {
   const path = semanticGeometry.assets?.base_board_glb;
   if (!path) return null;
-  const loaded = await loadGltf(new URL(path, location.href).toString(), { defaultFeatureId: 0 });
+  const loaded = await loadGltf(new URL(path, location.href).toString(), { defaultFeatureId: 0, fetchBytes: assetFetcher() });
   if (!viewerSessionActive(token) || !renderer) return null;
   state.loadedBytes += loaded.byteLength;
   const contextPrimitives = loaded.primitives.filter((primitive) => boardRole(primitive) !== "pad");
@@ -1082,6 +1104,11 @@ function sceneStats() {
     triangles: renderer?.frameStats.triangles || 0,
     draws: renderer?.frameStats.draws || 0,
     gpuMemoryBytes: renderer?.gpuMemoryBytes() || 0,
+    gpuBudgetBytes: state.gpuBudgetBytes,
+    componentTier: scene.componentTier,
+    componentEvictions: scene.componentEvictions,
+    tileEvictions: state.tileEvictions,
+    cache: assetCache ? assetCache.summary() : { enabled: false },
     frameIntervalMs: state.frameIntervalMs,
     frameIntervalP95Ms: state.frameIntervalP95Ms,
     frameCpuMs: state.frameCpuMs,
@@ -1105,7 +1132,9 @@ function updateSceneStats() {
     ["Detail", `${full} full · ${board} board · ${box} box · ${culled} culled`],
     ["Triangles", stats.triangles.toLocaleString()],
     ["Draws", stats.draws.toLocaleString()],
-    ["GPU memory", `${(stats.gpuMemoryBytes / 1048576).toFixed(1)} MB`],
+    ["GPU memory", `${(stats.gpuMemoryBytes / 1048576).toFixed(1)} / ${(stats.gpuBudgetBytes / 1048576).toFixed(0)} MB`],
+    ["Components", `${stats.componentTier}${stats.componentEvictions ? ` · ${stats.componentEvictions} evicted` : ""}`],
+    ["Cache", stats.cache.enabled ? `${stats.cache.hits} hits · ${stats.cache.misses} misses · ${(stats.cache.bytes / 1048576).toFixed(0)} MB` : "off"],
     ["Frame", `${stats.frameIntervalMs.toFixed(1)} ms · p95 ${stats.frameIntervalP95Ms.toFixed(1)}`],
     ["CPU", `${stats.frameCpuMs.toFixed(2)} ms · p95 ${stats.frameCpuP95Ms.toFixed(2)}`],
     ["FPS", stats.fps.toFixed(0)],
@@ -1119,6 +1148,8 @@ function updateSceneStats() {
 function applyOccurrences(matrices) {
   if (!renderer) return;
   renderer.setOccurrences(matrices);
+  // Back to the one-board view: it always shows its components.
+  if (matrices == null) deferComponents = false;
   if (state.selectedOccurrence >= renderer.occurrenceMatrices.length) state.selectedOccurrence = 0;
   const board = scene.runtimeBounds || runtimeBoundsFromGltf(scene.manifest?.bbox);
   renderer.setBoardBounds(board);
@@ -1127,6 +1158,12 @@ function applyOccurrences(matrices) {
   if (camera && bounds) {
     camera.sceneRadius = boundsRadius(bounds);
     camera.frame(bounds);
+    // The first placement opens framed, without easing out from the one-board view:
+    // the fly-out would bring a copy close enough to fetch its components.
+    if (!state.occurrencesFramed && matrices != null) {
+      camera.snap();
+      state.occurrencesFramed = true;
+    }
   }
   scheduleTileResidency(performance.now(), { force: true });
 }
@@ -1141,11 +1178,20 @@ function boardRole(primitive) {
 
 async function loadComponents(token = activeViewerToken) {
   const path = semanticGeometry.assets?.components_glb;
-  if (!path) return;
-  const loaded = await loadGltf(new URL(path, location.href).toString(), {
-    componentFeatures: scene.componentFeatures,
-  });
+  if (!path || scene.componentTier !== "idle") return;
+  scene.componentTier = "loading";
+  let loaded;
+  try {
+    loaded = await loadGltf(new URL(path, location.href).toString(), {
+      componentFeatures: scene.componentFeatures,
+      fetchBytes: assetFetcher(),
+    });
+  } catch (error) {
+    if (viewerSessionActive(token)) scene.componentTier = "idle";
+    throw error;
+  }
   if (!viewerSessionActive(token) || !renderer) return;
+  scene.componentTier = "loaded";
   state.loadedBytes += loaded.byteLength;
   for (const primitive of loaded.primitives) {
     const component = scene.componentFeatures.get(primitive.designator);
@@ -1156,13 +1202,51 @@ async function loadComponents(token = activeViewerToken) {
   for (const [designator, count] of loaded.componentNodeCounts || []) {
     scene.componentModelCounts.set(designator, count);
   }
-  for (const primitive of mergePrimitivesByMaterial(loaded.primitives)) {
-    renderer.addPrimitive(primitive, {
-      kind: "component",
-      layerId: 0,
-      material: primitive.material,
-      color: primitive.material.baseColor,
-    });
+  // A hidden set that arrived before the models were counted treated
+  // alternate-footprint pairs as ordinary references and hid them; redo it now
+  // that the pairs are known, so load order never changes what is hidden.
+  if (state.hiddenComponentRequest) applyHiddenComponents(state.hiddenComponentRequest);
+  scene.componentEntries = mergePrimitivesByMaterial(loaded.primitives).map((primitive) => renderer.addPrimitive(primitive, {
+    kind: "component",
+    layerId: 0,
+    material: primitive.material,
+    color: primitive.material.baseColor,
+  }));
+}
+
+// Bundle assets through the browser cache when this bundle is final (SB2-26).
+function assetFetcher() {
+  return assetCache ? (url) => assetCache.fetchBytes(url) : undefined;
+}
+
+/**
+ * Tiers and the GPU budget (SB2-26), a few times a second. Components load
+ * when an occurrence first needs full detail ("on approach"); over budget, the
+ * component tier goes once nothing has needed it for a while, then unneeded
+ * copper tiles (least recently used first). A re-approach reloads from the
+ * browser cache. The one-board view always wants its components.
+ */
+function manageTiers(now) {
+  if (!renderer || now - (state.tiersCheckedAt || 0) < 250) return;
+  state.tiersCheckedAt = now;
+  // A deferred (system) load waits for a full-detail occurrence, not the brief
+  // one-board frames before its occurrences are applied.
+  const wanted = (renderer.identityOnly && !deferComponents) || (!renderer.identityOnly && renderer.cullCounts.full > 0);
+  if (wanted) scene.componentsWantedAt = now;
+  if (wanted && scene.componentTier === "idle" && semanticGeometry.assets?.components_glb) {
+    void loadComponents(activeViewerToken).catch((error) => console.warn("Failed to load components", error));
+  }
+  state.gpuBytes = renderer.gpuMemoryBytes();
+  if (state.gpuBytes <= state.gpuBudgetBytes) return;
+  if (scene.componentTier === "loaded" && now - scene.componentsWantedAt > COMPONENT_IDLE_EVICT_MS) {
+    renderer.removeEntries(scene.componentEntries);
+    scene.componentEntries = [];
+    scene.componentTier = "idle";
+    scene.componentEvictions += 1;
+    state.gpuBytes = renderer.gpuMemoryBytes();
+  }
+  if (state.gpuBytes > state.gpuBudgetBytes) {
+    evictUnneededTiles(state.visibleTileIds || new Set(), Math.max(0, state.residentTileGpuBytes - (state.gpuBytes - state.gpuBudgetBytes)));
   }
 }
 
@@ -1340,6 +1424,7 @@ function frame(now, token = activeViewerToken) {
     visibleTileIds: state.mode === "3d" ? state.visibleTileIds : null,
   });
   drawGizmo();
+  manageTiers(now);
   updateLayerLabels();
   recordFrameSample(frameInterval, performance.now() - frameStarted);
   updateDiagnostics(now);
@@ -2242,6 +2327,8 @@ function componentFeatureGroups() {
  * nothing can frame an invisible model.
  */
 function applyHiddenComponents(references) {
+  // Kept so the plan can be redone once component models are known (see loadComponents).
+  state.hiddenComponentRequest = references;
   const plan = planComponentVisibility(references, componentFeatureGroups());
   state.hiddenComponents = plan.hiddenReferences;
   renderer?.setHiddenFeatureIds(plan.hiddenFeatureIds);
