@@ -57,6 +57,40 @@ export interface PrismViewerStats {
     fps: number;
 }
 
+export interface PrismSemanticLayerState {
+    id: number;
+    name: string;
+    color: string;
+    visible: boolean;
+}
+
+/** PCB 3D controls the host renders when it sets `hide-panel`. */
+export interface PrismSemanticViewState {
+    /** "layer" is the stacked flat layer view. */
+    mode: "3d" | "layer";
+    layers: PrismSemanticLayerState[];
+    showBoard: boolean;
+    showComponents: boolean;
+    /** Boxes standing in for footprints without a 3D model. */
+    showPlaceholders: boolean;
+    realisticColors: boolean;
+    /** 0..1 */
+    separation: number;
+    isolateNet: boolean;
+    hasNet: boolean;
+}
+
+/** `prism-semantic-viewer:contextmenu`: a right-click without a drag. */
+export interface PrismSemanticContextMenuDetail {
+    clientX: number;
+    clientY: number;
+    /** Component under the cursor, if any. */
+    reference?: string;
+    value?: string;
+}
+
+export type PrismSemanticLayerPreset = "all" | "none" | "outer" | "inner";
+
 export interface PrismSemanticViewerElement extends HTMLElement {
     setSelection: (selection: PrismRendererSelection | null) => void;
     /**
@@ -92,7 +126,21 @@ export interface PrismSemanticViewerElement extends HTMLElement {
     setLodOverride?: (lod: 0 | 1 | 2 | null) => void;
     /** GPU memory budget in bytes (default 1.5 GB); over it, tiers no occurrence needs are evicted. */
     setGpuBudget?: (bytes: number) => void;
+    /** Every component reference on the board; empty until the viewer is ready. */
+    getComponentReferences?: () => string[];
     resize: () => void;
+    /** Null until the viewer is ready. Changes arrive as `prism-semantic-viewer:viewstatechange`. */
+    getViewState?: () => PrismSemanticViewState | null;
+    setViewMode?: (mode: PrismSemanticViewState["mode"]) => void;
+    setLayerVisible?: (layerId: number, visible: boolean) => void;
+    applyLayerPreset?: (preset: PrismSemanticLayerPreset) => void;
+    setShowBoard?: (visible: boolean) => void;
+    setShowComponents?: (visible: boolean) => void;
+    setShowPlaceholders?: (visible: boolean) => void;
+    setRealisticColors?: (enabled: boolean) => void;
+    setSeparation?: (value: number) => void;
+    showNetLayers?: () => void;
+    setNetIsolation?: (enabled: boolean) => void;
 }
 
 /** What a click in the system scene selected (SB2-27). */
@@ -147,6 +195,7 @@ declare global {
                     "bundle-url"?: string;
                     workspace?: "pcb" | "stackup";
                     active?: string;
+                    "hide-panel"?: string;
                 },
                 PrismSemanticViewerElement
             >;

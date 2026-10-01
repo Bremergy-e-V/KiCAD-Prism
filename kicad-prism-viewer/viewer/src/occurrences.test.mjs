@@ -84,8 +84,8 @@ test("instanced shader variants place every path by a culled occurrence", async 
     assert.match(code, /selectedOccurrence: u32/, name);
   }
   // Components draw only at full detail; board, copper and barrels at full or board.
-  assert.match(INSTANCED_SHADERS.main, /select\(LIST_BOARD, LIST_FULL, draw\.material\.z > 0\.5\)/);
-  assert.match(INSTANCED_SHADERS.pick, /select\(LIST_BOARD, LIST_FULL, draw\.material\.z > 0\.5\)/);
+  assert.match(INSTANCED_SHADERS.main, /select\(LIST_BOARD, LIST_FULL, draw\.material\.w > 0\.5\)/);
+  assert.match(INSTANCED_SHADERS.pick, /select\(LIST_BOARD, LIST_FULL, draw\.material\.w > 0\.5\)/);
   for (const name of ["barrel", "barrelPick"]) {
     assert.match(INSTANCED_SHADERS[name], /barrels\[instance % count\]/);
     assert.match(INSTANCED_SHADERS[name], /listedOccurrence\(LIST_BOARD, instance \/ count\)/);

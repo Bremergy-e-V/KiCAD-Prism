@@ -3,9 +3,13 @@ import { BomViewer } from "./bom-viewer.js";
 import {
   boardRole,
   copperLayerColor,
+  FINISH_COLORS,
+  finishColorFor,
+  isOuterCopperLayer,
   innerCopperLayer,
   mergeBounds,
   mergePrimitivesByMaterial,
+  pasteLayerIdFor,
   runtimeBounds,
   runtimeBoundsFromGltf,
 } from "./bundle-geometry.js";
@@ -96,7 +100,6 @@ function initialState() {
   return {
     workspace: "pcb",
     mode: "3d",
-    cameraTool: "orbit",
     compareLayers: new Set(),
     desiredCompareLayers: new Set(),
     visible3dLayers: new Set(),
@@ -109,6 +112,8 @@ function initialState() {
     selectionAnchor: null,
     showBoard: true,
     showComponents: true,
+    showPlaceholders: true,
+    realisticColors: true,
     isolateNet: false,
     hiddenComponents: new Set(),
     /** User/view prefs restored after Esc; not overwritten by net-probe toggles. */
@@ -240,6 +245,9 @@ let lastFrame = performance.now();
 let activeViewerToken = 0;
 let animationFrameId = 0;
 let selectionChangeCallback = null;
+let viewStateChangeCallback = null;
+let contextMenuCallback = null;
+let viewStateChangeQueued = false;
 let suppressSelectionChange = false;
 let viewerIsActive = () => true;
 let legacyWorkspacesEnabled = true;
@@ -363,6 +371,10 @@ export async function mountStandaloneViewer(options = {}) {
   selectionChangeCallback = typeof options.onSelectionChange === "function"
     ? options.onSelectionChange
     : null;
+  contextMenuCallback = typeof options.onContextMenu === "function" ? options.onContextMenu : null;
+  viewStateChangeCallback = typeof options.onViewStateChange === "function"
+    ? options.onViewStateChange
+    : null;
   viewerIsActive = typeof options.isActive === "function" ? options.isActive : () => true;
   legacyWorkspacesEnabled = options.workspaceScope !== "3d";
   assetCache = options.assetCache || null;
@@ -404,6 +416,9 @@ export async function mountStandaloneViewer(options = {}) {
     setHiddenComponents(references) {
       return applyHiddenComponents(references);
     },
+    getComponentReferences() {
+      return [...scene.componentFeatures.keys()];
+    },
     setHighlightedNets(refs) {
       return applyHighlightedNets(refs);
     },
@@ -437,9 +452,53 @@ export async function mountStandaloneViewer(options = {}) {
     projectPoint(point, occurrenceKey) {
       return projectOccurrencePoint(point, occurrenceKey);
     },
+    getViewState: pcbViewState,
+    setViewMode,
+    setLayerVisible,
+    applyLayerPreset,
+    setShowBoard,
+    setShowComponents,
+    setShowPlaceholders,
+    setRealisticColors,
+    setSeparation,
+    showNetLayers,
+    setNetIsolation,
     dispose() {
       disposeViewerSession(token);
     },
+  };
+}
+
+/**
+ * The PCB 3D controls a host renders in place of the built-in panel. Coalesced
+ * to one callback per task: a single click can touch several of these fields.
+ */
+function notifyViewStateChange() {
+  if (!viewStateChangeCallback || viewStateChangeQueued) return;
+  viewStateChangeQueued = true;
+  queueMicrotask(() => {
+    viewStateChangeQueued = false;
+    viewStateChangeCallback?.(pcbViewState());
+  });
+}
+
+function pcbViewState() {
+  const selected = state.mode === "3d" ? state.visible3dLayers : state.desiredCompareLayers;
+  return {
+    mode: state.mode,
+    layers: scene.copperLayers.map((layer) => ({
+      id: Number(layer.id),
+      name: String(layer.name),
+      color: rgbCss(layerColor(layer)),
+      visible: selected.has(Number(layer.id)),
+    })),
+    showBoard: state.showBoard,
+    showComponents: state.showComponents,
+    showPlaceholders: state.showPlaceholders,
+    realisticColors: state.realisticColors,
+    separation: state.separation,
+    isolateNet: state.isolateNet,
+    hasNet: Boolean(state.activeNetId) || emphasizedNetIds().size > 0,
   };
 }
 
@@ -625,6 +684,7 @@ async function boot(token, performanceTimings = {}, onPerformanceEvent = null) {
     return;
   }
   renderer.setBarrels(scene.manifest.barrels || []);
+  applyCopperColors();
   started = performance.now();
   const boardBounds = await loadBoard(token);
   performanceTimings.board_fetch_parse_upload_ms = performance.now() - started;
@@ -657,6 +717,7 @@ async function boot(token, performanceTimings = {}, onPerformanceEvent = null) {
     const componentsStarted = performance.now();
     void loadComponents(token).then(() => {
       if (!viewerSessionActive(token)) return;
+      addFootprintPlaceholders(boardBounds);
       onPerformanceEvent?.({
         schema: "prism.semantic_viewer_performance.a0",
         milestone: "components-loaded",
@@ -665,6 +726,8 @@ async function boot(token, performanceTimings = {}, onPerformanceEvent = null) {
         bytes_loaded: state.loadedBytes,
       });
     });
+  } else {
+    addFootprintPlaceholders(boardBounds);
   }
   scheduleTileResidency(performance.now(), { force: true });
   scheduleFrame(token);
@@ -799,7 +862,8 @@ async function loadTile(tile, token = activeViewerToken) {
           tileId: tile.id,
           layerId: Number(tile.layerId),
           innerCopper: isInnerCopperLayer(Number(tile.layerId)),
-          color: layerColor(layer),
+          color: copperColor(layer),
+          stencilMark: isOuterCopper(layer),
           baseZ: Number(layer?.z_mm || 0) / 1000,
           material: { baseColor: [1, 1, 1, 1], metallic: 0.78, roughness: 0.32 },
         });
@@ -1049,15 +1113,33 @@ function tileDistanceToFocus(tile) {
 async function loadBoard(token = activeViewerToken) {
   const path = semanticGeometry.assets?.base_board_glb;
   if (!path) return null;
-  const loaded = await loadGltf(new URL(path, location.href).toString(), { defaultFeatureId: 0, fetchBytes: assetFetcher() });
+  // The pipeline's own mask (with pad openings) replaces any the board export
+  // carries. Fetched alongside the board; a failed mask leaves the board bare.
+  const maskPath = semanticGeometry.assets?.soldermask_glb;
+  const [loaded, mask] = await Promise.all([
+    loadGltf(new URL(path, location.href).toString(), { defaultFeatureId: 0, fetchBytes: assetFetcher() }),
+    maskPath
+      ? loadGltf(new URL(maskPath, location.href).toString(), { defaultFeatureId: 0, fetchBytes: assetFetcher() }).catch((error) => {
+        console.warn("[prism-semantic-viewer] solder mask failed to load", error);
+        return null;
+      })
+      : null,
+  ]);
   if (!viewerSessionActive(token) || !renderer) return null;
   state.loadedBytes += loaded.byteLength;
-  const contextPrimitives = loaded.primitives.filter((primitive) => boardRole(primitive) !== "pad");
+  if (mask) state.loadedBytes += mask.byteLength;
+  const contextPrimitives = [
+    ...loaded.primitives.filter((primitive) => {
+      const role = boardRole(primitive);
+      return role !== "pad" && !(mask && role === "soldermask");
+    }),
+    ...(mask?.primitives || []),
+  ];
   for (const primitive of mergePrimitivesByMaterial(contextPrimitives, boardRole)) {
     renderer.addPrimitive(primitive, {
       kind: "board",
       boardRole: primitive.groupKey,
-      layerId: 0,
+      layerId: primitive.groupKey === "paste" ? pasteLayerId(primitive) : 0,
       material: primitive.material,
       color: primitive.material.baseColor,
     });
@@ -1163,6 +1245,10 @@ function applyOccurrences(matrices) {
 }
 
 
+function pasteLayerId(primitive) {
+  return pasteLayerIdFor(primitive, scene.copperLayers);
+}
+
 async function loadComponents(token = activeViewerToken) {
   const path = semanticGeometry.assets?.components_glb;
   if (!path || scene.componentTier !== "idle") return;
@@ -1237,6 +1323,90 @@ function manageTiers(now) {
   }
 }
 
+const PLACEHOLDER_HEIGHT_M = 0.0004;
+// Clear of the mask and silkscreen, so the box's base never shares their plane.
+const PLACEHOLDER_GAP_M = 0.00005;
+const PLACEHOLDER_MATERIAL = { baseColor: [0.62, 0.7, 0.8, 1], metallic: 0, roughness: 0.8, emissive: [0, 0, 0] };
+
+/**
+ * Footprints without a 3D model get a faint box over their pad extent, on their
+ * board side, tagged with the component's feature id. Picking, cross-probe
+ * highlight, framing and hiding then work as for a real model.
+ */
+function addFootprintPlaceholders(boardBounds) {
+  if (!renderer) return;
+  const bodies = new Map();
+  for (const item of topology.physical_objects || []) {
+    if (item.kind === "footprint_body" && item.designator && item.bbox_mm?.length === 4) {
+      bodies.set(item.designator, item);
+    }
+  }
+  const top = (boardBounds?.[5] ?? 0.0008) + PLACEHOLDER_GAP_M;
+  const bottom = (boardBounds?.[2] ?? -0.0008) - PLACEHOLDER_GAP_M;
+  const primitives = [];
+  for (const component of scene.componentFeatures.values()) {
+    const featureId = Number(component.featureId);
+    const feature = scene.features.get(featureId);
+    const body = bodies.get(component.designator);
+    if (!feature || feature.bounds || !body) continue;
+    const [x0, y0, x1, y1] = body.bbox_mm.map(Number);
+    const back = String(body.layer || "").startsWith("B.");
+    const bounds = [
+      x0 / 1000,
+      -y1 / 1000,
+      back ? bottom - PLACEHOLDER_HEIGHT_M : top,
+      x1 / 1000,
+      -y0 / 1000,
+      back ? bottom : top + PLACEHOLDER_HEIGHT_M,
+    ];
+    feature.bounds = bounds;
+    feature.placeholder = true;
+    primitives.push(boxPrimitive(bounds, featureId));
+  }
+  if (!primitives.length) return;
+  for (const primitive of mergePrimitivesByMaterial(primitives)) {
+    renderer.addPrimitive(primitive, {
+      kind: "component",
+      layerId: 0,
+      material: primitive.material,
+      color: primitive.material.baseColor,
+      opacityScale: 0.3,
+      translucent: true,
+      placeholder: true,
+    });
+  }
+}
+
+function boxPrimitive([x0, y0, z0, x1, y1, z1], featureId) {
+  const faces = [
+    [[0, 0, 1], [[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]]],
+    [[0, 0, -1], [[x0, y1, z0], [x1, y1, z0], [x1, y0, z0], [x0, y0, z0]]],
+    [[1, 0, 0], [[x1, y0, z0], [x1, y1, z0], [x1, y1, z1], [x1, y0, z1]]],
+    [[-1, 0, 0], [[x0, y1, z0], [x0, y0, z0], [x0, y0, z1], [x0, y1, z1]]],
+    [[0, 1, 0], [[x1, y1, z0], [x0, y1, z0], [x0, y1, z1], [x1, y1, z1]]],
+    [[0, -1, 0], [[x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1]]],
+  ];
+  const position = new Float32Array(24 * 3);
+  const normal = new Float32Array(24 * 3);
+  const indices = new Uint32Array(36);
+  faces.forEach(([faceNormal, corners], face) => {
+    corners.forEach((corner, index) => {
+      position.set(corner, (face * 4 + index) * 3);
+      normal.set(faceNormal, (face * 4 + index) * 3);
+    });
+    const first = face * 4;
+    indices.set([first, first + 1, first + 2, first, first + 2, first + 3], face * 6);
+  });
+  return {
+    position,
+    normal,
+    netId: new Uint32Array(24),
+    objectFeatureId: new Uint32Array(24).fill(featureId),
+    indices,
+    material: PLACEHOLDER_MATERIAL,
+    bounds: [x0, y0, z0, x1, y1, z1],
+  };
+}
 
 
 
@@ -1268,6 +1438,35 @@ function layerColor(layer) {
   return copperLayerColor(layer, scene.copperLayers);
 }
 
+const DEFAULT_BARREL_COLOR = [0.55, 0.35, 0.16, 0.78];
+function finishColor() {
+  return finishColorFor(topology?.board?.stackup?.copper_finish);
+}
+
+function isOuterCopper(layer) {
+  return isOuterCopperLayer(layer, scene.copperLayers);
+}
+
+// Separation at which copper has fully turned to layer colours.
+const LAYER_COLOR_SEPARATION = 0.25;
+
+/**
+ * 1 for KiCad-like copper, 0 for layer colours. Opening the stackup blends to
+ * layer colours, so separated layers stay tell-apart; 2D always uses them.
+ */
+function copperRealism() {
+  if (!state.realisticColors || state.mode === "layer") return 0;
+  return 1 - clamp(state.separation / LAYER_COLOR_SEPARATION, 0, 1);
+}
+
+function copperColor(layer) {
+  const realistic = isOuterCopper(layer) ? finishColor() : FINISH_COLORS.copper;
+  return mixColor(layerColor(layer), realistic, copperRealism());
+}
+
+function mixColor(from, to, amount) {
+  return from.map((value, index) => value + (to[index] - value) * amount);
+}
 
 function frame(now, token = activeViewerToken) {
   if (token !== activeViewerToken || !renderer || !camera) return;
@@ -1291,6 +1490,7 @@ function frame(now, token = activeViewerToken) {
   camera.update(dt);
   renderer.resize();
   const layerZOffsets = stackupOffsets();
+  if (scene.copperRealism !== copperRealism()) applyCopperColors();
   for (const entry of renderer.entries) entry.layerOffset = layerZOffsets[entry.layerId] || 0;
   updateCompareTransition(now);
   compareOffsets = updateCompareLayout(now);
@@ -1307,7 +1507,7 @@ function frame(now, token = activeViewerToken) {
   renderer.setInnerCopperAtFull(state.showBoard && state.separation <= 0.001 && !emphasizedNetIds().size);
   scheduleTileResidency(now);
   const visibleLayers = state.mode === "3d" ? state.visible3dLayers : compareRenderLayers();
-  renderer.render({
+  const inputs = {
     panels: [panel],
     activeNetId: state.activeNetId,
     selectedFeatureId: state.selectedFeatureId,
@@ -1316,6 +1516,8 @@ function frame(now, token = activeViewerToken) {
     visibleLayers,
     showBoard: state.showBoard,
     showComponents: state.showComponents,
+    // Paste is a fabrication layer: shown on the assembled board only.
+    showPaste: state.separation === 0,
     componentOpacity: clamp(1 - state.separation / 0.1, 0, 1),
     boardOpacity: emphasizedNetIds().size ? 0.34 : 1 - state.separation * 0.72,
     isolateNet: state.isolateNet,
@@ -1323,13 +1525,78 @@ function frame(now, token = activeViewerToken) {
     compareOffsets,
     layerAlphas: compareAlphas,
     visibleTileIds: state.mode === "3d" ? state.visibleTileIds : null,
-  });
-  drawGizmo();
+  };
+  if (frameNeedsRender(now, inputs)) {
+    renderer.render(inputs);
+    drawGizmo();
+    updateLayerLabels();
+  }
+  // Tiers and the GPU budget (SB2-26) are checked whether or not this frame drew.
   manageTiers(now);
-  updateLayerLabels();
   recordFrameSample(frameInterval, performance.now() - frameStarted);
   updateDiagnostics(now);
   scheduleFrame(token);
+}
+
+// The picture only changes with its inputs, so an idle view skips the GPU work.
+// Highlights pulse, so they keep drawing; a slow refresh covers anything missed.
+const IDLE_REFRESH_MS = 1000;
+const lastRender = { key: "", matrix: new Float32Array(16), tiles: null, at: 0 };
+
+function frameNeedsRender(now, inputs) {
+  const matrix = inputs.panels[0].matrix;
+  let moved = false;
+  for (let index = 0; index < 16; index += 1) {
+    if (matrix[index] !== lastRender.matrix[index]) {
+      moved = true;
+      break;
+    }
+  }
+  if (moved) {
+    // While the camera moves nothing else needs comparing.
+    lastRender.matrix.set(matrix);
+    lastRender.key = "";
+    lastRender.at = now;
+    return true;
+  }
+  const key = [
+    canvas.width,
+    canvas.height,
+    renderer.version,
+    renderer.selectedOccurrence,
+    state.workspace,
+    state.mode,
+    inputs.activeNetId,
+    inputs.selectedFeatureId,
+    inputs.showBoard,
+    inputs.showComponents,
+    inputs.showPaste,
+    inputs.componentOpacity,
+    inputs.boardOpacity,
+    inputs.isolateNet,
+    scene.layerZOffsetSignature,
+    [...inputs.visibleLayers].join(","),
+    [...inputs.compareOffsets].map(([id, offset]) => `${id}:${offset}`).join(";"),
+    inputs.layerAlphas ? [...inputs.layerAlphas].join(";") : "",
+  ].join("|");
+  const animating = Boolean(inputs.activeNetId || inputs.selectedFeatureId || renderer.emphasizedNetIds.size);
+  const stale = animating
+    || key !== lastRender.key
+    || !sameSet(inputs.visibleTileIds, lastRender.tiles)
+    || now - lastRender.at > IDLE_REFRESH_MS;
+  if (!stale) return false;
+  lastRender.key = key;
+  // The tile set is replaced, never mutated, so keeping the reference is enough.
+  lastRender.tiles = inputs.visibleTileIds;
+  lastRender.at = now;
+  return true;
+}
+
+function sameSet(a, b) {
+  if (!a || !b) return a === b;
+  if (a.size !== b.size) return false;
+  for (const value of a) if (!b.has(value)) return false;
+  return true;
 }
 
 function schematicPageScreenMetrics(page) {
@@ -1583,9 +1850,6 @@ function renderControls() {
       <button id="clear-selection">Clear</button>
     </div>`;
   viewControlsEl.innerHTML = `
-    <div class="camera-toolbar mode-toolbar">
-      <button data-tool="orbit">Orbit</button><button data-tool="pan">Pan</button>
-    </div>
     <div class="toggle-list">
       <label class="toggle-row"><input id="show-board" type="checkbox"><span>Board substrate</span></label>
       <label class="toggle-row"><input id="show-components" type="checkbox"><span>Components</span></label>
@@ -1896,6 +2160,7 @@ function syncNetIsolationControls() {
   if (boardToggle) boardToggle.checked = state.showBoard;
   const componentsToggle = viewControlsEl?.querySelector?.("#show-components");
   if (componentsToggle) componentsToggle.checked = state.showComponents;
+  notifyViewStateChange();
 }
 
 function layersForActiveNet() {
@@ -1998,9 +2263,6 @@ function refreshControls() {
     button.classList.toggle("active", active);
     button.setAttribute("aria-pressed", String(active));
   });
-  viewControlsEl.querySelectorAll("[data-tool]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.tool === state.cameraTool);
-  });
   viewControlsEl.querySelector("#show-board").checked = state.showBoard;
   viewControlsEl.querySelector("#show-components").checked = state.showComponents;
   viewControlsEl.querySelector("#separation").value = state.separation;
@@ -2013,61 +2275,106 @@ function refreshControls() {
       <span>${escapeHtml(layer.name)}</span><small>${index + 1}</small>
     </label>`).join("");
   list.querySelectorAll("[data-layer]").forEach((input) => input.addEventListener("change", () => {
-    const layerId = Number(input.dataset.layer);
-    if (state.mode === "3d") {
-      input.checked ? state.visible3dLayers.add(layerId) : state.visible3dLayers.delete(layerId);
-      scheduleTileResidency(performance.now(), { force: true });
-    } else {
-      const target = new Set(state.desiredCompareLayers);
-      input.checked ? target.add(layerId) : target.delete(layerId);
-      beginCompareLayerTransition(target);
-    }
+    setLayerVisible(Number(input.dataset.layer), input.checked);
   }));
   syncNetIsolationControls();
 }
 
+function setViewMode(mode) {
+  if (mode === "layer") {
+    activatePcbLayerMode();
+  } else {
+    state.mode = "3d";
+    camera.frame(sceneRuntimeBounds());
+    camera.snap();
+    state.visibleTileIds = new Set();
+    scheduleTileResidency(performance.now(), { force: true });
+  }
+  refreshControls();
+}
+
+function setLayerVisible(layerId, visible) {
+  if (state.mode === "3d") {
+    visible ? state.visible3dLayers.add(layerId) : state.visible3dLayers.delete(layerId);
+    scheduleTileResidency(performance.now(), { force: true });
+  } else {
+    const target = new Set(state.desiredCompareLayers);
+    visible ? target.add(layerId) : target.delete(layerId);
+    beginCompareLayerTransition(target);
+  }
+  refreshControls();
+}
+
+function applyLayerPreset(preset) {
+  const target = state.mode === "3d" ? state.visible3dLayers : new Set();
+  target.clear();
+  for (const [index, layer] of scene.copperLayers.entries()) {
+    const include = preset === "all"
+      || (preset === "outer" && (index === 0 || index === scene.copperLayers.length - 1))
+      || (preset === "inner" && index > 0 && index < scene.copperLayers.length - 1);
+    if (include) target.add(Number(layer.id));
+  }
+  if (state.mode === "3d") scheduleTileResidency(performance.now(), { force: true });
+  else beginCompareLayerTransition(target);
+  refreshControls();
+}
+
+function setShowBoard(visible) {
+  state.showBoard = Boolean(visible);
+  state.savedShowBoard = state.showBoard;
+  if (state.showBoard && state.isolateNet) setNetIsolation(false);
+  else syncNetIsolationControls();
+}
+
+function setShowComponents(visible) {
+  state.showComponents = Boolean(visible);
+  state.savedShowComponents = state.showComponents;
+  syncNetIsolationControls();
+}
+
+function setShowPlaceholders(visible) {
+  state.showPlaceholders = Boolean(visible);
+  renderer?.setPlaceholdersVisible(state.showPlaceholders);
+  notifyViewStateChange();
+}
+
+/** KiCad-like copper (surface finish outside, bare copper inside) or per-layer colours. */
+function setRealisticColors(enabled) {
+  state.realisticColors = Boolean(enabled);
+  applyCopperColors();
+  notifyViewStateChange();
+}
+
+function applyCopperColors() {
+  if (!renderer) return;
+  const layers = new Map(scene.layers.map((layer) => [Number(layer.id), layer]));
+  for (const entry of renderer.entries) {
+    if (entry.kind === "copper") entry.color = copperColor(layers.get(Number(entry.layerId)));
+  }
+  renderer.setBarrelColor(mixColor(DEFAULT_BARREL_COLOR, [...finishColor().slice(0, 3), 0.78], copperRealism()));
+  scene.copperRealism = copperRealism();
+}
+
+function setSeparation(value) {
+  state.separation = clamp(Number(value) || 0, 0, 1);
+  notifyViewStateChange();
+}
+
 function bindControlEvents() {
   (modeSwitchEl || layersEl).querySelectorAll("[data-mode]").forEach((button) => button.addEventListener("click", () => {
-    if (button.dataset.mode === "layer") {
-      activatePcbLayerMode();
-    } else {
-      state.mode = "3d";
-      camera.frame(sceneRuntimeBounds());
-      camera.snap();
-      state.visibleTileIds = new Set();
-      scheduleTileResidency(performance.now(), { force: true });
-    }
-    refreshControls();
+    setViewMode(button.dataset.mode);
   }));
   layersEl.querySelectorAll("[data-preset]").forEach((button) => button.addEventListener("click", () => {
-    const target = state.mode === "3d" ? state.visible3dLayers : new Set();
-    target.clear();
-    const preset = button.dataset.preset;
-    for (const [index, layer] of scene.copperLayers.entries()) {
-      const include = preset === "all"
-        || (preset === "outer" && (index === 0 || index === scene.copperLayers.length - 1))
-        || (preset === "inner" && index > 0 && index < scene.copperLayers.length - 1);
-      if (include) target.add(Number(layer.id));
-    }
-    if (state.mode === "3d") scheduleTileResidency(performance.now(), { force: true });
-    else beginCompareLayerTransition(target);
-    refreshControls();
-  }));
-  viewControlsEl.querySelectorAll("[data-tool]").forEach((button) => button.addEventListener("click", () => {
-    state.cameraTool = button.dataset.tool;
-    refreshControls();
+    applyLayerPreset(button.dataset.preset);
   }));
   viewControlsEl.querySelector("#show-board").addEventListener("change", (event) => {
-    state.showBoard = event.target.checked;
-    state.savedShowBoard = state.showBoard;
-    if (state.showBoard && state.isolateNet) setNetIsolation(false);
+    setShowBoard(event.target.checked);
   });
   viewControlsEl.querySelector("#show-components").addEventListener("change", (event) => {
-    state.showComponents = event.target.checked;
-    state.savedShowComponents = state.showComponents;
+    setShowComponents(event.target.checked);
   });
   viewControlsEl.querySelector("#separation").addEventListener("input", (event) => {
-    state.separation = Number(event.target.value);
+    setSeparation(event.target.value);
   });
   searchControlsEl.querySelector("#clear-selection").addEventListener("click", clearSelection);
   searchControlsEl.querySelector("#isolate-net").addEventListener("click", () => {
@@ -2262,7 +2569,7 @@ function framePcbFeature(feature, forceComponent = false) {
     // Compare against the destination orientation as well as the current
     // interpolated camera. Repeated cross-probes during an in-progress flip
     // must not cancel or reverse the requested board side.
-    const isCameraBottom = camera.targetPolar > Math.PI / 2;
+    const isCameraBottom = camera.isBelow();
     if (isBottomComponent !== isCameraBottom) {
       camera.setAxis("z", isBottomComponent);
     }
@@ -2533,6 +2840,7 @@ function schematicFeatureSelectionContent(feature, page) {
 }
 
 function updateSelectionCard() {
+  notifyViewStateChange();
   if (state.workspace === "bom") {
     selectionCardEl.hidden = true;
     selectionCardEl.innerHTML = "";
@@ -2681,7 +2989,6 @@ function bindInteractions() {
     state.pointerStartY = event.clientY;
     state.dragMode =
       state.mode === "layer"
-      || state.cameraTool === "pan"
       || event.shiftKey
       || event.button !== 0
         ? "pan"
@@ -2700,9 +3007,9 @@ function bindInteractions() {
   canvas.addEventListener("pointerup", async (event) => {
     state.dragging = false;
     canvas.releasePointerCapture(event.pointerId);
-    if (Math.hypot(event.clientX - state.pointerStartX, event.clientY - state.pointerStartY) < 3) {
-      await pickAt(event);
-    }
+    if (Math.hypot(event.clientX - state.pointerStartX, event.clientY - state.pointerStartY) >= 3) return;
+    if (event.button === 0) await pickAt(event);
+    else if (event.button === 2) await contextPickAt(event);
   });
   canvas.addEventListener("dblclick", async (event) => {
     await pickAt(event);
@@ -2916,18 +3223,38 @@ function bindSchematicInteractions() {
 async function pickAt(event) {
   if (!panel) return;
   const rect = canvas.getBoundingClientRect();
-  const x = (event.clientX - rect.left) * canvas.width / rect.width;
-  const y = (event.clientY - rect.top) * canvas.height / rect.height;
   state.selectionAnchor = {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
   };
-  const hit = await pickHit(x, y);
+  const hit = await pickHitAtEvent(event);
   if (hit.kind === "feature" || hit.kind === "board") state.selectedOccurrence = hit.occurrenceIndex;
   if (hit.featureId) selectFeature(hit.featureId, true);
   // Board context exists only in system scenes; the one-board view clears as it always has.
   else if (hit.kind === "board" && !renderer.identityOnly) selectBoardContext();
   else clearSelection();
+}
+
+/**
+ * Right-click without a drag: report what is under the cursor to the host,
+ * which owns the menu. The selection is left alone.
+ */
+async function contextPickAt(event) {
+  if (!panel || !contextMenuCallback) return;
+  const feature = scene.features.get((await pickHitAtEvent(event)).featureId);
+  const reference = componentReferenceFromFeature(feature);
+  const component = reference ? findTopologyComponent(reference) : null;
+  contextMenuCallback({
+    clientX: event.clientX,
+    clientY: event.clientY,
+    reference: reference || undefined,
+    value: String(component?.value || feature?.value || "") || undefined,
+  });
+}
+
+function pickHitAtEvent(event) {
+  const rect = canvas.getBoundingClientRect();
+  return pickHit((event.clientX - rect.left) * canvas.width / rect.width, (event.clientY - rect.top) * canvas.height / rect.height);
 }
 
 // Pick at canvas pixel (x, y): { kind, occurrenceIndex, occurrenceKey, featureId }.

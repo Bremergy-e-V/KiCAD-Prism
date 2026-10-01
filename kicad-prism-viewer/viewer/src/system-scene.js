@@ -15,10 +15,13 @@
 import { AssetCache } from "./asset-cache.js";
 import {
   boardRole,
-  copperLayerColor,
+  FINISH_COLORS,
+  finishColorFor,
   innerCopperLayer,
+  isOuterCopperLayer,
   mergeBounds,
   mergePrimitivesByMaterial,
+  pasteLayerIdFor,
   runtimeBoundsFromGltf,
 } from "./bundle-geometry.js";
 import { absolutizeAssetPaths, bundleIsFinal } from "./bundle-urls.js";
@@ -208,15 +211,35 @@ export class SystemScene {
       const renderer = this.scene.asset(id);
       renderer.setBarrels(manifest.barrels || []);
       let boardBounds = null;
+      // As on the board's own 3D tab: KiCad-like copper (the finish isn't in the
+      // scene's files, so outer copper takes the default ENIG gold).
+      renderer.setBarrelColor([...FINISH_COLORS.copper.slice(0, 3), 0.78]);
       if (geometry.assets?.base_board_glb) {
-        const loaded = await loadGltf(geometry.assets.base_board_glb, { defaultFeatureId: 0, fetchBytes: record.fetchBytes });
+        // The pipeline's own mask (with pad openings and paste) replaces any the
+        // board export carries; a mask that fails to load leaves the board bare.
+        const maskPath = geometry.assets.soldermask_glb;
+        const [loaded, mask] = await Promise.all([
+          loadGltf(geometry.assets.base_board_glb, { defaultFeatureId: 0, fetchBytes: record.fetchBytes }),
+          maskPath
+            ? loadGltf(maskPath, { defaultFeatureId: 0, fetchBytes: record.fetchBytes }).catch((error) => {
+              console.warn(`System scene: solder mask of ${id} failed to load`, error);
+              return null;
+            })
+            : null,
+        ]);
         if (!current()) return;
-        const context = loaded.primitives.filter((primitive) => boardRole(primitive) !== "pad");
+        const context = [
+          ...loaded.primitives.filter((primitive) => {
+            const role = boardRole(primitive);
+            return role !== "pad" && !(mask && role === "soldermask");
+          }),
+          ...(mask?.primitives || []),
+        ];
         for (const primitive of mergePrimitivesByMaterial(context, boardRole)) {
           renderer.addPrimitive(primitive, {
             kind: "board",
             boardRole: primitive.groupKey,
-            layerId: 0,
+            layerId: primitive.groupKey === "paste" ? pasteLayerIdFor(primitive, record.copperLayers) : 0,
             material: primitive.material,
             color: primitive.material.baseColor,
           });
@@ -259,7 +282,9 @@ export class SystemScene {
               tileId: tile.id,
               layerId,
               innerCopper: innerCopperLayer(layerId, record.copperLayers),
-              color: copperLayerColor(layer, record.copperLayers),
+              color: isOuterCopperLayer(layer, record.copperLayers) ? finishColorFor(null) : FINISH_COLORS.copper,
+              // Outer copper marks the stencil, so the mask over it draws lighter.
+              stencilMark: isOuterCopperLayer(layer, record.copperLayers),
               baseZ: Number(layer?.z_mm || 0) / 1000,
               material: { baseColor: [1, 1, 1, 1], metallic: 0.78, roughness: 0.32 },
             });
