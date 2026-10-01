@@ -123,6 +123,7 @@ export class PrismSemanticViewerElement extends HTMLElement {
     this.reloadOwner = createReloadOwner();
     this.pendingSelection = null;
     this.pendingHiddenComponents = null;
+    this.pendingOccurrences = null;
     this.reloadQueued = false;
     this.reloadSource = null;
   }
@@ -233,6 +234,7 @@ export class PrismSemanticViewerElement extends HTMLElement {
     if (this.pendingHiddenComponents) {
       this.controller?.setHiddenComponents?.(this.pendingHiddenComponents);
     }
+    if (this.pendingOccurrences) this.controller?.setOccurrences?.(this.pendingOccurrences);
     // A fresh viewer is already unselected. Avoid a redundant clearSelection()
     // while the staged shell is completing its first-frame setup.
     if (this.pendingSelection) this.controller?.setSelection?.(this.pendingSelection);
@@ -280,6 +282,18 @@ export class PrismSemanticViewerElement extends HTMLElement {
       ? [...references]
       : [];
     this.controller?.setHiddenComponents?.(this.pendingHiddenComponents);
+  }
+
+  /**
+   * Draw the loaded board once per occurrence (System Builder SB2-23): an
+   * array of column-major 4×4 model matrices in the bundle's runtime units
+   * (metres). The geometry is uploaded once and shared. `null` restores the
+   * single identity occurrence of the one-board view. Safe before ready and
+   * after reloads: the last call is replayed on the next controller.
+   */
+  setOccurrences(matrices) {
+    this.pendingOccurrences = matrices == null ? null : Array.from(matrices, (matrix) => [...(matrix?.matrix ?? matrix)]);
+    this.controller?.setOccurrences?.(this.pendingOccurrences);
   }
 
   resize() {

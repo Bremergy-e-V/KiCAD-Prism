@@ -12,6 +12,16 @@ import {
   normalizeNetIds,
   packNetEmphasis,
 } from "./net-emphasis.js";
+import {
+  BARREL_RECORD_STRIDE,
+  IDENTITY,
+  OCCURRENCE_STRIDE,
+  OCCURRENCE_WGSL,
+  isIdentity,
+  normalizeMatrix,
+  packBarrels,
+  packOccurrences,
+} from "./occurrences.js";
 
 const VERTEX_STRIDE = 40;
 // WebGPU dynamic uniform offsets require 256-byte alignment; each draw buffer is padded to that size.
@@ -279,6 +289,111 @@ struct Output {
 }
 `;
 
+// Occurrence-instanced variants (System Builder SB2-23). Every draw runs once
+// per occurrence and places the board-local position (after the explode and
+// compare offsets) by that occurrence's model matrix; barrels are instanced
+// twice over, instance = occurrence × barrel count + barrel, reading their
+// records from storage. The one-board viewer keeps the shaders above, unchanged:
+// any per-instance matrix in the position path, even an identity, compiles to a
+// different float evaluation order, and copper, mask and silkscreen 18 µm apart
+// then trade places in the depth test. Separate pipelines keep that view
+// pixel-identical; these compile only when a scene places real occurrences.
+function variant(source, replacements) {
+  return replacements.reduce((code, [before, after]) => {
+    if (code.split(before).length !== 2) throw new Error(`Shader variant anchor not found once: ${before.slice(0, 60)}`);
+    return code.replace(before, () => after);
+  }, source);
+}
+
+const MAIN_SHADER_INSTANCED = variant(MAIN_SHADER, [[
+  `@vertex fn vs(input: VertexInput) -> VertexOutput {
+  var output: VertexOutput;
+  output.world = input.position + draw.offset.xyz;
+  output.position = globals.viewProjection * vec4f(output.world, 1.0);
+  output.normal = normalize(input.normal);`,
+  `${OCCURRENCE_WGSL}
+@vertex fn vs(input: VertexInput, @builtin(instance_index) instance: u32) -> VertexOutput {
+  let occurrence = occurrences[instance];
+  var output: VertexOutput;
+  output.world = (occurrence.model * vec4f(input.position + draw.offset.xyz, 1.0)).xyz;
+  output.position = globals.viewProjection * vec4f(output.world, 1.0);
+  output.normal = normalize((occurrence.normal * vec4f(input.normal, 0.0)).xyz);`,
+]]);
+
+const PICK_SHADER_INSTANCED = variant(PICK_SHADER, [[
+  `@vertex fn vs(input: Input) -> Output {
+  var output: Output;
+  output.position = globals.viewProjection * vec4f(input.position + draw.offset.xyz, 1.0);`,
+  `${OCCURRENCE_WGSL}
+@vertex fn vs(input: Input, @builtin(instance_index) instance: u32) -> Output {
+  let world = (occurrences[instance].model * vec4f(input.position + draw.offset.xyz, 1.0)).xyz;
+  var output: Output;
+  output.position = globals.viewProjection * vec4f(world, 1.0);`,
+]]);
+
+const BARREL_INPUT = `struct Input {
+  @location(0) unit: vec3f,
+  @location(1) normal: vec3f,
+  @location(2) radiusMix: f32,
+  @location(3) dimensions: vec4f,
+  @location(4) span: vec2f,
+  @location(5) ids: vec4u,
+};`;
+const BARREL_INPUT_INSTANCED = `struct Barrel {
+  dimensions: vec4f,
+  span: vec2f,
+  ids: vec4u,
+};
+@group(0) @binding(6) var<storage, read> barrels: array<Barrel>;
+${OCCURRENCE_WGSL}
+struct Input {
+  @location(0) unit: vec3f,
+  @location(1) normal: vec3f,
+  @location(2) radiusMix: f32,
+};`;
+
+// The barrel bodies read `input.dimensions/span/ids`; the variant binds `input`
+// to a merged record so those lines stay as written.
+function barrelVariant(source, positionLine, extra = []) {
+  const instanced = variant(source, [
+    [BARREL_INPUT, BARREL_INPUT_INSTANCED],
+    [`@vertex fn vs(input: Input) -> Output {`, `struct Record {
+  unit: vec3f,
+  normal: vec3f,
+  radiusMix: f32,
+  dimensions: vec4f,
+  span: vec2f,
+  ids: vec4u,
+};
+@vertex fn vs(vertex: Input, @builtin(instance_index) instance: u32) -> Output {
+  let count = arrayLength(&barrels);
+  let barrel = barrels[instance % count];
+  let occurrence = occurrences[instance / count];
+  let input = Record(vertex.unit, vertex.normal, vertex.radiusMix, barrel.dimensions, barrel.span, barrel.ids);`],
+    [positionLine, positionLine.replace("vec4f(world, 1.0)", "vec4f((occurrence.model * vec4f(world, 1.0)).xyz, 1.0)")],
+    ...extra,
+  ]);
+  return instanced;
+}
+
+const BARREL_SHADER_INSTANCED = barrelVariant(
+  BARREL_SHADER,
+  "  output.position = globals.viewProjection * vec4f(world, 1.0);\n  output.normal = input.normal;",
+  [["  output.normal = input.normal;\n  output.netId", "  output.normal = (occurrence.normal * vec4f(input.normal, 0.0)).xyz;\n  output.netId"]],
+);
+const BARREL_PICK_SHADER_INSTANCED = barrelVariant(
+  BARREL_PICK_SHADER,
+  "  output.position = globals.viewProjection * vec4f(world, 1.0);\n  output.objectId",
+);
+
+// For tests: the variants are derived at load, so a drifted anchor fails there.
+export const INSTANCED_SHADERS = Object.freeze({
+  main: MAIN_SHADER_INSTANCED,
+  pick: PICK_SHADER_INSTANCED,
+  barrel: BARREL_SHADER_INSTANCED,
+  barrelPick: BARREL_PICK_SHADER_INSTANCED,
+});
+
 export class Renderer {
   static async create(canvas) {
     if (!navigator.gpu) throw new Error("WebGPU is unavailable in this browser");
@@ -304,6 +419,17 @@ export class Renderer {
     this.barrels = null;
     this.globalBuffer = device.createBuffer({ size: GLOBAL_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     this.layerOffsetBuffer = device.createBuffer({ size: 1024, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    // Occurrences (SB2-23): the one-board viewer is a single identity
+    // occurrence drawn by the original pipelines; anything else switches to the
+    // instanced ones. Barrel records are mirrored into storage for them, with a
+    // one-record placeholder so every bind group is valid.
+    this.occurrenceMatrices = [[...IDENTITY]];
+    this.identityOnly = true;
+    this.occurrenceCapacity = 1;
+    this.occurrenceBuffer = this.createOccurrenceBuffer(this.occurrenceCapacity);
+    this.device.queue.writeBuffer(this.occurrenceBuffer, 0, packOccurrences(this.occurrenceMatrices));
+    this.barrelRecordBuffer = device.createBuffer({ label: "barrel-records", size: BARREL_RECORD_STRIDE, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.instancedPipelines = null;
     this.bindGroupLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
@@ -311,10 +437,13 @@ export class Renderer {
         { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
         { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: { type: "read-only-storage" } },
+        { binding: 5, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+        { binding: 6, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
       ],
     });
     const layout = device.createPipelineLayout({ bindGroupLayouts: [this.bindGroupLayout] });
-    const vertexBuffers = [{
+    this.pipelineLayout = layout;
+    const vertexBuffers = this.vertexBuffers = [{
       arrayStride: VERTEX_STRIDE,
       attributes: [
         { shaderLocation: 0, offset: 0, format: "float32x3" },
@@ -329,6 +458,12 @@ export class Renderer {
     this.pickPipeline = this.makePipeline(layout, PICK_SHADER, "r32uint", vertexBuffers, "pick");
     this.barrelPipeline = this.makeBarrelPipeline(layout, BARREL_SHADER, this.format, "barrel");
     this.barrelPickPipeline = this.makeBarrelPipeline(layout, BARREL_PICK_SHADER, "r32uint", "barrel-pick");
+    this.singlePipelines = {
+      main: this.pipeline,
+      pick: this.pickPipeline,
+      barrel: this.barrelPipeline,
+      barrelPick: this.barrelPickPipeline,
+    };
     this.depth = null;
     this.pickTexture = null;
     this.pickSerial = Promise.resolve();
@@ -353,6 +488,59 @@ export class Renderer {
     this.netMaskCapacity = MIN_NET_MASK_CAPACITY;
     this.netMaskBuffer = this.createNetMaskBuffer(this.netMaskCapacity);
     this.uploadNetMask();
+  }
+
+  createOccurrenceBuffer(capacity) {
+    return this.device.createBuffer({
+      label: "occurrences",
+      size: capacity * OCCURRENCE_STRIDE,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+  }
+
+  get occurrenceCount() {
+    return this.occurrenceMatrices.length;
+  }
+
+  /**
+   * Replace the occurrences every primitive and barrel is drawn at: column-major
+   * 4×4 model matrices in renderer units (metres, the bundle's runtime frame).
+   * Uploaded geometry is shared; only this buffer changes. An empty list draws
+   * nothing; `null` restores the single identity occurrence.
+   */
+  setOccurrences(matrices) {
+    const next = matrices == null ? [[...IDENTITY]] : Array.from(matrices, normalizeMatrix);
+    this.occurrenceMatrices = next;
+    this.identityOnly = next.length === 1 && isIdentity(next[0]);
+    if (!this.identityOnly) this.ensureInstancedPipelines();
+    if (next.length > this.occurrenceCapacity) {
+      this.occurrenceBuffer?.destroy?.();
+      this.occurrenceCapacity = Math.max(next.length, this.occurrenceCapacity * 2);
+      this.occurrenceBuffer = this.createOccurrenceBuffer(this.occurrenceCapacity);
+      this.rebindAll();
+    }
+    if (next.length) this.device.queue.writeBuffer(this.occurrenceBuffer, 0, packOccurrences(next));
+    this.bundleCache.clear();
+  }
+
+  ensureInstancedPipelines() {
+    if (this.instancedPipelines) return;
+    const layout = this.pipelineLayout;
+    this.instancedPipelines = {
+      main: this.makePipeline(layout, MAIN_SHADER_INSTANCED, this.format, this.vertexBuffers, "main-instanced"),
+      pick: this.makePipeline(layout, PICK_SHADER_INSTANCED, "r32uint", this.vertexBuffers, "pick-instanced"),
+      barrel: this.makeBarrelPipeline(layout, BARREL_SHADER_INSTANCED, this.format, "barrel-instanced", false),
+      barrelPick: this.makeBarrelPipeline(layout, BARREL_PICK_SHADER_INSTANCED, "r32uint", "barrel-pick-instanced", false),
+    };
+  }
+
+  // The pipelines and instance counts for the current occurrences.
+  drawSet() {
+    if (this.identityOnly) {
+      return { pipelines: this.singlePipelines, instances: 1, barrelInstances: this.barrels?.instanceCount || 0 };
+    }
+    const count = this.occurrenceMatrices.length;
+    return { pipelines: this.instancedPipelines, instances: count, barrelInstances: (this.barrels?.instanceCount || 0) * count };
   }
 
   createNetMaskBuffer(capacity) {
@@ -411,6 +599,8 @@ export class Renderer {
         { binding: 2, resource: { buffer: this.layerOffsetBuffer } },
         { binding: 3, resource: { buffer: this.featureMaskBuffer } },
         { binding: 4, resource: { buffer: this.netMaskBuffer } },
+        { binding: 5, resource: { buffer: this.occurrenceBuffer } },
+        { binding: 6, resource: { buffer: this.barrelRecordBuffer } },
       ],
     });
   }
@@ -467,7 +657,7 @@ export class Renderer {
     });
   }
 
-  makeBarrelPipeline(layout, code, format, label) {
+  makeBarrelPipeline(layout, code, format, label, instanceBuffer = true) {
     const module = this.createShaderModule(code, label);
     return this.device.createRenderPipeline({
       layout,
@@ -483,7 +673,8 @@ export class Renderer {
               { shaderLocation: 2, offset: 24, format: "float32" },
             ],
           },
-          {
+          // Instanced pipelines read barrel records from storage instead.
+          ...(instanceBuffer ? [{
             arrayStride: 40,
             stepMode: "instance",
             attributes: [
@@ -491,7 +682,7 @@ export class Renderer {
               { shaderLocation: 4, offset: 16, format: "float32x2" },
               { shaderLocation: 5, offset: 24, format: "uint32x4" },
             ],
-          },
+          }] : []),
         ],
       },
       fragment: {
@@ -606,6 +797,8 @@ export class Renderer {
     this.depth?.destroy();
     this.pickTexture?.destroy();
     this.featureMaskBuffer?.destroy?.();
+    this.occurrenceBuffer?.destroy?.();
+    this.barrelRecordBuffer?.destroy?.();
     this.depth = null;
     this.pickTexture = null;
     this.featureMaskBuffer = null;
@@ -655,9 +848,14 @@ export class Renderer {
     this.device.queue.writeBuffer(vertexBuffer, 0, vertexArray);
     this.device.queue.writeBuffer(indexBuffer, 0, indexArray);
     this.device.queue.writeBuffer(instanceBuffer, 0, instances);
+    const records32 = packBarrels(records);
+    this.barrelRecordBuffer?.destroy?.();
+    this.barrelRecordBuffer = this.device.createBuffer({ label: "barrel-records", size: records32.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    this.device.queue.writeBuffer(this.barrelRecordBuffer, 0, records32);
     const drawBuffer = this.device.createBuffer({ size: DRAW_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    const bindGroup = this.makeBindGroup(drawBuffer);
-    this.barrels = { records, vertexBuffer, indexBuffer, instanceBuffer, indexCount: indexArray.length, instanceCount: records.length, drawBuffer, bindGroup };
+    this.barrels = { records, vertexBuffer, indexBuffer, instanceBuffer, indexCount: indexArray.length, instanceCount: records.length, drawBuffer, bindGroup: null };
+    // Every bind group carries the barrel records: rebuild them all (this one included).
+    this.rebindAll();
   }
 
   render({
@@ -695,6 +893,7 @@ export class Renderer {
       pass.setViewport(viewport.x, viewport.y, viewport.width, viewport.height, 0, 1);
       pass.setScissorRect(viewport.x, viewport.y, viewport.width, viewport.height);
       this.writeGlobals(panel.matrix, activeNetId, panel.layerId, time, selectedFeatureId);
+      const { pipelines, instances, barrelInstances } = this.drawSet();
       const visibleEntries = this.entries.filter((entry) =>
         this.visible(entry, panel.layerId, visibleLayers, showBoard, showComponents, componentOpacity, compareMode, visibleTileIds));
       for (const entry of visibleEntries) {
@@ -712,22 +911,22 @@ export class Renderer {
       if (visibleEntries.length > 64) {
         pass.executeBundles([this.renderBundle(visibleEntries, panel.layerId)]);
       } else {
-        pass.setPipeline(this.pipeline);
+        pass.setPipeline(pipelines.main);
         for (const entry of visibleEntries) {
         pass.setBindGroup(0, entry.bindGroup);
         pass.setVertexBuffer(0, entry.vertexBuffer);
         pass.setIndexBuffer(entry.indexBuffer, "uint32");
-        pass.drawIndexed(entry.indexCount);
+        pass.drawIndexed(entry.indexCount, instances);
         }
       }
       if (!compareMode && this.barrels && (panel.layerId === 0 || visibleLayers.has(panel.layerId))) {
         this.writeBarrelDraw(isolateNet);
-        pass.setPipeline(this.barrelPipeline);
+        pass.setPipeline(pipelines.barrel);
         pass.setBindGroup(0, this.barrels.bindGroup);
         pass.setVertexBuffer(0, this.barrels.vertexBuffer);
         pass.setVertexBuffer(1, this.barrels.instanceBuffer);
         pass.setIndexBuffer(this.barrels.indexBuffer, "uint16");
-        pass.drawIndexed(this.barrels.indexCount, this.barrels.instanceCount);
+        pass.drawIndexed(this.barrels.indexCount, barrelInstances);
       }
       pass.end();
       this.device.queue.submit([encoder.finish()]);
@@ -801,19 +1000,20 @@ export class Renderer {
   }
 
   renderBundle(entries, panelLayerId) {
-    const key = `${panelLayerId}:${entries.map((entry) => entry.id).join(",")}`;
+    const { pipelines, instances } = this.drawSet();
+    const key = `${panelLayerId}:${this.identityOnly ? "single" : instances}:${entries.map((entry) => entry.id).join(",")}`;
     const cached = this.bundleCache.get(key);
     if (cached) return cached;
     const encoder = this.device.createRenderBundleEncoder({
       colorFormats: [this.format],
       depthStencilFormat: "depth24plus",
     });
-    encoder.setPipeline(this.pipeline);
+    encoder.setPipeline(pipelines.main);
     for (const entry of entries) {
       encoder.setBindGroup(0, entry.bindGroup);
       encoder.setVertexBuffer(0, entry.vertexBuffer);
       encoder.setIndexBuffer(entry.indexBuffer, "uint32");
-      encoder.drawIndexed(entry.indexCount);
+      encoder.drawIndexed(entry.indexCount, instances);
     }
     const bundle = encoder.finish();
     this.bundleCache.set(key, bundle);
@@ -847,7 +1047,8 @@ export class Renderer {
     const viewport = clampViewport(panel.viewport, this.canvas.width, this.canvas.height);
     pass.setViewport(viewport.x, viewport.y, viewport.width, viewport.height, 0, 1);
     pass.setScissorRect(viewport.x, viewport.y, viewport.width, viewport.height);
-    pass.setPipeline(this.pickPipeline);
+    const { pipelines, instances, barrelInstances } = this.drawSet();
+    pass.setPipeline(pipelines.pick);
     for (const entry of this.entries) {
       if (!this.visible(
         entry,
@@ -872,16 +1073,16 @@ export class Renderer {
       pass.setBindGroup(0, entry.bindGroup);
       pass.setVertexBuffer(0, entry.vertexBuffer);
       pass.setIndexBuffer(entry.indexBuffer, "uint32");
-      pass.drawIndexed(entry.indexCount);
+      pass.drawIndexed(entry.indexCount, instances);
     }
     if (!options.compareMode && this.barrels) {
       this.writeBarrelDraw(options.isolateNet);
-      pass.setPipeline(this.barrelPickPipeline);
+      pass.setPipeline(pipelines.barrelPick);
       pass.setBindGroup(0, this.barrels.bindGroup);
       pass.setVertexBuffer(0, this.barrels.vertexBuffer);
       pass.setVertexBuffer(1, this.barrels.instanceBuffer);
       pass.setIndexBuffer(this.barrels.indexBuffer, "uint16");
-      pass.drawIndexed(this.barrels.indexCount, this.barrels.instanceCount);
+      pass.drawIndexed(this.barrels.indexCount, barrelInstances);
     }
     pass.end();
     const readBuffer = this.device.createBuffer({
