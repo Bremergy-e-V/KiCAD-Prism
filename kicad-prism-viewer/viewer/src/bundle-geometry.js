@@ -124,3 +124,34 @@ export function innerCopperLayer(layerId, copperLayers) {
   heights.sort((a, b) => a[1] - b[1]);
   return layerId !== heights[0][0] && layerId !== heights[heights.length - 1][0];
 }
+
+// KiCad-like copper (PR #427): exposed outer copper in the surface finish
+// colour, inner copper and via barrels in copper. Shared by the one-board
+// viewer and the system scene.
+export const FINISH_COLORS = Object.freeze({
+  gold: [0.83, 0.69, 0.37, 1],
+  silver: [0.74, 0.75, 0.77, 1],
+  copper: [0.76, 0.47, 0.28, 1],
+});
+
+/** Exposed outer copper by surface finish; gold (ENIG, KiCad's default look) when unknown. */
+export function finishColorFor(finish) {
+  const value = String(finish || "").toLowerCase();
+  if (/hasl|hal\b|tin|silver|lead/.test(value)) return FINISH_COLORS.silver;
+  if (/osp|bare|none/.test(value)) return FINISH_COLORS.copper;
+  return FINISH_COLORS.gold;
+}
+
+/** The first and last copper layers by stackup order are the outer ones. */
+export function isOuterCopperLayer(layer, copperLayers) {
+  const name = String(layer?.name || "");
+  return Boolean(name) && (name === copperLayers[0]?.name || name === copperLayers[copperLayers.length - 1]?.name);
+}
+
+/** Paste belongs to its side's outer copper layer: shown and hidden with it. */
+export function pasteLayerIdFor(primitive, copperLayers) {
+  const bottom = String(primitive.material?.name || "").endsWith("_bottom");
+  const layer = copperLayers.find((item) => item.name === (bottom ? "B.Cu" : "F.Cu"))
+    || (bottom ? copperLayers[copperLayers.length - 1] : copperLayers[0]);
+  return Number(layer?.id || 0);
+}

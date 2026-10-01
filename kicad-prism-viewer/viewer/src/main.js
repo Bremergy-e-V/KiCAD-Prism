@@ -3,9 +3,13 @@ import { BomViewer } from "./bom-viewer.js";
 import {
   boardRole,
   copperLayerColor,
+  FINISH_COLORS,
+  finishColorFor,
+  isOuterCopperLayer,
   innerCopperLayer,
   mergeBounds,
   mergePrimitivesByMaterial,
+  pasteLayerIdFor,
   runtimeBounds,
   runtimeBoundsFromGltf,
 } from "./bundle-geometry.js";
@@ -1242,11 +1246,7 @@ function applyOccurrences(matrices) {
 
 
 function pasteLayerId(primitive) {
-  const bottom = String(primitive.material?.name || "").endsWith("_bottom");
-  const layers = scene.copperLayers;
-  const layer = layers.find((item) => item.name === (bottom ? "B.Cu" : "F.Cu"))
-    || (bottom ? layers[layers.length - 1] : layers[0]);
-  return Number(layer?.id || 0);
+  return pasteLayerIdFor(primitive, scene.copperLayers);
 }
 
 async function loadComponents(token = activeViewerToken) {
@@ -1439,24 +1439,12 @@ function layerColor(layer) {
 }
 
 const DEFAULT_BARREL_COLOR = [0.55, 0.35, 0.16, 0.78];
-const FINISH_COLORS = {
-  gold: [0.83, 0.69, 0.37, 1],
-  silver: [0.74, 0.75, 0.77, 1],
-  copper: [0.76, 0.47, 0.28, 1],
-};
-
-/** Exposed outer copper by surface finish; gold (ENIG, KiCad's default look) when unknown. */
 function finishColor() {
-  const finish = String(topology?.board?.stackup?.copper_finish || "").toLowerCase();
-  if (/hasl|hal\b|tin|silver|lead/.test(finish)) return FINISH_COLORS.silver;
-  if (/osp|bare|none/.test(finish)) return FINISH_COLORS.copper;
-  return FINISH_COLORS.gold;
+  return finishColorFor(topology?.board?.stackup?.copper_finish);
 }
 
 function isOuterCopper(layer) {
-  const name = String(layer?.name || "");
-  const layers = scene.copperLayers;
-  return Boolean(name) && (name === layers[0]?.name || name === layers[layers.length - 1]?.name);
+  return isOuterCopperLayer(layer, scene.copperLayers);
 }
 
 // Separation at which copper has fully turned to layer colours.
