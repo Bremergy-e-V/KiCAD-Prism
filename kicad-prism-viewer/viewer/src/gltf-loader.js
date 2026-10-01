@@ -12,9 +12,15 @@ const io = new WebIO()
 
 export async function loadGltf(url, options = {}) {
   await MeshoptDecoder.ready;
-  const response = await fetch(url, { cache: options.fetchCache || "no-store" });
-  if (!response.ok) throw new Error(`Failed to load ${url}: ${response.status}`);
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  // `fetchBytes` (SB2-26) serves bundle assets from the browser cache when it holds them.
+  let bytes;
+  if (options.fetchBytes) {
+    bytes = new Uint8Array(await options.fetchBytes(url));
+  } else {
+    const response = await fetch(url, { cache: options.fetchCache || "no-store" });
+    if (!response.ok) throw new Error(`Failed to load ${url}: ${response.status}`);
+    bytes = new Uint8Array(await response.arrayBuffer());
+  }
   const document = await io.readBinary(bytes);
   const primitives = [];
   const componentFeatures = options.componentFeatures || new Map();
