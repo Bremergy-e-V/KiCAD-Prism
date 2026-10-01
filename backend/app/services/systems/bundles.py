@@ -53,7 +53,8 @@ class BundleSource:
         job = jobs.latest_for_artifact("webgpu_3d", project_service.webgpu_artifact_key(row, commit))
         if not job:
             return None
-        return {"jobId": str(job["id"]), "status": str(job["status"]),
+        # Decoded jobs carry their id as ``job_id`` (``JobService._decode``).
+        return {"jobId": str(job["job_id"]), "status": str(job["status"]),
                 "error": job.get("error_message") or job.get("message") or None}
 
     def build(self, project_id: str, commit: str, *, requested_by: str) -> Optional[str]:

@@ -1,5 +1,6 @@
 import viewerCss from "../styles.css";
 import { AssetCache } from "./asset-cache.js";
+import { absolutizeAssetPaths, bundleIsFinal } from "./bundle-urls.js";
 import { mountStandaloneViewer } from "./main.js";
 import { createReloadOwner, runSemanticViewerReload } from "./semantic-viewer-reload.js";
 
@@ -79,34 +80,6 @@ async function fetchJson(url, timings = null, label = "fetch", signal = undefine
     timings[`${label}_content_length`] = Number(response.headers.get("content-length") || 0);
   }
   return value;
-}
-
-function withCacheKey(url, cacheKey) {
-  if (!cacheKey) return url;
-  const next = new URL(url);
-  next.searchParams.set("viewer", cacheKey);
-  return next.toString();
-}
-
-function absolutizeAssetPaths(semanticGeometry, bundleUrl, bundle, cacheKey) {
-  const assetBase = new URL(bundle.asset_base || "./", bundleUrl);
-  const output = structuredClone(semanticGeometry || {});
-  const absolutize = (value) => {
-    if (!value || typeof value !== "string") return value;
-    return withCacheKey(new URL(value, assetBase).toString(), cacheKey);
-  };
-  for (const groupName of ["assets", "semantic_gltf", "schematic_world", "schematic_vector", "schematic_scene", "bom"]) {
-    const group = output[groupName];
-    if (!group || typeof group !== "object") continue;
-    for (const [key, value] of Object.entries(group)) group[key] = absolutize(value);
-  }
-  return output;
-}
-
-// A bundle is final once generation reached its last stage; its files then never change.
-function bundleIsFinal(bundle) {
-  const stage = bundle?.readiness?.stage || "semantic-ready";
-  return stage === "semantic-ready" && (bundle?.readiness?.progress ?? 100) >= 100;
 }
 
 async function loadBundle(bundleUrl, timings, signal) {

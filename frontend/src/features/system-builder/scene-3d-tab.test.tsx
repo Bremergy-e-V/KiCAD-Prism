@@ -1,0 +1,83 @@
+import { render, screen, waitFor } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { scenePollDelay, summarizeScene } from "./scene-3d-model";
+import { Scene3dTab } from "./scene-3d-tab";
+import { instance, systemDocument } from "./test-fixtures";
+import type { SystemScene, SystemSceneAsset, SystemSceneOccurrence } from "@/types/system";
+
+afterEach(() => vi.unstubAllGlobals());
+
+const box = { minMm: [0, -90, -0.8], maxMm: [132, 0, 0.8] };
+const occurrence = (label: string, patch: Partial<SystemSceneOccurrence> = {}): SystemSceneOccurrence => ({
+  path: `/sin_${label}`, parentPath: null, displayPath: label, labels: [label], instanceId: `sin_${label}`, kind: "board", depth: 1,
+  restricted: false, assetId: `sba_${label}`, pose: { translationMm: [0, 0, 0], rotation: [0, 0, 0, 1], source: "default" },
+  worldMatrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1], boundsMm: box, ...patch,
+});
+const asset = (label: string, patch: Partial<SystemSceneAsset> = {}): SystemSceneAsset => ({
+  assetId: `sba_${label}`, projectId: `prj_${label}`, commit: "a".repeat(40), status: "ready", bundleUrl: `/b/${label}/bundle.json`,
+  sourceRevisionKey: "src", generatorBuild: "build", jobId: null, error: null,
+  bundleToBoard: [1000, 0, 0, 0, 0, 1000, 0, 0, 0, 0, 1000, 0, 0, 0, -0.8, 1], ...patch,
+});
+const scene = (occurrences: SystemSceneOccurrence[], assets: SystemSceneAsset[]): SystemScene => ({
+  schema: "prism.system_scene.a0", systemId: "sys_1", systemVersion: 3, units: "mm", assets, occurrences,
+});
+
+const mixed = scene(
+  [
+    occurrence("CMBD", { restricted: true, assetId: null }),
+    occurrence("OBC-1"),
+    occurrence("OBC-2"),
+    occurrence("PSU", { assetId: "sba_PSU", boundsMm: null }),
+    occurrence("Payload", { kind: "assembly", assetId: null }),
+  ],
+  [asset("OBC-1"), asset("OBC-2", { status: "failed", bundleUrl: null, bundleToBoard: null, error: "kicad-cli missing" }),
+    asset("PSU", { status: "building", bundleUrl: null, bundleToBoard: null })],
+);
+
+describe("scene summary", () => {
+  it("sorts drawn occurrences by why they are not drawn in full", () => {
+    const summary = summarizeScene(mixed);
+    expect(summary.boards).toBe(4); // the open assembly is a group, not drawn
+    expect(summary.restricted.map((item) => item.displayPath)).toEqual(["CMBD"]);
+    expect(summary.failed.map((item) => [item.occurrence.displayPath, item.error])).toEqual([["OBC-2", "kicad-cli missing"]]);
+    expect(summary.building.map((item) => item.displayPath)).toEqual(["PSU"]);
+    expect(summary.unplaced.map((item) => item.displayPath)).toEqual(["PSU"]);
+  });
+
+  it("polls only while something is still coming", () => {
+    expect(scenePollDelay(mixed)).toBe(5000);
+    expect(scenePollDelay(scene([occurrence("OBC-1")], [asset("OBC-1")]))).toBeNull();
+    expect(scenePollDelay(null)).toBeNull();
+  });
+});
+
+describe("Scene3dTab", () => {
+  const props = {
+    systemId: "sys_1", document: systemDocument([instance("OBC-1")]), etag: '"sys:sys_1:3"', canEdit: true, user: null,
+    reload: vi.fn(async () => undefined), onNavigate: vi.fn(),
+  };
+
+  it("reads the scene and explains restricted, failed and building boards", async () => {
+    vi.stubGlobal("navigator", { ...navigator, gpu: {} });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(mixed), { status: 200, headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Scene3dTab {...props} />);
+    expect(await screen.findByText(/CMBD is restricted: drawn as a grey box showing only its size/)).toBeTruthy();
+    expect(screen.getByText(/The 3D view of OBC-2 failed: kicad-cli missing/)).toBeTruthy();
+    expect(screen.getByText(/Generating the 3D view of PSU/)).toBeTruthy();
+    expect(screen.getByText("4 boards")).toBeTruthy();
+    expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain("/api/systems/sys_1/scene");
+    expect(document.querySelector("prism-system-scene")).toBeTruthy();
+  });
+
+  it("shows the diagram and a notice without WebGPU, and never reads the scene", async () => {
+    vi.stubGlobal("navigator", { ...navigator, gpu: undefined });
+    const fetchMock = vi.fn(async () => new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Scene3dTab {...props} />);
+    expect(screen.getByText(/The 3D view needs WebGPU/)).toBeTruthy();
+    expect(document.querySelector("prism-system-scene")).toBeNull();
+    await waitFor(() => expect(fetchMock.mock.calls.some((call) => String((call as unknown[])[0]).includes("/scene"))).toBe(false));
+  });
+});

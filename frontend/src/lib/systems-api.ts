@@ -38,6 +38,7 @@ import type {
   SystemInstance,
   SystemLink,
   SystemPort,
+  SystemScene,
   SystemSummary,
   ValidationReport,
 } from "@/types/system";
@@ -155,6 +156,10 @@ export function addAssemblyInstance(
 
 export function getHierarchy(systemId: string) {
   return send<SystemHierarchy>(path(systemId, "hierarchy")).then((r) => r.body);
+}
+
+export function getScene(systemId: string) {
+  return send<SystemScene>(path(systemId, "scene")).then((r) => r.body);
 }
 
 export function updateInstance(

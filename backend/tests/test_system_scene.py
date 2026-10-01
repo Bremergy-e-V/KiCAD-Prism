@@ -18,7 +18,7 @@ from test_system_snapshots import DESIGNER, VIEWER
 
 from app.api import systems as systems_api
 from app.services.systems import service as service_module
-from app.services.systems.bundles import mid_plane_from_layers
+from app.services.systems.bundles import BundleSource, mid_plane_from_layers
 from app.services.systems.interface_extractor import EXTRACTOR_VERSION, _arc_points, extract_interface
 from app.services.systems.placement import poses
 from app.services.systems.scene import asset_id, board_bounds
@@ -90,6 +90,33 @@ class BundleFrameTest(unittest.TestCase):
                   {"role": "dielectric", "z_mm": 0.0, "thickness_mm": 1.51}]
         self.assertAlmostEqual(mid_plane_from_layers(layers), 0.8)
         self.assertEqual(mid_plane_from_layers(layers[:1]), 0.0)
+
+
+class BundleSourceTest(unittest.TestCase):
+    def test_last_build_reads_the_decoded_job_id(self) -> None:
+        # JobService._decode renames the row's ``id`` to ``job_id``; the scene must read that.
+        decoded = {"job_id": "job_9", "status": "failed", "error_message": "kicad-cli missing"}
+        with mock.patch("app.services.workspace_service.workspace.get_project_by_id", return_value={"id": "prj_1"}), \
+                mock.patch("app.services.project_service.webgpu_artifact_key", return_value="key"), \
+                mock.patch("app.services.job_service.jobs.latest_for_artifact", return_value=decoded) as latest:
+            last = BundleSource().last_build("prj_1", "a" * 40)
+        latest.assert_called_once_with("webgpu_3d", "key")
+        self.assertEqual(last, {"jobId": "job_9", "status": "failed", "error": "kicad-cli missing"})
+
+
+    def test_the_job_key_names_the_generator_build(self) -> None:
+        # A completed job satisfies a request with the same key; one built by an older
+        # viewer or pipeline must not, or a stale bundle reads as "building" forever.
+        from app.services import project_service
+
+        row = {"id": "prj_1", "project_file_rel": "board.kicad_pro"}
+        with mock.patch("app.services.semantic_visualizer_service.BUILD_FINGERPRINT", "build_a"):
+            first = project_service.webgpu_artifact_key(row, "a" * 40)
+            again = project_service.webgpu_artifact_key(row, "a" * 40)
+        with mock.patch("app.services.semantic_visualizer_service.BUILD_FINGERPRINT", "build_b"):
+            rebuilt = project_service.webgpu_artifact_key(row, "a" * 40)
+        self.assertEqual(first, again)
+        self.assertNotEqual(first, rebuilt)
 
 
 class FakeBundles:

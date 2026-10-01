@@ -1,6 +1,15 @@
 import { CameraController } from "./camera.js";
 import { BomViewer } from "./bom-viewer.js";
 import {
+  boardRole,
+  copperLayerColor,
+  innerCopperLayer,
+  mergeBounds,
+  mergePrimitivesByMaterial,
+  runtimeBounds,
+  runtimeBoundsFromGltf,
+} from "./bundle-geometry.js";
+import {
   buildComponentFeatureGroups,
   isComponentHidden,
   planComponentVisibility,
@@ -1056,18 +1065,6 @@ async function loadBoard(token = activeViewerToken) {
   return mergeBounds(contextPrimitives.map((primitive) => primitive.bounds));
 }
 
-function mergeBounds(boundsList) {
-  const valid = boundsList.filter((bounds) => Array.isArray(bounds) && bounds.length === 6);
-  if (!valid.length) return null;
-  return valid.reduce((merged, bounds) => [
-    Math.min(merged[0], bounds[0]),
-    Math.min(merged[1], bounds[1]),
-    Math.min(merged[2], bounds[2]),
-    Math.max(merged[3], bounds[3]),
-    Math.max(merged[4], bounds[4]),
-    Math.max(merged[5], bounds[5]),
-  ], [...valid[0]]);
-}
 
 function sceneRuntimeBounds() {
   return scene.occurrenceBounds || scene.runtimeBounds || runtimeBoundsFromGltf(scene.manifest?.bbox);
@@ -1075,10 +1072,7 @@ function sceneRuntimeBounds() {
 
 // Outer copper is the first and last copper layer by height; the rest sit inside the board.
 function isInnerCopperLayer(layerId) {
-  const heights = scene.copperLayers.map((layer) => [Number(layer.id), Number(layer.z_mm || 0)]);
-  if (heights.length < 3) return false;
-  heights.sort((a, b) => a[1] - b[1]);
-  return layerId !== heights[0][0] && layerId !== heights[heights.length - 1][0];
+  return innerCopperLayer(layerId, scene.copperLayers);
 }
 
 // What the cull pass needs to size occurrences on screen (SB2-25): the eye, and
@@ -1168,13 +1162,6 @@ function applyOccurrences(matrices) {
   scheduleTileResidency(performance.now(), { force: true });
 }
 
-function boardRole(primitive) {
-  const name = `${primitive.nodeName || ""} ${primitive.meshName || ""} ${primitive.material?.name || ""}`.toLowerCase();
-  if (name.includes("_pad") || name.includes(".pad") || name.endsWith("pad")) return "pad";
-  if (name.includes("silkscreen")) return "silkscreen";
-  if (name.includes("soldermask")) return "soldermask";
-  return "substrate";
-}
 
 async function loadComponents(token = activeViewerToken) {
   const path = semanticGeometry.assets?.components_glb;
@@ -1250,75 +1237,8 @@ function manageTiers(now) {
   }
 }
 
-function mergePrimitivesByMaterial(primitives, classifier = () => "") {
-  const groups = new Map();
-  for (const primitive of primitives) {
-    const groupKey = classifier(primitive);
-    const key = `${groupKey}:${JSON.stringify(primitive.material)}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(primitive);
-  }
-  return [...groups.values()].map((group) => {
-    const vertexCount = group.reduce((sum, item) => sum + item.position.length / 3, 0);
-    const indexCount = group.reduce((sum, item) => sum + item.indices.length, 0);
-    const position = new Float32Array(vertexCount * 3);
-    const normal = new Float32Array(vertexCount * 3);
-    const netId = new Uint32Array(vertexCount);
-    const objectFeatureId = new Uint32Array(vertexCount);
-    const indices = new Uint32Array(indexCount);
-    let vertexOffset = 0;
-    let indexOffset = 0;
-    const bounds = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
-    for (const item of group) {
-      const count = item.position.length / 3;
-      position.set(item.position, vertexOffset * 3);
-      normal.set(item.normal, vertexOffset * 3);
-      netId.set(item.netId, vertexOffset);
-      objectFeatureId.set(item.objectFeatureId, vertexOffset);
-      for (let index = 0; index < item.indices.length; index += 1) {
-        indices[indexOffset + index] = Number(item.indices[index]) + vertexOffset;
-      }
-      if (item.bounds) {
-        bounds[0] = Math.min(bounds[0], item.bounds[0]);
-        bounds[1] = Math.min(bounds[1], item.bounds[1]);
-        bounds[2] = Math.min(bounds[2], item.bounds[2]);
-        bounds[3] = Math.max(bounds[3], item.bounds[3]);
-        bounds[4] = Math.max(bounds[4], item.bounds[4]);
-        bounds[5] = Math.max(bounds[5], item.bounds[5]);
-      }
-      vertexOffset += count;
-      indexOffset += item.indices.length;
-    }
-    return {
-      position,
-      normal,
-      netId,
-      objectFeatureId,
-      indices,
-      material: group[0].material,
-      groupKey: classifier(group[0]),
-      bounds: Number.isFinite(bounds[0]) ? bounds : null,
-    };
-  });
-}
 
-function runtimeBounds(bounds) {
-  if (!bounds || bounds.length !== 6) return null;
-  return [
-    bounds[0] / 1000,
-    -bounds[4] / 1000,
-    bounds[2] / 1000,
-    bounds[3] / 1000,
-    -bounds[1] / 1000,
-    bounds[5] / 1000,
-  ];
-}
 
-function runtimeBoundsFromGltf(bounds) {
-  const minimum = bounds?.min || [0, 0, 0];
-  const maximum = bounds?.max || [0.08, 0.0016, 0.05];
-  return [minimum[0], -maximum[2], minimum[1], maximum[0], -minimum[2], maximum[1]];
-}
 
 function mergeFeatureBounds(featureId, positions) {
   const feature = scene.features.get(Number(featureId));
@@ -1345,28 +1265,9 @@ function mergeFeatureBounds(featureId, positions) {
 }
 
 function layerColor(layer) {
-  if (typeof layer?.color === "string" && /^#[0-9a-fA-F]{6}$/.test(layer.color)) {
-    return [...hex(layer.color), 1];
-  }
-  const colors = {
-    "F.Cu": "#a9423c",
-    "B.Cu": "#315b9a",
-    "In1.Cu": "#477a55",
-    "In2.Cu": "#806244",
-    "In3.Cu": "#347c86",
-    "In4.Cu": "#685889",
-    "In5.Cu": "#92793e",
-  };
-  const inner = ["#477a55", "#806244", "#347c86", "#685889", "#92793e", "#82556e"];
-  const name = String(layer?.name || "");
-  const index = Math.max(0, scene.copperLayers.findIndex((item) => item.name === name) - 1);
-  return [...hex(colors[name] || inner[index % inner.length]), 1];
+  return copperLayerColor(layer, scene.copperLayers);
 }
 
-function hex(value) {
-  const clean = value.replace("#", "");
-  return [0, 2, 4].map((offset) => parseInt(clean.slice(offset, offset + 2), 16) / 255);
-}
 
 function frame(now, token = activeViewerToken) {
   if (token !== activeViewerToken || !renderer || !camera) return;

@@ -311,9 +311,11 @@ function variant(source, replacements) {
   }, source);
 }
 
-// Instanced shaders read their Globals' spare word as the selected occurrence
-// (index + 1), so the inspected selection lights only its own copy.
-const SELECTED_OCCURRENCE = ["  padding0: u32,", "  selectedOccurrence: u32,"];
+// Instanced shaders read their Globals' spare words as the selected occurrence
+// (index + 1), so the inspected selection lights only its own copy, and as the
+// renderer's first occurrence in a multi-asset scene (SB2-27), so picks and the
+// selection carry scene-wide occurrence numbers. Both are 0 for one renderer.
+const SELECTED_OCCURRENCE = ["  padding0: u32,\n  padding1: u32,", "  selectedOccurrence: u32,\n  occurrenceBase: u32,"];
 
 const MAIN_SHADER_INSTANCED = variant(MAIN_SHADER, [
   SELECTED_OCCURRENCE,
@@ -336,7 +338,7 @@ const MAIN_SHADER_INSTANCED = variant(MAIN_SHADER, [
   output.world = (occurrence.model * vec4f(input.position + draw.offset.xyz, 1.0)).xyz;
   output.position = globals.viewProjection * vec4f(output.world, 1.0);
   output.normal = normalize((occurrence.normal * vec4f(input.normal, 0.0)).xyz);
-  output.occurrence = index + 1u;`],
+  output.occurrence = index + 1u + globals.occurrenceBase;`],
   [`  let selected = netEmphasized(input.netId) || (globals.activeNet != 0u && input.netId == globals.activeNet);
   let selectedComponent = component && globals.selectedFeature != 0u && input.objectId == globals.selectedFeature;`,
   `  // The inspected selection lights its own copy; host-highlighted nets light every copy.
@@ -360,7 +362,7 @@ const PICK_SHADER_INSTANCED = variant(PICK_SHADER, [
   let world = (occurrences[index].model * vec4f(input.position + draw.offset.xyz, 1.0)).xyz;
   var output: Output;
   output.position = globals.viewProjection * vec4f(world, 1.0);
-  output.occurrence = index + 1u;`],
+  output.occurrence = index + 1u + globals.occurrenceBase;`],
   // Board context draws (kind 0) pick as feature 0: "this board", no feature.
   [`  return vec2u(1u, input.objectId);`,
   `  let kind = u32(draw.flags.x);
@@ -410,7 +412,7 @@ function barrelVariant(source, positionLine, extra = []) {
   let occurrence = occurrences[index];
   let input = Record(vertex.unit, vertex.normal, vertex.radiusMix, barrel.dimensions, barrel.span, barrel.ids);`],
     [positionLine, positionLine.replace("vec4f(world, 1.0)", "vec4f((occurrence.model * vec4f(world, 1.0)).xyz, 1.0)")],
-    ["  output.objectId = input.ids.y;", "  output.objectId = input.ids.y;\n  output.occurrence = index + 1u;"],
+    ["  output.objectId = input.ids.y;", "  output.objectId = input.ids.y;\n  output.occurrence = index + 1u + globals.occurrenceBase;"],
     ...extra,
   ]);
 }
@@ -445,7 +447,7 @@ struct Globals {
   hasHighlight: f32,
   selectedFeature: u32,
   selectedOccurrence: u32,
-  padding1: u32,
+  occurrenceBase: u32,
   padding2: u32,
   lightDirection: vec4f,
 };
@@ -469,7 +471,7 @@ struct Output {
   var output: Output;
   output.position = globals.viewProjection * vec4f((occurrence.model * vec4f(local, 1.0)).xyz, 1.0);
   output.normal = (occurrence.normal * vec4f(input.normal, 0.0)).xyz;
-  output.occurrence = index + 1u;
+  output.occurrence = index + 1u + globals.occurrenceBase;
   return output;
 }
 `;
@@ -604,18 +606,35 @@ export class Renderer {
     return new Renderer(canvas, device);
   }
 
-  constructor(canvas, device) {
+  /**
+   * `shareFrom` makes this renderer one asset of a multi-asset scene (SB2-27):
+   * it borrows that renderer's device, canvas context, layouts and pipelines,
+   * keeps its own geometry, occurrences, cull state and indirect slots, and
+   * always draws through the instanced pipelines. A `SceneRenderer` encodes the
+   * passes for all of them.
+   */
+  constructor(canvas, device, { shareFrom = null } = {}) {
     this.canvas = canvas;
     this.device = device;
-    device.addEventListener("uncapturederror", (event) => {
-      console.error(`Uncaptured WebGPU error: ${event.error?.message || event.error}`);
-    });
-    device.lost.then((info) => {
-      console.error(`WebGPU device lost: ${info.reason}`, info.message);
-    });
-    this.context = canvas.getContext("webgpu");
-    this.format = navigator.gpu.getPreferredCanvasFormat();
-    this.context.configure({ device, format: this.format, alphaMode: "opaque" });
+    this.shareFrom = shareFrom;
+    this.alwaysInstanced = Boolean(shareFrom);
+    // Scene-wide number of this renderer's first occurrence (Globals.occurrenceBase).
+    this.occurrenceBase = 0;
+    if (shareFrom) {
+      this.context = shareFrom.context;
+      this.format = shareFrom.format;
+    } else {
+      device.addEventListener("uncapturederror", (event) => {
+        console.error(`Uncaptured WebGPU error: ${event.error?.message || event.error}`);
+      });
+      device.lost.then((info) => {
+        // A scene that is closed destroys its device on purpose (SB2-27); that is not a loss.
+        if (info.reason !== "destroyed") console.error(`WebGPU device lost: ${info.reason}`, info.message);
+      });
+      this.context = canvas.getContext("webgpu");
+      this.format = navigator.gpu.getPreferredCanvasFormat();
+      this.context.configure({ device, format: this.format, alphaMode: "opaque" });
+    }
     this.entries = [];
     this.barrels = null;
     this.globalBuffer = device.createBuffer({ size: GLOBAL_UNIFORM_SIZE, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
@@ -659,6 +678,43 @@ export class Renderer {
     this.innerCopperAtFull = true;
     this.cullCounts = { full: 0, board: 0, box: 0, culled: 0 };
     this.frameStats = { triangles: 0, draws: 0 };
+    this.boxColor = [0.24, 0.36, 0.28, 1]; // solder-mask green, darkened
+    if (shareFrom) {
+      for (const key of ["bindGroupLayout", "pipelineLayout", "vertexBuffers", "pipeline", "pickPipeline",
+        "barrelPipeline", "barrelPickPipeline", "singlePipelines"]) this[key] = shareFrom[key];
+    } else {
+      this.createSinglePipelines();
+    }
+    this.depth = null;
+    this.pickTexture = null;
+    this.pickSerial = Promise.resolve();
+    this.bundleCache = new Map();
+    this.globalScratch = new ArrayBuffer(GLOBAL_UNIFORM_SIZE);
+    this.globalScratchF32 = new Float32Array(this.globalScratch);
+    this.globalScratchView = new DataView(this.globalScratch);
+    this.drawScratch = new Float32Array(DRAW_UNIFORM_SIZE / 4);
+    this.barrelDrawScratch = new Float32Array(DRAW_UNIFORM_SIZE / 4);
+    this.nextEntryId = 1;
+    // Feature-visibility mask: default-visible, indexed by component feature
+    // id. It always exists so every bind group is valid before any hide call.
+    this.hiddenFeatureIds = new Set();
+    this.featureMaskCapacity = MIN_FEATURE_MASK_CAPACITY;
+    this.featureMaskBuffer = this.createFeatureMaskBuffer(
+      this.featureMaskCapacity,
+    );
+    this.uploadFeatureMask();
+    // Net-emphasis mask: default-off, indexed by net id (Prism #305). It always
+    // exists so every bind group is valid before the first highlight.
+    this.emphasizedNetIds = new Set();
+    this.netMaskCapacity = MIN_NET_MASK_CAPACITY;
+    this.netMaskBuffer = this.createNetMaskBuffer(this.netMaskCapacity);
+    this.uploadNetMask();
+    // A scene asset never takes the one-board path, even with one identity copy.
+    if (shareFrom) this.setOccurrences([]);
+  }
+
+  createSinglePipelines() {
+    const device = this.device;
     this.bindGroupLayout = device.createBindGroupLayout({
       entries: [
         { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
@@ -694,30 +750,6 @@ export class Renderer {
       barrel: this.barrelPipeline,
       barrelPick: this.barrelPickPipeline,
     };
-    this.depth = null;
-    this.pickTexture = null;
-    this.pickSerial = Promise.resolve();
-    this.bundleCache = new Map();
-    this.globalScratch = new ArrayBuffer(GLOBAL_UNIFORM_SIZE);
-    this.globalScratchF32 = new Float32Array(this.globalScratch);
-    this.globalScratchView = new DataView(this.globalScratch);
-    this.drawScratch = new Float32Array(DRAW_UNIFORM_SIZE / 4);
-    this.barrelDrawScratch = new Float32Array(DRAW_UNIFORM_SIZE / 4);
-    this.nextEntryId = 1;
-    // Feature-visibility mask: default-visible, indexed by component feature
-    // id. It always exists so every bind group is valid before any hide call.
-    this.hiddenFeatureIds = new Set();
-    this.featureMaskCapacity = MIN_FEATURE_MASK_CAPACITY;
-    this.featureMaskBuffer = this.createFeatureMaskBuffer(
-      this.featureMaskCapacity,
-    );
-    this.uploadFeatureMask();
-    // Net-emphasis mask: default-off, indexed by net id (Prism #305). It always
-    // exists so every bind group is valid before the first highlight.
-    this.emphasizedNetIds = new Set();
-    this.netMaskCapacity = MIN_NET_MASK_CAPACITY;
-    this.netMaskBuffer = this.createNetMaskBuffer(this.netMaskCapacity);
-    this.uploadNetMask();
   }
 
   createOccurrenceBuffer(capacity) {
@@ -793,7 +825,7 @@ export class Renderer {
     const { matrices: next, keys } = normalizeOccurrences(occurrences == null ? [IDENTITY] : occurrences);
     this.occurrenceMatrices = next;
     this.occurrenceKeys = keys;
-    this.identityOnly = next.length === 1 && isIdentity(next[0]);
+    this.identityOnly = !this.alwaysInstanced && next.length === 1 && isIdentity(next[0]);
     if (!this.identityOnly) this.ensureInstancedPipelines();
     if (next.length > this.occurrenceCapacity) {
       this.occurrenceBuffer?.destroy?.();
@@ -845,8 +877,9 @@ export class Renderer {
 
   createCull() {
     const device = this.device;
+    const shared = this.shareFrom?.cull;
     const storage = (type) => ({ visibility: GPUShaderStage.COMPUTE, buffer: { type } });
-    const layout = device.createBindGroupLayout({
+    const layout = shared?.layout || device.createBindGroupLayout({
       label: "cull",
       entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
@@ -858,12 +891,18 @@ export class Renderer {
         { binding: 6, ...storage("read-only-storage") },
       ],
     });
-    const module = this.createShaderModule(CULL_SHADER, "cull");
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+    let pipelines = shared && { layout, classify: shared.classify, writeArgs: shared.writeArgs };
+    if (!pipelines) {
+      const module = this.createShaderModule(CULL_SHADER, "cull");
+      const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout] });
+      pipelines = {
+        layout,
+        classify: device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint: "classify" } }),
+        writeArgs: device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint: "writeArgs" } }),
+      };
+    }
     this.cull = {
-      layout,
-      classify: device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint: "classify" } }),
-      writeArgs: device.createComputePipeline({ layout: pipelineLayout, compute: { module, entryPoint: "writeArgs" } }),
+      ...pipelines,
       uniform: device.createBuffer({ label: "cull-params", size: 192, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
       lods: this.createLodBuffer(this.occurrenceCapacity),
       counters: device.createBuffer({ label: "cull-counters", size: 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST }),
@@ -925,7 +964,7 @@ export class Renderer {
     const data = this.box.scratch;
     const [x0, y0, z0, x1, y1, z1] = this.boardBounds;
     data.fill(0);
-    data.set([0.24, 0.36, 0.28, 1], 0); // solder-mask green, darkened
+    data.set(this.boxColor, 0);
     data.set([x1 - x0, y1 - y0, z1 - z0, 0], 4);
     data.set([x0, y0, z0, 0], 8);
     this.device.queue.writeBuffer(this.box.drawBuffer, 0, data);
@@ -1007,6 +1046,14 @@ export class Renderer {
 
   ensureInstancedPipelines() {
     if (this.instancedPipelines) return;
+    if (this.shareFrom) {
+      // Scene assets compile nothing: pipelines and the cull programs are the host's.
+      this.shareFrom.ensureInstancedPipelines();
+      this.instancedPipelines = this.shareFrom.instancedPipelines;
+      this.createBox();
+      this.createCull();
+      return;
+    }
     const layout = this.pipelineLayout;
     this.instancedPipelines = {
       main: this.makePipeline(layout, MAIN_SHADER_INSTANCED, this.format, this.vertexBuffers, "main-instanced"),
@@ -1390,23 +1437,8 @@ export class Renderer {
     this.rebindAll();
   }
 
-  render({
-    panels,
-    activeNetId,
-    selectedFeatureId,
-    time,
-    layerOffsets,
-    visibleLayers,
-    showBoard,
-    showComponents,
-    componentOpacity,
-    boardOpacity,
-    isolateNet,
-    compareMode = false,
-    compareOffsets = new Map(),
-    layerAlphas = null,
-    visibleTileIds = null,
-  }) {
+  render(options) {
+    const { panels, layerOffsets } = options;
     this.resize();
     this.device.queue.writeBuffer(this.layerOffsetBuffer, 0, layerOffsets);
     const targetView = this.context.getCurrentTexture().createView();
@@ -1427,46 +1459,74 @@ export class Renderer {
       const viewport = clampViewport(panel.viewport, this.canvas.width, this.canvas.height);
       pass.setViewport(viewport.x, viewport.y, viewport.width, viewport.height, 0, 1);
       pass.setScissorRect(viewport.x, viewport.y, viewport.width, viewport.height);
-      this.writeGlobals(panel.matrix, activeNetId, panel.layerId, time, selectedFeatureId);
-      const { pipelines, indirect, barrelInstances } = this.drawSet();
-      const visibleEntries = this.entries.filter((entry) =>
-        this.visible(entry, panel.layerId, visibleLayers, showBoard, showComponents, componentOpacity, compareMode, visibleTileIds));
-      for (const entry of visibleEntries) {
-        this.writeDraw(
-          entry,
-          activeNetId,
-          componentOpacity,
-          boardOpacity,
-          isolateNet,
-          compareMode,
-          compareOffsets.get(entry.layerId),
-          layerAlphas?.get(entry.layerId) ?? 1,
-        );
-      }
-      if (visibleEntries.length > 64) {
-        pass.executeBundles([this.renderBundle(visibleEntries, panel.layerId)]);
-      } else {
-        pass.setPipeline(pipelines.main);
-        for (const entry of visibleEntries) this.drawEntry(pass, entry, indirect);
-      }
-      for (const entry of visibleEntries) triangles += entry.indexCount / 3 * this.countFor(entry.drawClass);
-      draws += visibleEntries.length;
-      if (!compareMode && this.barrels && (panel.layerId === 0 || visibleLayers.has(panel.layerId))) {
-        this.writeBarrelDraw(isolateNet);
-        this.drawBarrels(pass, pipelines.barrel, indirect, barrelInstances);
-        triangles += this.barrels.indexCount / 3 * this.countFor(2);
-        draws += 1;
-      }
-      if (indirect && !compareMode) {
-        this.drawBox(pass, pipelines.box);
-        triangles += 12 * this.countFor(3);
-        draws += 1;
-      }
+      const counted = this.encodeDraws(pass, panel, options);
+      triangles += counted.triangles;
+      draws += counted.draws;
       pass.end();
       this.device.queue.submit([encoder.finish()]);
       if (readCounts) this.readCullCounts();
     });
     this.frameStats = { triangles: Math.round(triangles), draws };
+  }
+
+  /**
+   * Record this renderer's draws for one panel into an open render pass, and
+   * count them. `render` wraps it for one renderer; a `SceneRenderer` calls it
+   * for every asset into a shared pass.
+   */
+  encodeDraws(pass, panel, {
+    activeNetId,
+    selectedFeatureId,
+    time,
+    visibleLayers,
+    showBoard,
+    showComponents,
+    componentOpacity,
+    boardOpacity,
+    isolateNet,
+    compareMode = false,
+    compareOffsets = new Map(),
+    layerAlphas = null,
+    visibleTileIds = null,
+  }) {
+    let triangles = 0;
+    let draws = 0;
+    this.writeGlobals(panel.matrix, activeNetId, panel.layerId, time, selectedFeatureId);
+    const { pipelines, indirect, barrelInstances } = this.drawSet();
+    const visibleEntries = this.entries.filter((entry) =>
+      this.visible(entry, panel.layerId, visibleLayers, showBoard, showComponents, componentOpacity, compareMode, visibleTileIds));
+    for (const entry of visibleEntries) {
+      this.writeDraw(
+        entry,
+        activeNetId,
+        componentOpacity,
+        boardOpacity,
+        isolateNet,
+        compareMode,
+        compareOffsets.get(entry.layerId),
+        layerAlphas?.get(entry.layerId) ?? 1,
+      );
+    }
+    if (visibleEntries.length > 64) {
+      pass.executeBundles([this.renderBundle(visibleEntries, panel.layerId)]);
+    } else {
+      pass.setPipeline(pipelines.main);
+      for (const entry of visibleEntries) this.drawEntry(pass, entry, indirect);
+    }
+    for (const entry of visibleEntries) triangles += entry.indexCount / 3 * this.countFor(entry.drawClass);
+    draws += visibleEntries.length;
+    if (!compareMode && this.barrels && (panel.layerId === 0 || visibleLayers.has(panel.layerId))) {
+      this.writeBarrelDraw(isolateNet);
+      this.drawBarrels(pass, pipelines.barrel, indirect, barrelInstances);
+      triangles += this.barrels.indexCount / 3 * this.countFor(2);
+      draws += 1;
+    }
+    if (indirect && !compareMode) {
+      this.drawBox(pass, pipelines.box);
+      triangles += 12 * this.countFor(3);
+      draws += 1;
+    }
+    return { triangles, draws };
   }
 
   visible(entry, panelLayer, visibleLayers, showBoard, showComponents, componentOpacity, compareMode = false, visibleTileIds = null) {
@@ -1489,8 +1549,9 @@ export class Renderer {
     view.setFloat32(72, time, true);
     view.setFloat32(76, activeNetId || this.emphasizedNetIds.size ? 1 : 0, true);
     view.setUint32(80, selectedFeatureId || 0, true);
-    // Read only by the instanced shaders (their `selectedOccurrence`); padding to the one-board ones.
-    view.setUint32(84, this.selectedOccurrence + 1, true);
+    // Read only by the instanced shaders (`selectedOccurrence`, `occurrenceBase`); padding to the one-board ones.
+    view.setUint32(84, this.selectedOccurrence >= 0 ? this.selectedOccurrence + 1 + this.occurrenceBase : 0, true);
+    view.setUint32(88, this.occurrenceBase, true);
     floats.set([0.35, -0.5, 0.8, 0], 24);
     this.device.queue.writeBuffer(this.globalBuffer, 0, data);
   }
@@ -1565,13 +1626,6 @@ export class Renderer {
     this.resize();
     const pixelX = Math.max(0, Math.min(this.canvas.width - 1, Math.floor(x)));
     const pixelY = Math.max(0, Math.min(this.canvas.height - 1, Math.floor(y)));
-    this.writeGlobals(
-      panel.matrix,
-      options.activeNetId,
-      panel.layerId,
-      performance.now() / 1000,
-      options.selectedFeatureId,
-    );
     this.device.queue.writeBuffer(this.layerOffsetBuffer, 0, options.layerOffsets);
     const encoder = this.device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
@@ -1581,6 +1635,20 @@ export class Renderer {
     const viewport = clampViewport(panel.viewport, this.canvas.width, this.canvas.height);
     pass.setViewport(viewport.x, viewport.y, viewport.width, viewport.height, 0, 1);
     pass.setScissorRect(viewport.x, viewport.y, viewport.width, viewport.height);
+    this.encodePick(pass, panel, options);
+    pass.end();
+    return this.readPick(encoder, pixelX, pixelY);
+  }
+
+  /** Record this renderer's pick draws into an open pass (see `encodeDraws`). */
+  encodePick(pass, panel, options) {
+    this.writeGlobals(
+      panel.matrix,
+      options.activeNetId,
+      panel.layerId,
+      performance.now() / 1000,
+      options.selectedFeatureId,
+    );
     // Occurrences pick through the lists and counts of the last rendered frame.
     const { pipelines, indirect, barrelInstances } = this.drawSet();
     pass.setPipeline(pipelines.pick);
@@ -1615,7 +1683,10 @@ export class Renderer {
       this.drawBarrels(pass, pipelines.barrelPick, indirect, barrelInstances);
     }
     if (indirect && !options.compareMode) this.drawBox(pass, pipelines.boxPick);
-    pass.end();
+  }
+
+  // Copy one pick texel, submit, and decode it. Occurrence numbers are scene-wide.
+  async readPick(encoder, pixelX, pixelY) {
     const readBuffer = this.device.createBuffer({
       label: "pick-readback", // one rg32uint texel; rows are 256-byte aligned
       size: 256,

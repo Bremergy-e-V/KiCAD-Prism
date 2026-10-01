@@ -1,6 +1,6 @@
 # System Builder P2 — contracts
 
-**Version P2-1.23 · 2026-10-01 · tickets SB2-00 to SB2-22.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
+**Version P2-1.24 · 2026-10-01 · tickets SB2-00 to SB2-27.** §0 choices S1–S8 were signed off by the user on 2026-09-30, with S6 revised. The M1 choices T1–T7 (§0.1) were signed off by the user on 2026-09-30.
 
 This document extends [CONTRACTS.md](CONTRACTS.md) (P1, v1.12) and never overrides it
 silently. Where P2 changes a P1 rule, the P1 section is named and the change is listed in §19.
@@ -714,6 +714,7 @@ All take If-Match and bump the system version. Audits `harness_created`, `harnes
 
 | Version | Date | Change |
 |---|---|---|
+| P2-1.24 | 2026-10-01 | SB2-23…27: §20.3 System 3D tab and `<prism-system-scene>`. §20.2: the `webgpu_3d` job key names the generator build; the scene reads only the outline and thickness of each interface artifact; `last_build` reads decoded job ids (`job_id`). |
 | P2-1.23 | 2026-10-01 | SB2-22: §20 system scene (`GET …/scene`, `prism.system_scene.a0`): occurrences with default poses and world matrices, board assets per (project, commit) with `bundleToBoard`, bundle builds queued for designers, restricted boards and child systems as boxes. Extractor **v8** `boardOutlineMm` (§14.6; every board re-extracts once). §14.3 default row: label order instead of creation order, assembly boxes, empty slots. Placement library gains `poses` (Python; the TypeScript twin comes with SB2-28). |
 | P2-1.22 | 2026-10-01 | SB2-21: geometry fixtures (plan §8, M1 set): `mezz_base`, `mezz_top` F0/F1, `edge_a`, `edge_b`, `ambiguous`, built through KiCad's IPC API (not SWIG) and clean on ERC, DRC with schematic parity and library checks, netlist, STEP and GLB with 10.0.6. Goldens: DF12(3.0) mated height 3.0 mm from Hirose EDC-390687-51-77, top pose (0, 0, 4.6) mm over the base, V11 shift 1.5 mm, frames per connector. Vendor models are not redistributed. No contract rule changes. |
 | P2-1.21 | 2026-10-01 | SB2-20: §8.2 as built for harness wires: edges through pin maps, splices, export ends, subsystem manifests' harnesses, unmated ends as internal nodes; wire hop shape; 3-end splice golden. |
@@ -775,6 +776,15 @@ A board asset reuses the single-board pipeline and its readiness cache (`semanti
 | `missing` | No bundle, and the reader may not queue one (below). |
 | `failed` | The project or its status could not be read. |
 
-- **Builds.** A missing bundle is queued as the `webgpu_3d` job for that commit when the reader is a designer or admin, the same roles that can generate a board's 3D view on its own tab. The job's artifact key deduplicates concurrent requests.
+- **Builds.** A missing bundle is queued as the `webgpu_3d` job for that commit when the reader is a designer or admin, the same roles that can generate a board's 3D view on its own tab. The job's artifact key deduplicates concurrent requests. *(P2-1.24: the key names the 3D generator build, `BUILD_FINGERPRINT`, so a completed job from an older viewer or pipeline build no longer stands in for a bundle the current build reads; before, such a board reported `building` indefinitely.)*
 - **`bundleToBoard`** maps the bundle's runtime frame (metres; x right, y up, z out of the front; z = 0 at the bottom face of the substrate) into the board frame (§14.2): scale by 1000, then lower by the mid-plane height `h`. `h` is half the substrate between the inner faces of the outer copper layers in the bundle's layer table (the pipeline's `_set_canonical_board_y_range`), or 0 with fewer than two copper layers. It is null until the bundle's layer table exists.
 - A renderer draws a board occurrence with `worldMatrix · bundleToBoard`.
+- *(P2-1.24)* Reading the scene reads only each board's outline and thickness from its interface artifact, never the whole artifact.
+
+### 20.3 The System 3D tab (SB2-27)
+
+- `<prism-system-scene>`, in the same viewer bundle as `<prism-semantic-viewer>`, takes the descriptor with `setScene(descriptor)` and is given it again on every re-read. Assets already loaded are kept; an asset that becomes `ready` loads.
+- Every board asset is drawn by its own renderer over one shared WebGPU device, canvas and pass. Occurrence numbers in the pick target are scene-wide (each asset's first occurrence is its base), so a pick names one occurrence path.
+- **Stand-ins.** An occurrence without geometry draws as its `boundsMm` box, coloured by why: `restricted` (grey), `loading`, `building`, `missing`, `failed`. An occurrence with `boundsMm: null` is not drawn; the tab says so.
+- **Events.** `prism-system-scene:selectionchange` with `{ selection: { kind: "board" | "component" | "feature", occurrence, displayPath, instanceId, restricted, standIn, reference? } | null }`, plus `:ready`, `:status` and `:error`.
+- **The tab** re-reads the scene every 5 s while a bundle builds or a box is unknown. Without WebGPU it shows the 2D diagram with a notice, and never reads the scene.

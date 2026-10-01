@@ -95,9 +95,49 @@ export interface PrismSemanticViewerElement extends HTMLElement {
     resize: () => void;
 }
 
+/** What a click in the system scene selected (SB2-27). */
+export interface PrismSystemSceneSelection {
+    kind: "board" | "component" | "feature";
+    occurrence: string;
+    displayPath: string;
+    instanceId: string;
+    restricted: boolean;
+    /** Why the board is drawn as a box: restricted, loading, building, missing, failed. */
+    standIn: string | null;
+    featureId?: number;
+    reference?: string | null;
+}
+
+export interface PrismSystemSceneStatus {
+    boards: number;
+    loaded: number;
+    loading: number;
+    restricted: number;
+    building: number;
+    missing: number;
+    failed: number;
+    unknown: number;
+    /** Boards without a known box yet (no PCB or interface): not drawn. */
+    unplaced: number;
+}
+
+export interface PrismSystemSceneElement extends HTMLElement {
+    setScene(descriptor: unknown): void;
+    select(path: string | null, featureId?: number): PrismSystemSceneSelection | null;
+    frameAll(): void;
+    frameOccurrence(path: string): void;
+    pickAt(clientX: number, clientY: number): Promise<unknown>;
+    projectOccurrence(path: string): { x: number; y: number } | null;
+    setStatsOverlay(visible: boolean): void;
+    setLabelsVisible(visible: boolean): void;
+    setGpuBudget(bytes: number | null): void;
+    getStats(): Record<string, unknown> | null;
+}
+
 declare global {
     interface HTMLElementTagNameMap {
         "prism-semantic-viewer": PrismSemanticViewerElement;
+        "prism-system-scene": PrismSystemSceneElement;
     }
 
     namespace JSX {
@@ -109,6 +149,10 @@ declare global {
                     active?: string;
                 },
                 PrismSemanticViewerElement
+            >;
+            "prism-system-scene": React.DetailedHTMLProps<
+                React.HTMLAttributes<PrismSystemSceneElement>,
+                PrismSystemSceneElement
             >;
         }
     }

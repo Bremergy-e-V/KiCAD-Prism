@@ -1,6 +1,7 @@
 export const SYSTEM_TABS = [
   { id: "overview", label: "Overview" },
   { id: "diagram", label: "Diagram" },
+  { id: "scene3d", label: "3D" },
   { id: "boards", label: "Boards" },
   { id: "connectivity", label: "Connections" },
   { id: "changes", label: "Changes" },
