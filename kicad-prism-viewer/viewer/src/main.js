@@ -9,7 +9,7 @@ import { escapeHtml } from "./escape-html.js";
 import { findNetByName, resolveNetIds } from "./net-emphasis.js";
 import { loadGltf } from "./gltf-loader.js";
 import { boundsRadius, clamp, mat4Multiply } from "./math.js";
-import { isIdentity, occurrenceUnionBounds } from "./occurrences.js";
+import { isIdentity, occurrenceUnionBounds, projectToViewport, transformBounds, transformPoint } from "./occurrences.js";
 import { Renderer } from "./renderer.js";
 import { SchematicWorldRenderer } from "./schematic-world-renderer.js";
 import { collectStackupViaData } from "./stackup-vias.js";
@@ -93,6 +93,8 @@ function initialState() {
     /** Host-highlighted nets (Prism #305), emphasised alongside the active net. */
     highlightedNetIds: new Set(),
     selectedFeatureId: 0,
+    // The occurrence the selection belongs to (SB2-24); 0 in the one-board view.
+    selectedOccurrence: 0,
     selectionAnchor: null,
     showBoard: true,
     showComponents: true,
@@ -348,6 +350,7 @@ export async function mountStandaloneViewer(options = {}) {
     setSelection(selection) {
       suppressSelectionChange = true;
       try {
+        if (selection?.occurrence != null) selectOccurrenceByKey(selection.occurrence);
         if (!selection) clearSelection();
         else if (selection?.netName || selection?.netUid) {
           const match = (selection.netUid && scene.nets.find((item) => item.uid === selection.netUid))
@@ -378,8 +381,20 @@ export async function mountStandaloneViewer(options = {}) {
     setHighlightedNets(refs) {
       return applyHighlightedNets(refs);
     },
-    setOccurrences(matrices) {
-      return applyOccurrences(matrices);
+    setOccurrences(occurrences) {
+      return applyOccurrences(occurrences);
+    },
+    // Query the pick target at a client point without changing the selection.
+    pickAt(clientX, clientY) {
+      return pickHitAt(clientX, clientY);
+    },
+    // Where a component's centre appears on screen for one occurrence (client px), or null.
+    projectComponent(reference, occurrenceKey) {
+      return projectComponentCenter(reference, occurrenceKey);
+    },
+    // Where a board-local runtime point (metres) appears for one occurrence (client px), or null.
+    projectPoint(point, occurrenceKey) {
+      return projectOccurrencePoint(point, occurrenceKey);
     },
     dispose() {
       disposeViewerSession(token);
@@ -388,7 +403,22 @@ export async function mountStandaloneViewer(options = {}) {
 }
 
 function emitSelectionChange(selection) {
-  if (!suppressSelectionChange) selectionChangeCallback?.(selection);
+  if (suppressSelectionChange) return;
+  // In a system scene every selection names its occurrence (SB2-24).
+  const occurrence = renderer && !renderer.identityOnly ? renderer.occurrenceKeys[state.selectedOccurrence] : null;
+  selectionChangeCallback?.(selection && occurrence != null ? { ...selection, occurrence } : selection);
+}
+
+function selectOccurrenceByKey(key) {
+  const index = renderer?.occurrenceKeys.indexOf(String(key)) ?? -1;
+  if (index >= 0) state.selectedOccurrence = index;
+}
+
+// Board-local runtime bounds placed at the selected occurrence.
+function placedBounds(bounds) {
+  if (!bounds || !renderer || renderer.identityOnly) return bounds;
+  const model = renderer.occurrenceMatrices[state.selectedOccurrence];
+  return model ? transformBounds(model, bounds) : bounds;
 }
 
 function netSelection(net, feature = null) {
@@ -1014,6 +1044,7 @@ function sceneRuntimeBounds() {
 function applyOccurrences(matrices) {
   if (!renderer) return;
   renderer.setOccurrences(matrices);
+  if (state.selectedOccurrence >= renderer.occurrenceMatrices.length) state.selectedOccurrence = 0;
   const board = scene.runtimeBounds || runtimeBoundsFromGltf(scene.manifest?.bbox);
   scene.occurrenceBounds = matrices == null ? null : occurrenceUnionBounds(renderer.occurrenceMatrices, board);
   const bounds = sceneRuntimeBounds();
@@ -2046,7 +2077,7 @@ function selectNet(netId, shouldFrame) {
   selectionEl.textContent = JSON.stringify(net || {}, null, 2);
   updateSelectionCard();
   if (state.isolateNet) applyNetIsolationLayers();
-  if (shouldFrame && net?.boundsMm) camera.frame(runtimeBounds(net.boundsMm));
+  if (shouldFrame && net?.boundsMm) camera.frame(placedBounds(runtimeBounds(net.boundsMm)));
   scheduleTileResidency(performance.now(), { force: true });
   emitSelectionChange(netSelection(net));
 }
@@ -2154,9 +2185,10 @@ function applyHiddenComponents(references) {
 
 function framePcbFeature(feature, forceComponent = false) {
   if (!feature?.bounds) return;
+  const bounds = placedBounds(feature.bounds);
   const isComponent = forceComponent || feature.kind === "component" || Boolean(componentReferenceFromFeature(feature));
   if (isComponent) {
-    const centerZ = (feature.bounds[2] + feature.bounds[5]) * 0.5;
+    const centerZ = (bounds[2] + bounds[5]) * 0.5;
     const isBottomComponent = centerZ < 0;
     // Compare against the destination orientation as well as the current
     // interpolated camera. Repeated cross-probes during an in-progress flip
@@ -2166,7 +2198,7 @@ function framePcbFeature(feature, forceComponent = false) {
       camera.setAxis("z", isBottomComponent);
     }
   }
-  camera.frame(feature.bounds);
+  camera.frame(bounds);
 }
 
 function findSchematicFeatureByReference(reference) {
@@ -2566,7 +2598,7 @@ function frameSelection() {
     framePcbFeature(feature);
   } else {
     const net = scene.nets.find((item) => Number(item.id) === state.activeNetId);
-    if (net?.boundsMm) camera.frame(runtimeBounds(net.boundsMm));
+    if (net?.boundsMm) camera.frame(placedBounds(runtimeBounds(net.boundsMm)));
   }
 }
 
@@ -2821,7 +2853,17 @@ async function pickAt(event) {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
   };
-  const featureId = await renderer.pick(panel, x, y, {
+  const hit = await pickHit(x, y);
+  if (hit.kind === "feature" || hit.kind === "board") state.selectedOccurrence = hit.occurrenceIndex;
+  if (hit.featureId) selectFeature(hit.featureId, true);
+  // Board context exists only in system scenes; the one-board view clears as it always has.
+  else if (hit.kind === "board" && !renderer.identityOnly) selectBoardContext();
+  else clearSelection();
+}
+
+// Pick at canvas pixel (x, y): { kind, occurrenceIndex, occurrenceKey, featureId }.
+function pickHit(x, y) {
+  return renderer.pick(panel, x, y, {
     activeNetId: state.activeNetId,
     selectedFeatureId: state.selectedFeatureId,
     layerOffsets: stackupOffsets(),
@@ -2835,8 +2877,51 @@ async function pickAt(event) {
     compareOffsets,
     visibleTileIds: state.mode === "3d" ? state.visibleTileIds : null,
   });
-  if (featureId) selectFeature(featureId, true);
-  else clearSelection();
+}
+
+async function pickHitAt(clientX, clientY) {
+  if (!panel || !renderer) return null;
+  const rect = canvas.getBoundingClientRect();
+  const hit = await pickHit((clientX - rect.left) * canvas.width / rect.width, (clientY - rect.top) * canvas.height / rect.height);
+  // What a click there would select: the same mapping as selectFeature.
+  const selection = hit.featureId ? featureSelection(scene.features.get(hit.featureId)) : null;
+  return { ...hit, selection };
+}
+
+// A click on a system scene's board away from any feature selects the board
+// itself: the host learns which occurrence, and nothing on the board is emphasised.
+function selectBoardContext() {
+  const occurrence = state.selectedOccurrence;
+  // One event for the host: the board selection, not a clear followed by it.
+  const quiet = suppressSelectionChange;
+  suppressSelectionChange = true;
+  try {
+    clearSelection();
+  } finally {
+    suppressSelectionChange = quiet;
+  }
+  state.selectedOccurrence = occurrence;
+  emitSelectionChange({ kind: "board", sourceContext: "3D" });
+}
+
+function projectComponentCenter(reference, occurrenceKey) {
+  const component = scene.componentFeatures.get(String(reference));
+  const bounds = component ? scene.features.get(Number(component.featureId))?.bounds : null;
+  if (!bounds) return null;
+  // Top centre for top-side parts, bottom centre for bottom-side ones: the face a click lands on.
+  const top = (bounds[2] + bounds[5]) >= 0;
+  return projectOccurrencePoint([(bounds[0] + bounds[3]) / 2, (bounds[1] + bounds[4]) / 2, top ? bounds[5] : bounds[2]], occurrenceKey);
+}
+
+function projectOccurrencePoint(local, occurrenceKey) {
+  if (!panel || !renderer) return null;
+  const index = occurrenceKey == null ? 0 : renderer.occurrenceKeys.indexOf(String(occurrenceKey));
+  const model = renderer.occurrenceMatrices[index];
+  if (!model) return null;
+  const pixel = projectToViewport(panel.matrix, transformPoint(model, local), panel.viewport);
+  if (!pixel) return null;
+  const rect = canvas.getBoundingClientRect();
+  return { x: rect.left + pixel.x * rect.width / canvas.width, y: rect.top + pixel.y * rect.height / canvas.height };
 }
 
 function handleKey(event) {

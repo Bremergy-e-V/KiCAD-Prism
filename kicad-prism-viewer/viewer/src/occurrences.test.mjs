@@ -89,3 +89,32 @@ test("instanced shader variants place every path by the occurrence", async () =>
   assert.match(INSTANCED_SHADERS.main, /occurrence\.normal \* vec4f\(input\.normal, 0\.0\)/);
   assert.match(INSTANCED_SHADERS.barrel, /occurrence\.normal \* vec4f\(input\.normal, 0\.0\)/);
 });
+
+test("pick values decode to occurrence, board and gizmo hits", async () => {
+  const { decodePick, PICK_GIZMO_BASE } = await import("./occurrences.js");
+  assert.deepEqual(decodePick(0, 0), { kind: "none", occurrenceIndex: -1, featureId: 0 });
+  assert.deepEqual(decodePick(0, 77), { kind: "none", occurrenceIndex: -1, featureId: 0 });
+  assert.deepEqual(decodePick(1, 877), { kind: "feature", occurrenceIndex: 0, featureId: 877 });
+  assert.deepEqual(decodePick(2, 0), { kind: "board", occurrenceIndex: 1, featureId: 0 });
+  assert.equal(decodePick(PICK_GIZMO_BASE + 3, 1).kind, "gizmo");
+  assert.equal(decodePick(PICK_GIZMO_BASE + 3, 1).gizmoPart, 3);
+  assert.equal(decodePick(PICK_GIZMO_BASE - 1, 5).occurrenceIndex, PICK_GIZMO_BASE - 2);
+});
+
+test("occurrences carry host keys, defaulting to their index", async () => {
+  const { normalizeOccurrences } = await import("./occurrences.js");
+  const shifted = [...IDENTITY.slice(0, 12), 0.152, 0, 0, 1];
+  assert.deepEqual(normalizeOccurrences([[...IDENTITY], shifted]).keys, ["0", "1"]);
+  const named = normalizeOccurrences([{ matrix: IDENTITY, key: "inst_obc1" }, { matrix: new Float32Array(shifted), key: "inst_obc2" }]);
+  assert.deepEqual(named.keys, ["inst_obc1", "inst_obc2"]);
+  close(named.matrices[1], shifted.map(Math.fround));
+  assert.throws(() => normalizeOccurrences([{ matrix: IDENTITY, key: "a" }, { matrix: IDENTITY, key: "a" }]), /unique/);
+});
+
+test("points project into the viewport, y down", async () => {
+  const { projectToViewport } = await import("./occurrences.js");
+  const viewport = { x: 10, y: 20, width: 200, height: 100 };
+  assert.deepEqual(projectToViewport(IDENTITY, [0, 0, 0.5], viewport), { x: 110, y: 70 });
+  assert.deepEqual(projectToViewport(IDENTITY, [1, 1, 0.5], viewport), { x: 210, y: 20 });
+  assert.equal(projectToViewport(IDENTITY, [0, 0, -0.5], viewport), null);
+});
