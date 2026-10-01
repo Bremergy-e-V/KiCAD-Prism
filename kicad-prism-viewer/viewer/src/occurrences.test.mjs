@@ -74,20 +74,31 @@ test("barrel records pack into the storage layout (ids at byte 32)", () => {
   assert.deepEqual([...u32.slice(8, 12)], [7, 9, 1, 4]);
 });
 
-test("instanced shader variants place every path by the occurrence", async () => {
+test("instanced shader variants place every path by a culled occurrence", async () => {
   const { INSTANCED_SHADERS } = await import("./renderer.js");
-  for (const [name, code] of Object.entries(INSTANCED_SHADERS)) {
+  for (const name of ["main", "pick", "barrel", "barrelPick", "box", "boxPick"]) {
+    const code = INSTANCED_SHADERS[name];
     assert.match(code, /@builtin\(instance_index\) instance: u32/, name);
-    assert.match(code, /occurrences\[instance( \/ count)?\]/, name);
+    assert.match(code, /listedOccurrence\(/, name);
     assert.match(code, /\.model \* vec4f\(/, name);
+    assert.match(code, /selectedOccurrence: u32/, name);
   }
-  // Barrels nest: one record per barrel, repeated per occurrence.
+  // Components draw only at full detail; board, copper and barrels at full or board.
+  assert.match(INSTANCED_SHADERS.main, /select\(LIST_BOARD, LIST_FULL, draw\.material\.z > 0\.5\)/);
+  assert.match(INSTANCED_SHADERS.pick, /select\(LIST_BOARD, LIST_FULL, draw\.material\.z > 0\.5\)/);
   for (const name of ["barrel", "barrelPick"]) {
     assert.match(INSTANCED_SHADERS[name], /barrels\[instance % count\]/);
+    assert.match(INSTANCED_SHADERS[name], /listedOccurrence\(LIST_BOARD, instance \/ count\)/);
     assert.doesNotMatch(INSTANCED_SHADERS[name], /@location\(3\) dimensions/);
   }
+  assert.match(INSTANCED_SHADERS.box, /listedOccurrence\(LIST_BOX, instance\)/);
+  // The inspected selection lights only its own copy.
+  assert.match(INSTANCED_SHADERS.main, /let here = input\.occurrence == globals\.selectedOccurrence;/);
+  assert.match(INSTANCED_SHADERS.barrel, /input\.occurrence == globals\.selectedOccurrence && globals\.activeNet/);
   assert.match(INSTANCED_SHADERS.main, /occurrence\.normal \* vec4f\(input\.normal, 0\.0\)/);
-  assert.match(INSTANCED_SHADERS.barrel, /occurrence\.normal \* vec4f\(input\.normal, 0\.0\)/);
+  // The cull shader applies the same LOD rule as chooseLod and fills indirect counts.
+  assert.match(INSTANCED_SHADERS.cull, /fn chooseLod\(previous: u32, pixels: f32\)/);
+  assert.match(INSTANCED_SHADERS.cull, /args\[slot \* 5u \+ 1u\] = count;/);
 });
 
 test("pick values decode to occurrence, board and gizmo hits", async () => {
@@ -117,4 +128,30 @@ test("points project into the viewport, y down", async () => {
   assert.deepEqual(projectToViewport(IDENTITY, [0, 0, 0.5], viewport), { x: 110, y: 70 });
   assert.deepEqual(projectToViewport(IDENTITY, [1, 1, 0.5], viewport), { x: 210, y: 20 });
   assert.equal(projectToViewport(IDENTITY, [0, 0, -0.5], viewport), null);
+});
+
+test("level of detail follows projected size, with hysteresis", async () => {
+  const { chooseLod, LOD_FULL, LOD_BOARD, LOD_BOX, LOD_CULLED } = await import("./occurrences.js");
+  assert.equal(chooseLod(LOD_CULLED, 200), LOD_FULL);
+  assert.equal(chooseLod(LOD_CULLED, 60), LOD_BOARD);
+  assert.equal(chooseLod(LOD_CULLED, 10), LOD_BOX);
+  // Shrinking just below a threshold holds the finer level; well below drops it.
+  assert.equal(chooseLod(LOD_FULL, 130), LOD_FULL);
+  assert.equal(chooseLod(LOD_FULL, 100), LOD_BOARD);
+  assert.equal(chooseLod(LOD_BOARD, 16), LOD_BOARD);
+  assert.equal(chooseLod(LOD_BOARD, 12), LOD_BOX);
+  // Growing needs the full threshold: no flicker back and forth around it.
+  assert.equal(chooseLod(LOD_BOARD, 130), LOD_BOARD);
+  assert.equal(chooseLod(LOD_BOX, 16), LOD_BOX);
+});
+
+test("frustum planes cull boxes outside the clip volume", async () => {
+  const { frustumPlanes, boxOutside } = await import("./occurrences.js");
+  // An orthographic-style matrix: x, y in [-1, 1], z in [0, 1].
+  const planes = frustumPlanes(IDENTITY);
+  assert.equal(boxOutside(planes, [-0.5, -0.5, 0.2, 0.5, 0.5, 0.8]), false);
+  assert.equal(boxOutside(planes, [0.9, 0.9, 0.2, 2, 2, 0.8]), false, "straddling an edge stays");
+  assert.equal(boxOutside(planes, [1.1, -0.5, 0.2, 2, 0.5, 0.8]), true, "right of the view");
+  assert.equal(boxOutside(planes, [-0.5, -0.5, -2, 0.5, 0.5, -0.1]), true, "behind the near plane");
+  assert.equal(boxOutside(planes, [-0.5, -0.5, 1.1, 0.5, 0.5, 2]), true, "beyond the far plane");
 });
