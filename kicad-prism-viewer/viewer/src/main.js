@@ -8,7 +8,8 @@ import {
 import { escapeHtml } from "./escape-html.js";
 import { findNetByName, resolveNetIds } from "./net-emphasis.js";
 import { loadGltf } from "./gltf-loader.js";
-import { clamp } from "./math.js";
+import { boundsRadius, clamp, mat4Multiply } from "./math.js";
+import { isIdentity, occurrenceUnionBounds } from "./occurrences.js";
 import { Renderer } from "./renderer.js";
 import { SchematicWorldRenderer } from "./schematic-world-renderer.js";
 import { collectStackupViaData } from "./stackup-vias.js";
@@ -156,6 +157,8 @@ function initialScene() {
     componentFeatures: new Map(),
     componentModelCounts: new Map(),
     runtimeBounds: null,
+    // Union of the board at every occurrence (SB2-23); null for the one-board view.
+    occurrenceBounds: null,
     layerZOffsets: new Float32Array(256),
     layerZOffsetSignature: "",
   };
@@ -374,6 +377,9 @@ export async function mountStandaloneViewer(options = {}) {
     },
     setHighlightedNets(refs) {
       return applyHighlightedNets(refs);
+    },
+    setOccurrences(matrices) {
+      return applyOccurrences(matrices);
     },
     dispose() {
       disposeViewerSession(token);
@@ -898,7 +904,11 @@ function tileIntersectsView(tile, matrix, offset = null, marginScale = 0) {
     bounds[4] + margin + (offset?.[1] || 0),
     bounds[5] + 0.002,
   ];
-  return boundsIntersectsClip(expanded, matrix);
+  const occurrences = renderer?.occurrenceMatrices;
+  if (!occurrences || (occurrences.length === 1 && isIdentity(occurrences[0]))) {
+    return boundsIntersectsClip(expanded, matrix);
+  }
+  return occurrences.some((model) => boundsIntersectsClip(expanded, mat4Multiply(matrix, model)));
 }
 
 function tileRuntimeBounds(tile) {
@@ -995,7 +1005,23 @@ function mergeBounds(boundsList) {
 }
 
 function sceneRuntimeBounds() {
-  return scene.runtimeBounds || runtimeBoundsFromGltf(scene.manifest?.bbox);
+  return scene.occurrenceBounds || scene.runtimeBounds || runtimeBoundsFromGltf(scene.manifest?.bbox);
+}
+
+// Draw the loaded board once per occurrence (SB2-23): column-major model
+// matrices in runtime units. `null` restores the single identity occurrence.
+// Geometry stays uploaded once; the camera reframes on every copy.
+function applyOccurrences(matrices) {
+  if (!renderer) return;
+  renderer.setOccurrences(matrices);
+  const board = scene.runtimeBounds || runtimeBoundsFromGltf(scene.manifest?.bbox);
+  scene.occurrenceBounds = matrices == null ? null : occurrenceUnionBounds(renderer.occurrenceMatrices, board);
+  const bounds = sceneRuntimeBounds();
+  if (camera && bounds) {
+    camera.sceneRadius = boundsRadius(bounds);
+    camera.frame(bounds);
+  }
+  scheduleTileResidency(performance.now(), { force: true });
 }
 
 function boardRole(primitive) {

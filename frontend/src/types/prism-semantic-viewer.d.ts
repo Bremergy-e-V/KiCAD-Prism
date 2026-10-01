@@ -26,6 +26,13 @@ export interface PrismSemanticViewerElement extends HTMLElement {
      * reloads; ambiguous or unknown references stay visible.
      */
     setHiddenComponents: (references: string[]) => void;
+    /**
+     * Draw the loaded board once per occurrence (System Builder SB2-23):
+     * column-major 4×4 model matrices in the bundle's runtime units (metres).
+     * Geometry uploads once; `null` restores the one-board view exactly.
+     * Safe before ready and after reloads.
+     */
+    setOccurrences?: (matrices: readonly (readonly number[])[] | null) => void;
     resize: () => void;
 }
 
