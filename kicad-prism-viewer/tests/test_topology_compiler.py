@@ -39,7 +39,7 @@ from pipeline.topology_compiler.prism_clipper2 import (
 from pipeline.topology_compiler.context import PrismCompilationContext
 from pipeline.topology_compiler.pcb_extract import _board_bbox, _declared_layers, _stackup_metadata_from_pcb_file
 from pipeline.topology_compiler.pcb_extract import compile_pcb_artifacts, extract_pcb_metadata_light
-from pipeline.topology_compiler.pcb_geometry import extract_pad_holes
+from pipeline.topology_compiler.pcb_geometry import KIND_IDS, circle, extract_pad_holes
 from pipeline.topology_compiler.kicad_cli_export import (
     BOARD_CONTEXT_CACHE_VERSION,
     ExportResult,
@@ -60,6 +60,7 @@ from pipeline.topology_compiler.copper_geometry import (
 )
 from pipeline.topology_compiler.semantic_gltf import (
     SemanticGltfBuilder,
+    serialize_semantic_input,
     _native_backend_for_semantic_mode,
     _reconcile_packed_net_metadata,
     _semantic_clipper_backend,
@@ -1024,6 +1025,103 @@ class TopologyCompilerTests(unittest.TestCase):
                     )
 
             self.assertFalse((geometry / ".native-board-pack").exists())
+
+    def test_copper_is_drilled_by_every_hole_through_its_layer(self) -> None:
+        # KiCad leaves holes to the drill file: a zone fills a same-net, solidly
+        # connected hole (stitching vias, a mounting hole on GND) and a track
+        # ends at its via's centre. Copper must be drilled here, on every layer
+        # the drill passes through, or the hole renders capped.
+        square = [[0, 0], [20_000_000, 0], [20_000_000, 20_000_000], [0, 20_000_000]]
+        builder = SemanticGltfBuilder(self.semantic_topology())
+        builder.add_pcb_ir({"records": [
+            {"uuid": "zone-top", "kind": "zone_fill", "net_name": "GND", "layers": ["F.Cu"],
+             "operations": [{"kind": "PlotPoly", "points": square}]},
+            {"uuid": "zone-inner", "kind": "zone_fill", "net_name": "GND", "layers": ["In1.Cu"],
+             "operations": [{"kind": "PlotPoly", "points": square}]},
+            {"uuid": "via-through", "kind": "via", "net_name": "GND", "layers": ["F.Cu", "B.Cu"], "drill": 0.4,
+             "operations": [{"kind": "FlashPadCircle", "x": 5_000_000, "y": 5_000_000, "diameter_nm": 800_000}]},
+            # A blind via from F.Cu to In1.Cu... declared F.Cu only: it must not drill In1.Cu.
+            {"uuid": "via-blind", "kind": "via", "net_name": "GND", "layers": ["F.Cu"], "drill": 0.3,
+             "operations": [{"kind": "FlashPadCircle", "x": 15_000_000, "y": 15_000_000, "diameter_nm": 600_000}]},
+            {"uuid": "track-1", "kind": "segment", "net_name": "GND", "layer": "B.Cu",
+             "operations": [{"kind": "ThickSegment", "start_x": 1_000_000, "start_y": 5_000_000,
+                             "end_x": 5_000_000, "end_y": 5_000_000, "width_nm": 600_000}]},
+        ]})
+        zones = {item["layerName"]: item for item in builder.objects if item["kindId"] == KIND_IDS["zone"]}
+        track = next(item for item in builder.objects if item["kindId"] == KIND_IDS["track"])
+
+        def drilled_at(zone, x, y):
+            return any(
+                min(px for px, _ in hole) < x < max(px for px, _ in hole)
+                and min(py for _, py in hole) < y < max(py for _, py in hole)
+                for polygon in zone["polygons"] for hole in polygon["holes"]
+            )
+
+        self.assertTrue(drilled_at(zones["F.Cu"], 5.0, 5.0))
+        self.assertTrue(drilled_at(zones["F.Cu"], 15.0, 15.0))
+        self.assertTrue(drilled_at(zones["In1.Cu"], 5.0, 5.0))
+        self.assertFalse(drilled_at(zones["In1.Cu"], 15.0, 15.0))
+        # The track ending at the through via is drilled too: the drill sits inside its round end.
+        self.assertTrue(drilled_at(track, 5.0, 5.0))
+        # The fill keeps its area apart from the drills.
+        outer = zones["F.Cu"]["polygons"][0]["outer"]
+        self.assertAlmostEqual(max(x for x, _ in outer) - min(x for x, _ in outer), 20.0, places=3)
+
+    def test_fractured_zone_is_drilled_where_its_slit_crosses_a_drill(self) -> None:
+        # KiCad fills arrive fractured: one ring with a zero-width slit out to
+        # each hole. A drill on the slit must still cut a clean hole.
+        from shapely.geometry import Point, Polygon
+
+        mm = 1_000_000
+        # Around the hole the other way from the outline.
+        hole = [[9 * mm, 11 * mm], [11 * mm, 11 * mm], [11 * mm, 9 * mm], [9 * mm, 9 * mm]]
+        ring = [[0, 10 * mm], [0, 0], [20 * mm, 0], [20 * mm, 20 * mm], [0, 20 * mm], [0, 10 * mm],
+                [9 * mm, 10 * mm], *hole, [9 * mm, 10 * mm]]
+        builder = SemanticGltfBuilder(self.semantic_topology())
+        builder.add_pcb_ir({"records": [
+            {"uuid": "zone", "kind": "zone_fill", "net_name": "GND", "layers": ["F.Cu"],
+             "operations": [{"kind": "PlotPoly", "points": ring}]},
+            {"uuid": "via", "kind": "via", "net_name": "GND", "layers": ["F.Cu", "B.Cu"], "drill": 0.4,
+             "operations": [{"kind": "FlashPadCircle", "x": 5 * mm, "y": 10 * mm, "diameter_nm": 800_000}]},
+        ]})
+        zone = next(item for item in builder.objects if item["kindId"] == KIND_IDS["zone"])
+        shapes = [Polygon(polygon["outer"], polygon["holes"]) for polygon in zone["polygons"]]
+        self.assertTrue(all(shape.is_valid for shape in shapes))
+        self.assertFalse(any(shape.contains(Point(5.0, 10.0)) for shape in shapes))
+        self.assertFalse(any(shape.contains(Point(10.0, 10.0)) for shape in shapes))
+        self.assertTrue(any(shape.contains(Point(5.0, 10.5)) for shape in shapes))
+        area = sum(shape.area for shape in shapes)
+        self.assertAlmostEqual(area, 400.0 - 4.0 - Polygon(circle((5.0, 10.0), 0.2)).area, places=6)
+
+    def test_copper_cut_in_two_by_a_drill_keeps_a_record_per_piece(self) -> None:
+        # Tiling and clipping key on the source polygon record: two pieces of
+        # one track must not share it.
+        builder = SemanticGltfBuilder(self.semantic_topology())
+        builder.add_pcb_ir({"records": [
+            {"uuid": "via", "kind": "via", "net_name": "GND", "layers": ["F.Cu", "B.Cu"], "drill": 0.4,
+             "operations": [{"kind": "FlashPadCircle", "x": 5_000_000, "y": 5_000_000, "diameter_nm": 800_000}]},
+            {"uuid": "track", "kind": "segment", "net_name": "GND", "layer": "B.Cu",
+             "operations": [{"kind": "ThickSegment", "start_x": 1_000_000, "start_y": 5_000_000,
+                             "end_x": 9_000_000, "end_y": 5_000_000, "width_nm": 200_000}]},
+        ]})
+        track = next(item for item in builder.objects if item["kindId"] == KIND_IDS["track"])
+        self.assertEqual(len(track["polygons"]), 2)
+        records = [polygon["sourcePolygonRecordId"] for item in builder.objects for polygon in item["polygons"]]
+        self.assertEqual(len(records), len(set(records)))
+
+    def test_semantic_input_splices_the_encoded_objects(self) -> None:
+        builder = SemanticGltfBuilder(self.semantic_topology())
+        builder.add_pcb_ir({"records": [
+            {"uuid": "track", "kind": "segment", "net_name": "GND", "layer": "F.Cu",
+             "operations": [{"kind": "ThickSegment", "start_x": 0, "start_y": 0,
+                             "end_x": 1_000_000, "end_y": 0, "width_nm": 200_000}]},
+        ]})
+        payload = builder.build_input_payload()
+        payload["meshoptLevel"] = "medium"
+        self.assertEqual(
+            serialize_semantic_input(payload, builder.objects_json),
+            json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        )
 
     def test_via_caps_and_barrel_share_one_source_feature(self) -> None:
         builder = SemanticGltfBuilder(self.semantic_topology())
