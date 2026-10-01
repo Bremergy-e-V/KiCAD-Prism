@@ -55,6 +55,8 @@ export interface PrismViewerStats {
     frameCpuMs: number;
     frameCpuP95Ms: number;
     fps: number;
+}
+
 export interface PrismSemanticLayerState {
     id: number;
     name: string;
