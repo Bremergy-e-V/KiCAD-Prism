@@ -310,11 +310,27 @@ def get_status() -> dict:
             names[project.id] = project.name
     except ConfigSyncError:
         pass
-    problems = [
-        {"name": names.get(row["config_project_id"], row["repo_url"]), "url": row["repo_url"], "error": row["last_error"]}
-        for row in rows
-        if row["last_error"]
-    ]
+    # Clones are judged by their job, so one that finished or failed since the
+    # last pass shows as such now rather than as "cloning" until the next pass.
+    managed = pending = 0
+    problems = []
+    for row in rows:
+        error = str(row["last_error"] or "")
+        if row["repo_id"]:
+            managed += 1
+        elif not error and row["import_job_id"]:
+            job = v3_jobs.get(str(row["import_job_id"])) or {}
+            status = job.get("status")
+            if status in _ACTIVE_JOB_STATES:
+                pending += 1
+            elif status == "completed":
+                managed += 1
+            else:
+                error = str(job.get("error_message") or "Clone failed")
+        if error:
+            problems.append(
+                {"name": names.get(row["config_project_id"], row["repo_url"]), "url": row["repo_url"], "error": error}
+            )
     return {
         "configured": True,
         "url": current["url"],
@@ -327,8 +343,8 @@ def get_status() -> dict:
         "updated_by": current.get("updated_by"),
         "updated_at": current.get("updated_at"),
         "managed_folders": int(folders["n"]) if folders else 0,
-        "managed_projects": sum(1 for row in rows if row["repo_id"]),
-        "pending_imports": sum(1 for row in rows if not row["repo_id"] and not row["last_error"]),
+        "managed_projects": managed,
+        "pending_imports": pending,
         "problems": problems,
     }
 
