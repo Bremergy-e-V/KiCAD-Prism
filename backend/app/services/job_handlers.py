@@ -60,6 +60,9 @@ def load_builtin_job_handlers() -> None:
     register_job_handler("project_sync", run_project_sync_job_v3)
     register_job_handler("project_metadata", run_project_metadata_job_v3)
     register_job_handler("project_thumbnail", run_project_thumbnail_job_v3)
+    from app.services.config_sync_service import JOB_KIND, run_config_sync_job
+
+    register_job_handler(JOB_KIND, run_config_sync_job)
     for job_type in catalog_handlers:
         register_job_handler(job_type, run_catalog_job_v3)
     from app.services.trackers.jobs import register_tracker_job_handlers

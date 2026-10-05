@@ -468,6 +468,13 @@ class Settings(BaseSettings):
         description="Background Git fetch interval per repository; 0 disables automatic fetch.",
     )
 
+    PRISM_CONFIG_SYNC_INTERVAL_SECONDS: int = Field(
+        default=300,
+        ge=0,
+        le=86400,
+        description="How often the KiCad Project Manager config repository is re-read; 0 disables it.",
+    )
+
     PRISM_JOB_LEASE_SECONDS: int = Field(
         default=30,
         ge=10,

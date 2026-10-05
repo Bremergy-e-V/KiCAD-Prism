@@ -6,7 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
-import { GitBranch, Copy, Shield, Plus, Trash2, KeyRound, Link2, MoreHorizontal, Server, type LucideIcon } from "lucide-react";
+import { GitBranch, Copy, Shield, Plus, Trash2, KeyRound, Link2, MoreHorizontal, Server, FolderSync, type LucideIcon } from "lucide-react";
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -17,6 +17,7 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CodeHostsSettings } from "@/features/code-hosts/code-hosts-settings";
 import { ConnectedAccounts } from "@/features/code-hosts/connected-accounts";
+import { ConfigSyncSettings } from "@/features/config-sync/config-sync-settings";
 import { User, UserRole } from "@/types/auth";
 import { fetchApi, readApiError } from "@/lib/api";
 import { changeOwnPassword, fetchAuthConfig } from "@/lib/auth";
@@ -58,6 +59,7 @@ const NAV_GROUPS: { title: string; items: NavItem[] }[] = [
         items: [
             { tab: "code-hosts", label: "Code hosts", icon: Server, adminOnly: true },
             { tab: "git", label: "Git & SSH", icon: GitBranch, adminOnly: true },
+            { tab: "config-sync", label: "Project config", icon: FolderSync, adminOnly: true },
             { tab: "access", label: "Access control", icon: Shield, adminOnly: true },
         ],
     },
@@ -84,7 +86,7 @@ export function SettingsDialog({ open, onOpenChange, user, initialTab }: Setting
             <DialogContent className="max-w-4xl p-0 overflow-hidden flex h-[640px]">
                 <DialogTitle className="sr-only">Settings</DialogTitle>
                 <DialogDescription className="sr-only">
-                    Manage your connected accounts and password, and the workspace's code hosts, Git access and roles.
+                    Manage your connected accounts and password, and the workspace's code hosts, Git access, project config and roles.
                 </DialogDescription>
                 <nav className="w-60 shrink-0 bg-muted/30 border-r p-4 flex flex-col gap-4" aria-label="Settings sections">
                     <h2 className="px-2 text-lg font-semibold tracking-tight">Settings</h2>
@@ -126,6 +128,7 @@ export function SettingsDialog({ open, onOpenChange, user, initialTab }: Setting
                         <CodeHostsSettings />
                     )}
                     {activeTab === "git" && isAdmin && <GitSettings user={user} />}
+                    {activeTab === "config-sync" && isAdmin && <ConfigSyncSettings />}
                     {activeTab === "access" && isAdmin && <AccessControlSettings isAdmin={isAdmin} />}
                 </div>
             </DialogContent>

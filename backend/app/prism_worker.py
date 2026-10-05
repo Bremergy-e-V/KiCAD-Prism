@@ -86,6 +86,7 @@ class PrismWorker:
         self._catalog_maintenance_date = ""
         self._auto_sync_attempts: dict[str, datetime] = {}
         self._next_auto_sync_scan = 0.0
+        self._next_config_sync = 0.0
         self._next_tracker_scan = 0.0
 
     @staticmethod
@@ -520,6 +521,20 @@ class PrismWorker:
         )
         self._next_auto_sync_scan = now_mono + min(30, interval)
 
+    def schedule_config_sync(self) -> None:
+        interval = settings.PRISM_CONFIG_SYNC_INTERVAL_SECONDS
+        if self.worker_pool != "prism" or interval <= 0:
+            return
+        now_mono = time.monotonic()
+        if now_mono < self._next_config_sync:
+            return
+        from app.services.config_sync_service import enqueue_if_configured
+
+        # Advanced first, so an unreachable database is retried on the next
+        # interval rather than on every loop iteration.
+        self._next_config_sync = now_mono + interval
+        enqueue_if_configured()
+
     def schedule_tracker_jobs(self) -> None:
         if self.worker_pool != "prism" or time.monotonic() < self._next_tracker_scan:
             return
@@ -571,6 +586,10 @@ class PrismWorker:
                 self.schedule_project_fetches()
             except Exception:
                 self._log_database_error("schedule project fetches")
+            try:
+                self.schedule_config_sync()
+            except Exception:
+                self._log_database_error("schedule config repository sync")
             try:
                 self.schedule_tracker_jobs()
             except Exception:

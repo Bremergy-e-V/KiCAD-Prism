@@ -739,13 +739,19 @@ def start_import_job(repo_url: str, import_type: str,
                      selected_paths: Optional[List[str]] = None,
                      ref: Optional[str] = None,
                      *,
-                     requested_by: str = "project-import") -> str:
+                     requested_by: str = "project-import",
+                     import_all: bool = False,
+                     folder_id: Optional[str] = None) -> str:
     """
     Start an asynchronous import job.
     Returns job ID for polling.
 
     ``import_type`` and ``selected_paths`` are client-supplied hints only. The
     job re-derives both from the repository before anything is written to disk.
+
+    ``import_all`` selects every project the job discovers, for callers that
+    cannot know the repository's layout up front (the config repository sync).
+    ``folder_id`` places the registered projects in that folder.
     """
     if import_type not in {"type1", "type2"}:
         raise ValueError("Import type must be type1 or type2")
@@ -754,7 +760,8 @@ def start_import_job(repo_url: str, import_type: str,
     paths = sorted(selected_paths or [])
     active_key = hashlib.sha256(
         "\x1f".join(
-            [parsed.dedup_key, import_type, validated_ref or "", *paths]
+            [parsed.dedup_key, import_type, validated_ref or "", *paths,
+             "all" if import_all else ""]
         ).encode("utf-8")
     ).hexdigest()
     queued = v3_jobs.enqueue(
@@ -764,6 +771,8 @@ def start_import_job(repo_url: str, import_type: str,
             "import_type": import_type,
             "selected_paths": list(selected_paths or []),
             "ref": validated_ref,
+            "import_all": import_all,
+            "folder_id": folder_id,
         },
         worker_pool="prism",
         artifact_key=active_key,
@@ -1000,6 +1009,7 @@ def _register_planned_projects(
     target_path: Path,
     repo_id: str,
     context: JobContext,
+    folder_id: Optional[str] = None,
 ) -> list[str]:
     """Register only the projects named by the plan."""
 
@@ -1029,6 +1039,7 @@ def _register_planned_projects(
                     name=project.name,
                     relative_path=project.register_relative_path,
                     description=description,
+                    folder_id=folder_id,
                     **cached,
                 )
             )
@@ -1071,6 +1082,12 @@ def run_project_import_job_v3(context: JobContext) -> JobResult:
             f"No KiCad projects found in '{repo_name}'. Prism looks for "
             "directories containing a .kicad_pro, .kicad_pcb or .kicad_sch file."
         )
+    if payload.get("import_all"):
+        requested_paths = [project.project_key for project in discovered]
+    folder_id = str(payload.get("folder_id") or "") or None
+    if folder_id and workspace.get_folder(folder_id) is None:
+        # Removed while the job waited in the queue; land at the top level.
+        folder_id = None
 
     already_imported: set[str] = set()
     existing_rows: list[dict] = []
@@ -1168,7 +1185,9 @@ def run_project_import_job_v3(context: JobContext) -> JobResult:
                 clone_path_abs=str(target_path),
                 import_type="single" if import_type == "type1" else "multi",
             )
-        imported_ids = _register_planned_projects(plan, target_path, repo_id, context)
+        imported_ids = _register_planned_projects(
+            plan, target_path, repo_id, context, folder_id=folder_id
+        )
         # Render boards in their own jobs. The projects are registered and
         # browsable now; thumbnails fill in as each render finishes, rather than
         # holding the import open for two minutes per board.

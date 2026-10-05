@@ -45,6 +45,7 @@ password auth), or if required secret or database settings are incomplete.
 | `PRISM_DATABASE_POOL_*` | connection pool bounds per process |
 | `UVICORN_WORKERS` | API worker processes |
 | `PRISM_AUTO_SYNC_INTERVAL_SECONDS` | background remote fetch interval; 300 seconds by default, 0 disables it |
+| `PRISM_CONFIG_SYNC_INTERVAL_SECONDS` | how often the KiCad Project Manager config repository is re-read; 300 seconds by default, 0 disables it |
 | `PRISM_WORKER_CONCURRENCY` | general queued-job concurrency |
 | `CATALOG_WORKER_CONCURRENCY` | catalog queued-job concurrency |
 | `PRISM_*_CONCURRENCY` | fenced slots for heavy job classes |

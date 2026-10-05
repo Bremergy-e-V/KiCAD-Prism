@@ -59,11 +59,14 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(len(versions), len(set(versions)))
         self.assertIn(WORKSPACE_MIGRATION_VERSION, versions)
         self.assertEqual(names[WORKSPACE_MIGRATION_VERSION], WORKSPACE_MIGRATION_NAME)
-        self.assertEqual(max(versions), WORKSPACE_WEBHOOK_OAUTH_VERSION)
+        # Fork-only migrations are numbered from 100; the tracker ones must stay
+        # the newest of upstream's sequence.
+        upstream = [entry for entry in WS_MIGRATIONS if entry[0] < 100]
+        self.assertEqual(max(version for version, _, _ in upstream), WORKSPACE_WEBHOOK_OAUTH_VERSION)
         self.assertIn(WORKSPACE_FK_CASCADE_VERSION, versions)
         self.assertEqual(names[WORKSPACE_FK_CASCADE_VERSION], WORKSPACE_FK_CASCADE_NAME)
-        self.assertEqual(WS_MIGRATIONS[-1][0], WORKSPACE_WEBHOOK_OAUTH_VERSION)
-        self.assertEqual(WS_MIGRATIONS[-1][1], WORKSPACE_WEBHOOK_OAUTH_NAME)
+        self.assertEqual(upstream[-1][0], WORKSPACE_WEBHOOK_OAUTH_VERSION)
+        self.assertEqual(upstream[-1][1], WORKSPACE_WEBHOOK_OAUTH_NAME)
 
     def test_comments_migration_3_is_tracked_links(self) -> None:
         versions = [version for version, name, _ in comments_schema_migrations.MIGRATIONS]
