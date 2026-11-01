@@ -44,6 +44,7 @@ from app.api.release_studio import router as release_studio_router
 from app.api.sim_studio import router as sim_studio_router
 from app.api.folders import router as folders_router
 from app.api.settings import router as settings_router
+from app.api.config_sync import router as config_sync_router
 from app.api.workspace import router as workspace_router
 from app.api.remote_provider import router as remote_provider_router
 from app.api.provider_oauth import router as provider_oauth_router
@@ -382,6 +383,7 @@ app.include_router(release_studio_router, prefix="/api/projects", tags=["release
 app.include_router(sim_studio_router, prefix="/api", tags=["sim-studio"])
 app.include_router(fabrication_view_router, prefix="/api/projects", tags=["fabrication-view"])
 app.include_router(settings_router, prefix="/api/settings", tags=["settings"])
+app.include_router(config_sync_router, prefix="/api/settings/config-sync", tags=["config-sync"])
 app.include_router(folders_router, prefix="/api/folders", tags=["folders"])
 app.include_router(workspace_router, prefix="/api/workspace", tags=["workspace"])
 app.include_router(jobs_router, prefix="/api/jobs", tags=["jobs"])
