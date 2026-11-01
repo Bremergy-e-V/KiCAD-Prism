@@ -340,7 +340,7 @@ function CurrentRepository({
     );
 }
 
-export function TestResult({ result }: { result: ConfigTestResult }) {
+function TestResult({ result }: { result: ConfigTestResult }) {
     return (
         <div className="space-y-2 rounded-md border border-success/30 bg-success/5 p-3 text-sm">
             <p className="flex items-center gap-1.5 font-medium">

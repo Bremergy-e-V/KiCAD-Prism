@@ -1205,6 +1205,62 @@ class ComponentValidation(TypedDict, total=True):
     summary: ValidationSummary
 
 
+class ConfigRepositoryCheckResponse(TypedDict, total=True):
+    commit: str
+    folder_count: int
+    name: str
+    project_count: int
+    projects: list[ConfigRepositoryProject]
+    url: str
+
+
+class ConfigRepositoryProject(TypedDict, total=True):
+    already_imported: bool
+    clone_url: str
+    folder: str
+    id: str
+    name: str
+    repo: str
+
+
+class ConfigRepositoryRequest(TypedDict, total=True):
+    url: str
+
+
+class ConfigSyncDisconnectedResponse(TypedDict, total=True):
+    disconnected: bool
+
+
+class ConfigSyncProblem(TypedDict, total=True):
+    error: str
+    name: str
+    url: str
+
+
+class ConfigSyncStartedResponse(TypedDict, total=True):
+    job_id: str
+    status: str
+
+
+class ConfigSyncStatusResponse(TypedDict, total=False):
+    """Everything but ``configured`` is absent until a repository is set."""
+    commit: str | None
+    configured: bool
+    enabled: bool | None
+    job_id: str | None
+    last_message: str | None
+    last_status: str | None
+    last_synced_at: str | None
+    managed_folders: int | None
+    managed_projects: int | None
+    name: str | None
+    pending_imports: int | None
+    problems: list[ConfigSyncProblem] | None
+    updated_at: str | None
+    updated_by: str | None
+    url: str | None
+
+
 class ConnectorCredentials(TypedDict, total=False):
     appId: str
     installationId: str
@@ -4811,6 +4867,13 @@ class GeneratedClient:
             path_params={"project_id": project_id},
         )
 
+    def disconnect_config_repository(self) -> ConfigSyncDisconnectedResponse:
+        """Disconnect Config Repository"""
+        return self._request(
+            "DELETE",
+            "/api/v1/settings/config-sync",
+        )
+
     def discover_folder_snapshot(self, snapshot_id: str, *, body: dict[str, Any] | None = None) -> FolderDiscovery:
         """Discover components in a folder snapshot"""
         return self._request(
@@ -5157,6 +5220,13 @@ class GeneratedClient:
             "GET",
             "/api/v1/catalog/components/{component_id}/validation",
             path_params={"component_id": component_id},
+        )
+
+    def get_config_sync(self) -> ConfigSyncStatusResponse:
+        """Get Config Sync"""
+        return self._request(
+            "GET",
+            "/api/v1/settings/config-sync",
         )
 
     def get_connector(self, connector_id: str) -> dict[str, Any]:
@@ -6708,6 +6778,14 @@ class GeneratedClient:
             "/api/v1/catalog/artifacts/maintenance",
         )
 
+    def save_config_repository(self, *, body: dict[str, Any] | None = None) -> ConfigSyncStatusResponse:
+        """Save Config Repository"""
+        return self._request(
+            "PUT",
+            "/api/v1/settings/config-sync",
+            body=body,
+        )
+
     def save_import_proposal_drafts(self, session_id: str, *, body: dict[str, Any] | None = None) -> SavedImportDrafts:
         """Save import proposal drafts"""
         return self._request(
@@ -6853,12 +6931,27 @@ class GeneratedClient:
             body=body,
         )
 
+    def sync_config_repository(self) -> ConfigSyncStartedResponse:
+        """Sync Config Repository"""
+        return self._request(
+            "POST",
+            "/api/v1/settings/config-sync/sync",
+        )
+
     def sync_project_endpoint(self, project_id: str) -> SyncQueued:
         """Queue a sync with the project's remote"""
         return self._request(
             "POST",
             "/api/v1/projects/{project_id}/sync",
             path_params={"project_id": project_id},
+        )
+
+    def test_config_repository(self, *, body: dict[str, Any] | None = None) -> ConfigRepositoryCheckResponse:
+        """Test Config Repository"""
+        return self._request(
+            "POST",
+            "/api/v1/settings/config-sync/test",
+            body=body,
         )
 
     def test_connector(self, connector_id: str) -> dict[str, Any]:

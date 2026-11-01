@@ -30,8 +30,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
+from app.core import errors
 from app.services import project_service
-from app.services.git_failures import as_access_error
+from app.services.git_failures import GitAccessError, as_access_error
 from app.services.git_remote_access import git_env, remote_url_policy
 from app.services.git_remote_url import ParsedRemote, parse_remote_url
 from app.services.job_kinds import JobKind, JobSubject, subject_lock
@@ -58,7 +59,7 @@ _ACTIVE_JOB_STATES = {"queued", "running", "retry_wait", "cancel_requested"}
 _GIT_TIMEOUT_SECONDS = 120
 
 
-class ConfigSyncError(ValueError):
+class ConfigSyncError(errors.BadRequest, ValueError):
     """A problem with the config repository the administrator can act on."""
 
 
@@ -237,6 +238,14 @@ def parse_config_url(url: str) -> ParsedRemote:
 
 
 def check_repository(url: str) -> dict:
+    """Read a config repository, reporting access problems the administrator can fix."""
+    try:
+        return _read_repository(url)
+    except GitAccessError as error:
+        raise ConfigSyncError(str(error)) from error
+
+
+def _read_repository(url: str) -> dict:
     """Read and validate a config repository without changing anything."""
     parsed = parse_config_url(url)
     commit, data = fetch_config(parsed)

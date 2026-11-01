@@ -344,6 +344,11 @@
     "path": "/api/v1/projects/{project_id}/detect-paths",
     "typed": true
   },
+  "disconnect_config_repository": {
+    "method": "DELETE",
+    "path": "/api/v1/settings/config-sync",
+    "typed": true
+  },
   "discover_folder_snapshot": {
     "method": "POST",
     "path": "/api/v1/catalog/import-snapshots/folders/{snapshot_id}/discover",
@@ -552,6 +557,11 @@
   "get_component_validation": {
     "method": "GET",
     "path": "/api/v1/catalog/components/{component_id}/validation",
+    "typed": true
+  },
+  "get_config_sync": {
+    "method": "GET",
+    "path": "/api/v1/settings/config-sync",
     "typed": true
   },
   "get_connector": {
@@ -1514,6 +1524,11 @@
     "path": "/api/v1/catalog/artifacts/maintenance",
     "typed": true
   },
+  "save_config_repository": {
+    "method": "PUT",
+    "path": "/api/v1/settings/config-sync",
+    "typed": true
+  },
   "save_import_proposal_drafts": {
     "method": "PUT",
     "path": "/api/v1/catalog/import-sessions/{session_id}/proposals/drafts",
@@ -1599,9 +1614,19 @@
     "path": "/api/v1/projects/{project_id}/sim/a0/setups/{setup_id}/submit",
     "typed": true
   },
+  "sync_config_repository": {
+    "method": "POST",
+    "path": "/api/v1/settings/config-sync/sync",
+    "typed": true
+  },
   "sync_project_endpoint": {
     "method": "POST",
     "path": "/api/v1/projects/{project_id}/sync",
+    "typed": true
+  },
+  "test_config_repository": {
+    "method": "POST",
+    "path": "/api/v1/settings/config-sync/test",
     "typed": true
   },
   "test_connector": {
