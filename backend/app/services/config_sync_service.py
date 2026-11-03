@@ -673,6 +673,8 @@ def apply_config(config: TeamConfig, config_remote: ParsedRemote) -> dict:
                 "type2",
                 requested_by=REQUESTED_BY,
                 import_all=True,
+                # One entry is one board: skip the backup copies beside it.
+                prefer_names=[project.name, project.repo.rpartition("/")[2].removesuffix(".git")],
                 folder_id=folder_id,
             )
         except Exception as error:

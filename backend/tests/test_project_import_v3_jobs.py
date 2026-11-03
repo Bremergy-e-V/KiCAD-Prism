@@ -368,6 +368,108 @@ class ImportHandlerReDerivesClientClaims(unittest.TestCase):
             )
 
 
+def _project(name: str, relative_path: str) -> project_import_service.DiscoveredProject:
+    return project_import_service.DiscoveredProject(
+        name=name,
+        relative_path=relative_path,
+        full_path="",
+        has_schematic=True,
+        has_pcb=True,
+        project_file=f"{name}.kicad_pro",
+    )
+
+
+class ImportAllPrefersTheNamedProject(unittest.TestCase):
+    """A config repository entry is one board, not every copy of it in the repo."""
+
+    def test_backup_copies_beside_the_board_are_skipped(self) -> None:
+        projects = [
+            _project("27_EL_LV_PowerDistribution", "."),
+            _project("27_EL_LV_PowerDistribution", "backup_2L_70um_HASL"),
+            _project("27_EL_LV_PowerDistribution", "backup_4L_J2_top"),
+        ]
+        chosen = project_import_service.select_preferred_project(
+            projects, ["27_EL_LV_PowerDistribution"]
+        )
+        self.assertIs(chosen, projects[0])
+
+    def test_a_stray_project_file_beside_the_board_is_skipped(self) -> None:
+        projects = [
+            _project("27_EL_LV_WheelIMU", "."),
+            _project("power", "."),
+            _project("27_EL_LV_WheelIMU", "_restore_backup_2026-10-29T08-37-00-987"),
+        ]
+        chosen = project_import_service.select_preferred_project(
+            projects, ["Wheel base IMU", "27_el_lv_wheelimu"]
+        )
+        self.assertIs(chosen, projects[0])
+
+    def test_no_match_leaves_the_selection_to_the_caller(self) -> None:
+        projects = [_project("board-a", "hardware/a"), _project("board-b", "hardware/b")]
+        self.assertIsNone(
+            project_import_service.select_preferred_project(projects, ["something-else"])
+        )
+
+    def test_import_job_registers_only_the_preferred_project(self) -> None:
+        discovered = [
+            _project("board", "."),
+            _project("board", "backup_old_rev"),
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            context = SimpleNamespace(
+                payload={
+                    "repo_url": "https://example.com/board.git",
+                    "import_type": "type2",
+                    "selected_paths": [],
+                    "import_all": True,
+                    "prefer_names": ["board"],
+                },
+                check_cancelled=mock.Mock(),
+                progress=lambda **values: None,
+            )
+
+            def clone(_url: str, target: str, **_kwargs: object) -> object:
+                Path(target).mkdir(parents=True)
+                return mock.Mock()
+
+            with (
+                mock.patch.object(
+                    project_import_service.project_service, "PROJECTS_ROOT", temporary
+                ),
+                mock.patch.object(
+                    project_import_service, "find_existing_repository", return_value=None
+                ),
+                mock.patch.object(
+                    project_import_service,
+                    "discover_projects_from_repo",
+                    return_value=discovered,
+                ),
+                mock.patch.object(
+                    project_import_service.Repo, "clone_from", side_effect=clone
+                ),
+                mock.patch.object(
+                    project_import_service, "start_thumbnail_job", return_value=None
+                ),
+                mock.patch.object(
+                    project_import_service, "resolve_cached_paths", return_value={}
+                ),
+                mock.patch.object(
+                    project_import_service.workspace,
+                    "register_repository",
+                    return_value="repo-1",
+                ),
+                mock.patch.object(
+                    project_import_service.workspace,
+                    "register_project",
+                    return_value="project-1",
+                ) as register_project,
+            ):
+                project_import_service.run_project_import_job_v3(context)
+
+        register_project.assert_called_once()
+        self.assertEqual(register_project.call_args.kwargs["relative_path"], ".")
+
+
 class EnqueueValidatesRemoteUrls(unittest.TestCase):
     def test_analyze_rejects_a_dangerous_url_before_queueing(self) -> None:
         with mock.patch.object(job_service.jobs, "enqueue") as enqueue:

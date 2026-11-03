@@ -565,6 +565,7 @@ def start_import_job(repo_url: str, import_type: str,
                      *,
                      requested_by: str = "project-import",
                      import_all: bool = False,
+                     prefer_names: Optional[List[str]] = None,
                      folder_id: Optional[str] = None) -> str:
     """
     Start an asynchronous import job.
@@ -573,19 +574,22 @@ def start_import_job(repo_url: str, import_type: str,
     ``import_type`` and ``selected_paths`` are client-supplied hints only. The
     job re-derives both from the repository before anything is written to disk.
 
-    ``import_all`` selects every project the job discovers, for callers that
+    ``import_all`` selects the projects the job discovers, for callers that
     cannot know the repository's layout up front (the config repository sync).
-    ``folder_id`` places the registered projects in that folder.
+    With ``prefer_names`` it narrows that to the one project named so, see
+    ``select_preferred_project``. ``folder_id`` places the registered projects
+    in that folder.
     """
     if import_type not in {"type1", "type2"}:
         raise ValueError("Import type must be type1 or type2")
     parsed = parse_remote_url(repo_url, git_remote_access.remote_url_policy())
     validated_ref = _validate_ref(ref)
     paths = sorted(selected_paths or [])
+    names = [str(name) for name in prefer_names or [] if str(name).strip()]
     active_key = hashlib.sha256(
         "\x1f".join(
             [parsed.dedup_key, import_type, validated_ref or "", *paths,
-             "all" if import_all else ""]
+             "all" if import_all else "", *sorted(names)]
         ).encode("utf-8")
     ).hexdigest()
     queued = PROJECT_IMPORT.enqueue(
@@ -595,6 +599,7 @@ def start_import_job(repo_url: str, import_type: str,
             "selected_paths": list(selected_paths or []),
             "ref": validated_ref,
             "import_all": import_all,
+            "prefer_names": names,
             "folder_id": folder_id,
         },
         subject=JobSubject(lock_key=_repository_lock_key(parsed)),
@@ -753,6 +758,27 @@ def run_project_analyze_job_v3(context: JobContext) -> JobResult:
     return JobResult(message="Analysis complete", details={"result": result})
 
 
+def select_preferred_project(
+    projects: List[DiscoveredProject], names: List[str]
+) -> Optional[DiscoveredProject]:
+    """The one project a caller means by name, or None when none is named so.
+
+    A config repository entry stands for one board, but the repository behind
+    it often holds more than that: ``backup_4L/`` copies of the board, a
+    ``_restore_backup_<date>/`` left by a restore, a stray ``power.kicad_pro``
+    beside the real project. Importing all of them showed one board three times.
+    Of the projects named like the entry, the shallowest is the board itself.
+    """
+    wanted = {name.strip().casefold() for name in names if name.strip()}
+    matches = [project for project in projects if project.name.casefold() in wanted]
+    if not matches:
+        return None
+    return min(
+        matches,
+        key=lambda project: (_directory_depth(project.relative_path), project.relative_path),
+    )
+
+
 def classify_import_type(projects: List[DiscoveredProject]) -> str:
     """A single project at the repository root is Type-1; anything else Type-2."""
     if len(projects) == 1 and projects[0].relative_path == ".":
@@ -898,7 +924,12 @@ def run_project_import_job_v3(context: JobContext) -> JobResult:
             "directories containing a .kicad_pro, .kicad_pcb or .kicad_sch file."
         )
     if payload.get("import_all"):
-        requested_paths = [project.project_key for project in discovered]
+        preferred = select_preferred_project(discovered, payload.get("prefer_names") or [])
+        requested_paths = (
+            [preferred.project_key]
+            if preferred is not None
+            else [project.project_key for project in discovered]
+        )
     folder_id = str(payload.get("folder_id") or "") or None
     if folder_id and workspace.get_folder(folder_id) is None:
         # Removed while the job waited in the queue; land at the top level.
