@@ -40,7 +40,9 @@ from app.services.job_runtime import JobContext, JobResult
 from app.services.job_service import jobs as v3_jobs
 from app.services.postgres_database import database
 from app.services.project_import_service import (
+    DiscoveredProject,
     find_existing_repository,
+    select_preferred_project,
     start_import_job,
 )
 from app.services.workspace_service import ProjectHasSignedReleasesError, workspace
@@ -556,30 +558,73 @@ def _place_projects(repo_id: str, project: ConfigProject, folder_id: Optional[st
             workspace.update_project(str(row["id"]), **updates)
 
 
+def _delete_project(project_id: str) -> bool:
+    """Delete a project and its comments. False when signed releases keep it."""
+    from app.services.comments_store_service import comments_store
+
+    try:
+        workspace.delete_project(project_id, force=False)
+    except ProjectHasSignedReleasesError:
+        return False
+    try:
+        comments_store.delete_project_comments(project_id)
+    except Exception:
+        logger.exception("Config sync could not delete comments of %s", project_id)
+    return True
+
+
+def _prune_unlisted_projects(repo_id: str, project: ConfigProject) -> int:
+    """Delete the projects of a listed repository that the entry does not name.
+
+    An entry is one board. Whatever else the repository holds -- backup copies
+    of the board, a stray ``power.kicad_pro`` -- is not in the config, so it is
+    not in Prism either. When no project is named like the entry there is no
+    telling the board from the rest, and nothing is deleted.
+    """
+    rows = list(workspace.get_projects_by_repo(repo_id))
+    if len(rows) < 2:
+        return 0
+    candidates = [
+        DiscoveredProject(
+            name=str(row.get("name") or ""),
+            relative_path=str(row.get("relative_path") or "."),
+            full_path="",
+            has_schematic=False,
+            has_pcb=False,
+            project_file=str(row.get("project_file_rel") or ""),
+        )
+        for row in rows
+    ]
+    keep = select_preferred_project(candidates, _entry_names(project))
+    if keep is None:
+        logger.info("Config sync keeps every project of %s: none is named %s", repo_id, project.name)
+        return 0
+    removed = 0
+    for row, candidate in zip(rows, candidates):
+        if candidate is not keep and _delete_project(str(row["id"])):
+            removed += 1
+    return removed
+
+
+def _entry_names(project: ConfigProject) -> list[str]:
+    return [project.name, project.repo.rpartition("/")[2].removesuffix(".git")]
+
+
 def remove_repository(repo_id: str) -> bool:
     """Remove a repository the config no longer lists: its projects, comments and checkout.
 
     A project with signed release records is kept (the audit trail must not be
     erased by a list edit) and moved to the top level instead.
     """
-    from app.services.comments_store_service import comments_store
-
     repository = workspace.get_repository(repo_id)
     if repository is None:
         return True
     kept = False
     for row in workspace.get_projects_by_repo(repo_id):
         project_id = str(row["id"])
-        try:
-            workspace.delete_project(project_id, force=False)
-        except ProjectHasSignedReleasesError:
+        if not _delete_project(project_id):
             workspace.move_project_to_folder(project_id, None)
             kept = True
-            continue
-        try:
-            comments_store.delete_project_comments(project_id)
-        except Exception:
-            logger.exception("Config sync could not delete comments of %s", project_id)
     if kept:
         return False
     clone_path = workspace.repository_clone_path(repository)
@@ -611,6 +656,29 @@ def _import_state(row: Optional[dict], now: datetime) -> tuple[bool, str]:
     if requested and now - requested < IMPORT_RETRY_AFTER:
         return False, error or "Clone failed"
     return True, ""
+
+
+_STILL_CLONING = "still-cloning"
+
+
+def _cloned_repository(row: dict) -> Optional[str]:
+    """The repository an entry's clone registered before any pass recorded it.
+
+    An entry dropped from the config before the pass after its clone has no
+    ``repo_id`` yet. Its repository is found the way the next pass would have.
+    """
+    if not row.get("import_job_id"):
+        return None
+    job = v3_jobs.get(str(row["import_job_id"])) or {}
+    if job.get("status") in _ACTIVE_JOB_STATES:
+        return _STILL_CLONING
+    if job.get("status") != "completed":
+        return None
+    try:
+        existing = find_existing_repository(parse_config_url(str(row["repo_url"])))
+    except Exception:
+        return None
+    return str(existing["id"]) if existing else None
 
 
 def apply_config(config: TeamConfig, config_remote: ParsedRemote) -> dict:
@@ -655,6 +723,7 @@ def apply_config(config: TeamConfig, config_remote: ParsedRemote) -> dict:
             repo_id = str(existing["id"]) if existing else None
 
         if repo_id:
+            summary["removed"] += _prune_unlisted_projects(repo_id, project)
             _place_projects(repo_id, project, folder_id)
             _save_project_row(project.id, parsed.url, repo_id)
             continue
@@ -674,7 +743,7 @@ def apply_config(config: TeamConfig, config_remote: ParsedRemote) -> dict:
                 requested_by=REQUESTED_BY,
                 import_all=True,
                 # One entry is one board: skip the backup copies beside it.
-                prefer_names=[project.name, project.repo.rpartition("/")[2].removesuffix(".git")],
+                prefer_names=_entry_names(project),
                 folder_id=folder_id,
             )
         except Exception as error:
@@ -688,8 +757,12 @@ def apply_config(config: TeamConfig, config_remote: ParsedRemote) -> dict:
     for config_id, row in rows.items():
         if config_id in listed:
             continue
-        if row.get("repo_id"):
-            remove_repository(str(row["repo_id"]))
+        repo_id = str(row["repo_id"]) if row.get("repo_id") else _cloned_repository(row)
+        if repo_id == _STILL_CLONING:
+            # Forgetting the row now would orphan what the clone registers.
+            continue
+        if repo_id:
+            remove_repository(repo_id)
             summary["removed"] += 1
         with _connect() as conn:
             conn.execute("DELETE FROM ws_config_sync_projects WHERE config_project_id=%s", (config_id,))
